@@ -26,6 +26,33 @@ restore 脚本、lmdb 模块、`device.node` 探测(Windows/Linux 的
 ffmpeg 与 `LunaCacheV2` 缓存目录。所有路径都可用环境变量覆盖
 (`QSYY_SODA_ROOT` / `QISHUI_CACHE_DIR` / `FFMPEG_PATH` / `QSYY_PLATFORM` 等)。
 
+## 移动端(Android · iOS)
+
+qsyy 是 Web 应用,手机 / 平板浏览器直接访问服务端即可使用完整 UI,
+无需安装任何东西:
+
+```bash
+# 在桌面机上开局域网访问,手机连同一 Wi-Fi 打开打印出的地址
+QSYY_HOST=0.0.0.0 npm run standalone
+# → [qsyy] LAN: http://192.168.x.x:18790
+```
+
+移动端适配内容:
+
+- **响应式 UI**:≤720px 侧栏变为抽屉(左上角按钮开合、点遮罩/选歌单自动收起)、
+  歌曲列表隐藏歌手/专辑列、播放器压缩为两行紧凑布局、各面板改为近全宽;
+  ≤1020px 平板档隐藏专辑列
+- **触屏优化**:`pointer: coarse` 下加大按钮/行高触控目标,进度条 `touch-action: none`
+  支持拖动,MediaSession 让锁屏/控制中心显示曲目与快捷键
+- **PWA 安装**:Android Chrome「安装应用」、iOS Safari「添加到主屏幕」均可获得
+  独立全屏窗口(含 `apple-mobile-web-app` 全套 meta、safe-area 适配、SVG 图标)
+- **音频播放**:所有流式接口都支持 Range,移动浏览器(含 iOS Safari 的
+  严格 Range 要求)可正常拖动进度
+
+平台差异说明:桌面客户端的缓存为 App 私有目录(移动端无 root 不可读),
+因此手机浏览器上「本地缓存直读」不可用,播放走**在线播放通路**(已默认支持),
+缓存在桌面端的歌由桌面端服务统一提供。
+
 ## 目录结构
 
 ```

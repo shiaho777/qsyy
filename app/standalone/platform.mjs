@@ -11,6 +11,25 @@ import { execFile } from 'node:child_process';
 
 export const PLATFORM = process.platform; // 'darwin' | 'win32' | 'linux'
 
+// Mobile access (Android / iOS browsers hitting this server over the LAN)
+// needs no platform-specific server logic: the UI is responsive and every
+// media response already supports Range. The notes below document where the
+// desktop client integration does / does not apply.
+export const MOBILE_CLIENT_NOTES = {
+  android: {
+    // The Android client stores its cache in app-private storage
+    // (Android/data/…), not readable without root — remote servers simply
+    // don't see it. Mobile browsers get playback via the online path and the
+    // LAN desktop's cache instead.
+    localCache: 'unavailable-outside-desktop',
+    onlinePlayback: 'supported',
+  },
+  ios: {
+    localCache: 'unavailable-outside-desktop',
+    onlinePlayback: 'supported',
+  },
+};
+
 const HOME = os.homedir();
 
 // ---------------------------------------------------------------- client roots

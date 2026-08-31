@@ -26,7 +26,9 @@ const { createRuntimeResolver } = require('../bridge/lib/runtime.js');
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, 'public');
 const PORT = Number(process.env.QSYY_PORT || process.env.SODA_APP_PORT || 18790);
-const HOST = '127.0.0.1';
+// 127.0.0.1 by default; QSYY_HOST=0.0.0.0 exposes the app on the LAN so
+// phones / tablets (Android, iOS, any browser) can open the same UI.
+const HOST = process.env.QSYY_HOST || '127.0.0.1';
 const API_BASE = 'https://api.qishui.com';
 const CACHE_DIR = process.env.QSYY_CACHE_DIR
   || path.join(CLIENT_DATA.cache, 'LunaCacheV2');
@@ -1746,6 +1748,13 @@ setInterval(() => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[qsyy] standalone app: http://${HOST}:${PORT}`);
+  if (HOST === '0.0.0.0' || HOST === '::') {
+    for (const [name, infos] of Object.entries(os.networkInterfaces())) {
+      for (const info of infos || []) {
+        if (info.family === 'IPv4' && !info.internal) console.log(`[qsyy] LAN: http://${info.address}:${PORT}  (${name})`);
+      }
+    }
+  }
   console.log(`[qsyy] cache: ${CACHE_DIR}`);
   console.log(`[qsyy] downloads: ${DOWNLOAD_DIR}`);
 });

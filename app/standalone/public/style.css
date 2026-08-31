@@ -447,3 +447,64 @@ button:disabled { opacity: .35; cursor: default; }
 .online-status.off { color: var(--muted); }
 .qr-section { display: flex; flex-direction: column; align-items: center; }
 .qr-modal .mini-btn { margin-top: 10px; }
+
+/* ============ mobile / tablet(Android · iOS · narrow windows)============ */
+
+/* touch-friendly hit areas (no visual change on desktop pointers) */
+@media (pointer: coarse) {
+  button, .pl-item, .track, .pill-select, .search-wrap input { touch-action: manipulation; }
+  .track { padding-top: 12px; padding-bottom: 12px; }
+  .controls .buttons { gap: 22px; }
+  .side-btn { padding: 10px 12px; }
+}
+
+/* tablet & below: hide the artist/album columns, slim the player */
+@media (max-width: 1020px) {
+  .track, .list-head, .skel { grid-template-columns: 40px 44px 1fr 52px 34px !important; }
+  .track .artist, .track .album, .list-head .h-artist, .list-head .h-album { display: none; }
+  .player { grid-template-columns: minmax(120px, 200px) 1fr minmax(120px, 200px); padding: 0 12px; }
+  .main { padding: 20px 18px 60px; }
+}
+
+/* phone: sidebar becomes an overlay drawer; compact player */
+@media (max-width: 720px) {
+  #app { grid-template-columns: 1fr; grid-template-rows: 1fr 76px; }
+  .sidebar {
+    position: fixed; z-index: 60; top: 0; bottom: 0; left: 0; width: min(78vw, 300px);
+    transform: translateX(-102%); transition: transform var(--t-med) var(--ease);
+    box-shadow: var(--shadow);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-backdrop {
+    position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.5);
+    opacity: 0; pointer-events: none; transition: opacity var(--t-med) var(--ease);
+  }
+  .sidebar-backdrop.show { opacity: 1; pointer-events: auto; }
+  .sidebar-toggle { display: grid !important; }
+  .main { grid-column: 1; padding: 14px 12px 40px; }
+  .hero { min-height: 0; gap: 14px; margin-bottom: 14px; }
+  .hero-cover { width: 72px !important; height: 72px !important; border-radius: 14px !important; }
+  .hero-title { font-size: 21px; }
+  .hero-actions .btn { padding: 7px 12px; font-size: 12px; }
+  .toolbar { flex-wrap: wrap; }
+  .toolbar-actions { flex-wrap: wrap; }
+  .player { grid-column: 1; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; gap: 4px 10px; padding: 6px 12px calc(6px + env(safe-area-inset-bottom)); }
+  .now { grid-column: 1; grid-row: 1; }
+  .now .cover { width: 40px; height: 40px; border-radius: 9px; }
+  .controls { grid-column: 2; grid-row: 1; }
+  .controls .buttons { gap: 14px; }
+  .controls .play { width: 34px; height: 34px; }
+  .progress { grid-column: 1 / -1; grid-row: 2; max-width: none; }
+  .player-side { display: none; }
+  .panel { right: 8px; left: 8px; bottom: calc(84px + env(safe-area-inset-bottom)); width: auto; max-height: 62vh; }
+  .lyrics-panel { width: auto !important; max-height: 70vh !important; }
+}
+
+/* the toggle button itself: hidden on desktop, shown in the phone header */
+.sidebar-toggle {
+  display: none; position: fixed; z-index: 50; top: calc(10px + env(safe-area-inset-top)); left: 10px;
+  width: 38px; height: 38px; border-radius: 11px; place-items: center;
+  background: rgba(24,24,24,.92); border: 1px solid var(--line);
+  backdrop-filter: blur(10px); color: var(--muted);
+}
+.sidebar-toggle:active { color: var(--text); }

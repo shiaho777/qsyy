@@ -1369,6 +1369,7 @@ if ($('format-select')) $('format-select').onchange = e => { state.fmt = e.targe
 
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  // mobile browsers have no hardware keyboard; skip path is harmless
   if (e.code === 'Space') { e.preventDefault(); $('p-play').click(); }
   else if (e.code === 'ArrowRight' && audio.duration) audio.currentTime = Math.min(audio.duration - 1, audio.currentTime + 5);
   else if (e.code === 'ArrowLeft' && audio.duration) audio.currentTime = Math.max(0, audio.currentTime - 5);
@@ -1412,6 +1413,17 @@ setInterval(loadStats, 10 * 60 * 1000);
 
 (async () => {
   updateModeButtons();
+  // mobile: sidebar drawer toggle (elements only visible under 720px)
+  const sidebar = document.querySelector('.sidebar');
+  const backdrop = $('sidebar-backdrop');
+  const setDrawer = open => {
+    sidebar?.classList.toggle('open', open);
+    backdrop?.classList.toggle('show', open);
+  };
+  if ($('sidebar-toggle')) $('sidebar-toggle').onclick = () => setDrawer(!sidebar?.classList.contains('open'));
+  if (backdrop) backdrop.onclick = () => setDrawer(false);
+  // picking a playlist closes the drawer (openPlaylist is delegated further up)
+  if ($('playlists')) $('playlists').addEventListener('click', () => setDrawer(false));
   refreshWebLogin().catch(() => {});
   startProgressStream();
   fetch('/api/effects').then(r => r.json()).then(r => {
