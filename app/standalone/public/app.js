@@ -142,6 +142,10 @@ async function openPlaylist(pl, resume = false) {
   $('search').value = '';
   renderHero();
   showSkeleton();
+  // Chrome restores the previous scrollTop of inner scrollers on reload,
+  // which lands the view mid-list with the hero off-screen; start clean.
+  document.querySelector('.main').scrollTop = 0;
+  history.scrollRestoration = 'manual';
   await loadMore();
   if (resume) {
     const last = ls.get('lastTrack', null);
