@@ -1,88 +1,7 @@
-# qsyy · macOS 独立收藏播放器(不修改汽水音乐 App)
+# qsyy · macOS 平台实现细节
 
-`mac/standalone/` 是一个**完全独立**的本地 Web 应用:通过汽水音乐官方 API
-直连你的账号拉取收藏歌单,直接播放本地缓存(自动解密),可视化下载并转换格式。
-**不注入、不修改汽水音乐 App 的任何文件**(旧的 asar 插件方案已被替代并移除)。
-
-> **免责声明**:本项目仅供学习与个人研究使用,请勿用于商业用途。
-> 项目不提供、不分发任何受版权保护的音频内容,所有播放均来自你自己账号的
-> 会话与缓存;请支持正版。使用本项目产生的任何账号风险(如风控)由使用者
-> 自行承担。本项目与汽水音乐官方无关,不使用其商标。
-
-## 启动
-
-```bash
-npm install --prefix mac/bridge   # 首次运行前安装 bridge 依赖(lmdb 等,含原生模块)
-npm run standalone                # → http://127.0.0.1:18790
-```
-
-依赖:Node.js 18+、`ffmpeg`(可选,用于转码下载,Homebrew 安装即可)、
-已安装并**至少登录过一次**的汽水音乐 macOS 客户端(只读使用)。
-
-功能:
-- **收藏/歌单浏览**:直连 `api.qishui.com`(复用已登录客户端的会话凭据),分页懒加载 + 歌单内搜索;服务端带 30/60 秒短缓存,「同步收藏」按钮强制拉取最新
-- **播放**:本地缓存流式播放(需要时解密并缓存到 `~/Library/Caches/qsyy/`),支持:随机/列表循环/单曲循环、播放队列面板、系统媒体键(MediaSession)、键盘快捷键(空格播放暂停、←→ 快进快退、↑↓ 音量)、断点续播、队列持久化
-- **在线播放(零登录)**:未缓存的歌曲直接在线播放。原理:在独立子进程里复用
-  客户端自带的签名网络栈(`libsscronet.dylib` + `libMetaSecML.dylib` mssdk,只读加载,
-  不修改 App),以客户端的登录态调用 `track_v2`,拿到带签名的 CDN 直链后经本应用代理
-  (Range 透传,可拖动进度条)。极个别版权受限/下架曲目会明确提示「暂无在线资源」,不再拉起客户端;
-  备用通道:侧栏「在线播放」扫码获取网页会话(个别曲目的补充通路)。
-- **未缓存歌曲闭环**(回落):点击未缓存的歌会自动打开汽水音乐并长轮询缓存状态,
-  在客户端播放一次后本应用自动变为可播放并提示
-- **下载**:音质/格式全局默认 + 每行覆盖(源文件/M4A/MP3/FLAC/WAV/OGG),
-  单曲下载、失败重试、批量下载(并发 2)、历史持久化(重启不丢)、一键打开下载文件夹;
-  缓存下载默认走 4 段并行分块,断点续传保持单流
-- **增量缓存(播放即缓存)**:在线播放过的歌会持久化到
-  `~/Library/Caches/qsyy/stores/<库名>/`(断点续传,重进接着下);
-  列表每行最右侧有缓存进度圈,下完显示对勾并出现「缓存」标签,
-  之后播放零延迟(与客户端缓存同级)
-- **音效(工具栏「音效」)**:完整官方目录 8 种——「智能音效」配置来自
-  `track_v2` 的 `audio_effects` 字段(每首歌单独调校:前级增益 → 10 段均衡 →
-  压缩 → 立体声展宽 → 混响 → 后级增益 → 限幅);其余 7 种预置
-  (超重低音/清澈人声/现场/摇滚/黑胶/动感电音/360环绕)与客户端内置目录同 key 同名,
-  由同构 Web Audio 链渲染(客户端的预置 DSP 在原生层,无 HTTP 通路)。
-  切歌时自动检测智能音效可用性,不可用自动回原声(对齐客户端行为)
-- **管理缓存(侧栏)**:统一入口,四合一——
-  ① 缓存库:多库管理,可新建/切换/删除(导入的备份各自成库,切换即换整个仓);
-  ② 备份:当前库打包 tar 下载;③ 导入:备份文件作为新库导入并自动切换;
-  ④ 曲目列表:当前库全部歌曲(曲名/体积/试听标记/完成度),单曲移除或一键清空。
-  旧版单一缓存目录会自动迁移为「default」库。
-- **歌词(工具栏「歌词」)**:滚动式逐字 K 歌歌词。来自 `track_v2` 的
-  `lyric.content`,格式为 `[行起点ms,行时长ms]<词偏移,词时长,0>词 …`(词偏移相对行首),
-  服务端解析为 v2 结构化数据(`lines[]` 带 `words[]` 逐字时间轴),前端按
-  `background-clip:text` 的双色断点渐变逐词推进高亮;翻译取自 `lyric.translations.cn`,
-  **时间戳与原文行完全一致**,按精确 ms 配对(旧版用 +400ms 偏移是错的,会让高亮
-  在原文/翻译间来回跳)。当前行放大高亮并平滑居中,相邻行半亮,上下渐隐;
-  点任意行可跳转,手动滚动后暂停跟随约 2.4 秒再自动回位。
-  无逐字数据时退化为整行高亮。解析成功的歌词会随解析落盘缓存,
-  位于 `~/Library/Caches/qsyy/lyrics/`,旧 v1 缓存(仅 lrc 字符串)会在下次请求时自动升级为 v2。
-- **徽标**:VIP / Hi-Res / 无损 / 空间音频 / 已缓存 / 试听(30s)
-- **同步**:手动「同步收藏」+ 每 5 分钟自动同步;侧栏显示本地缓存体积
-- 可安装为 PWA(Chrome 菜单 → 安装)获得独立窗口
-
-## 认证原理
-
-- 会话凭据:读取已登录客户端的 Cookies(`~/Library/Application Support/SodaMusic/Cookies`,
-  明文 SQLite)+ 设备参数(deviceid/installid)。**客户端需至少登录过一次**;
-  Cookies 过期后打开一次汽水音乐即可刷新(本应用每 2 分钟自动重读)。
-- API 形态:`https://api.qishui.com/luna/pc/*`(GET `/me`、`/me/playlist`、`/playlist/detail` 等)。
-
-## 缓存读取与解密原理
-
-汽水本地缓存(LunaCacheV2 的 `.bin`)在 Mac 客户端上通常**未加密**,
-可直接复制为标准 M4A/MP4 播放;部分条目或在线 CDN 下载的流是
-**CENC AES-128-CTR 加密**,moov 明文、音频样本加密,每个音质一条密钥,
-密钥材料在缓存条目的 `encrypt_info.spade_a` 字段里。解密链路(见
-`mac/bridge/restore_cache.js`)按此分支处理:
-
-1. `entries.db`(LMDB)按 `trackId` 定位缓存条目 → `chunkId` + `encrypt_info`
-2. 若条目标记加密:加载 App 自带的 `device.node`(只读 require,不修改 App)→
-   `decodeSpade(spade_a)` 解包出 AES-128 密钥,按 MP4 `senc` 盒子的 IV/子样本表
-   逐样本 AES-CTR 解密
-3. ffmpeg remux 成标准 faststart M4A;转码/写标签(320k MP3、FLAC 等)同样由 ffmpeg 完成
-
-> 注意:`device.node` 仅在遇到加密条目时才真正参与解密;汽水更新后路径变化时
-> 需要更新 `server.mjs` 里的 `DEVICE_NODE` 常量(以及 `bridge/lib/runtime.js` 的探测路径)。
+本文档面向想了解 / 参与 macOS 平台适配的开发者,说明 `mac/` 下的实现原理。
+项目总览、快速开始、Roadmap 见[仓库根 README](../README.md)。
 
 ## 目录结构
 
@@ -100,19 +19,53 @@ mac/
 └── debug/                 # 运行日志与下载任务历史(自动生成,不入库)
 ```
 
-## 已知限制
+## 认证原理
 
-- **在线播放**:绝大多数歌曲可用;极个别版权受限曲目(响应被风控门拦截)会
-  回落到"在汽水音乐里播放一次"的旧流程。扫码网页会话是备用补充通路。
-- `track_v2` 需要字节系设备签名(x-helios/x-medusa/x-neptune 族):由
-  `ttnet-helper.mjs` 子进程加载客户端自带的原生库完成,只读使用、不修改 App;
-  客户端大版本更新后若崩溃,旧流程仍然可用(自动降级)。
-- 汽水音乐自动更新后:重新打开一次客户端刷新 Cookies;`Packages` 版本变化不影响本应用
-  (只读 `Application Support` 下的缓存与 Cookies)。
-- 播放列表懒加载每页 100 首;缓存状态徽标按可见区域批量查询,低占用。
+- 会话凭据:读取已登录客户端的 Cookies(`~/Library/Application Support/SodaMusic/Cookies`,
+  明文 SQLite)+ 设备参数(deviceid/installid)。客户端登录态每 2 分钟自动重读,
+  Cookies 过期后打开一次汽水音乐即可刷新。
+- API 形态:`https://api.qishui.com/luna/pc/*`(GET `/me`、`/me/playlist`、`/playlist/detail` 等)。
 
-## 排障
+## 缓存读取与解密原理
 
-- `mac/debug/qsyy.log` — 应用服务器日志
-- 播放 404/500:该歌无缓存或解密失败(看日志);加密条目解密失败多为 device.node 路径失效
-- 收藏拉取失败(ERR/空):打开一次汽水音乐刷新登录态
+汽水本地缓存(LunaCacheV2 的 `.bin`)在 Mac 客户端上通常**未加密**,
+可直接复制为标准 M4A/MP4 播放;部分条目或在线 CDN 下载的流是
+**CENC AES-128-CTR 加密**,moov 明文、音频样本加密,每个音质一条密钥,
+密钥材料在缓存条目的 `encrypt_info.spade_a` 字段里。解密链路(见
+`bridge/restore_cache.js`)按此分支处理:
+
+1. `entries.db`(LMDB)按 `trackId` 定位缓存条目 → `chunkId` + `encrypt_info`
+2. 若条目标记加密:加载 App 自带的 `device.node`(只读 require,不修改 App)→
+   `decodeSpade(spade_a)` 解包出 AES-128 密钥,按 MP4 `senc` 盒子的 IV/子样本表
+   逐样本 AES-CTR 解密
+3. ffmpeg remux 成标准 faststart M4A;转码/写标签(320k MP3、FLAC 等)同样由 ffmpeg 完成
+
+> `device.node` 仅在遇到加密条目时才真正参与解密;汽水更新后路径变化时
+> 需要更新 `server.mjs` 里的 `DEVICE_NODE` 常量(以及 `bridge/lib/runtime.js` 的探测路径)。
+
+## 在线播放原理(零登录)
+
+`track_v2` 需要字节系设备签名(x-helios/x-medusa/x-neptune 族)。`ttnet-helper.mjs`
+作为常驻子进程,通过 `process.dlopen` 只读加载客户端自带的
+`libMetaSecML.dylib`(mssdk 签名)与 `libsscronet.dylib`,再 require 客户端的
+`ttnet.node`,以客户端登录态调用 `track_v2` 拿到签名 CDN 直链。子进程崩溃自愈
+(原生 CHECK 失败只杀 helper,主服务按需重拉)。备用通路:passport 扫码
+获取网页会话(`web-session.json`,不入库),作为个别曲目的补充通路。
+
+## 性能设计
+
+- **API keep-alive 连接池**(API / CDN 分池)+ 歌单 API 30/60 秒短缓存,
+  「同步收藏」带 `fresh=1` 强制直连
+- **LMDB 快照共享**:复制 entries.db 是开销大头,10 秒 TTL 内并发扫描共享同一快照,
+  扫描结果再按 key 去重合并 5 秒
+- **解密并发治理**:上限 2、按 trackId 去重,成功结果按 chunkId 记忆避免重复解密
+- **下载双车道**:播放专用道 + 后台道(总并发 2),批量缓存永不饿死正在点的歌;
+  全新下载走 4 段并行分块,断点续传保持单流
+- **SSE 脏门控**:进度推送只在有下载活动时触发,空闲 CPU 趋零
+- **歌词随解析落盘**:resolve 成功即持久化 v2 歌词,面板打开即毫秒级磁盘命中
+
+## 客户端更新后
+
+重新打开一次汽水音乐刷新 Cookies 即可;`Packages` 版本变化不影响本项目
+(只读 `Application Support` 下的缓存与 Cookies)。若客户端大版本更新导致
+签名库崩溃,在线播放自动降级到扫码网页会话通路。
