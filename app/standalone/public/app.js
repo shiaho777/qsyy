@@ -839,11 +839,36 @@ audio.onended = () => {
   if (state.repeat === 'one') { audio.currentTime = 0; audio.play(); return; }
   playNextIndex(1);
 };
+
+// ---------------------------------------------------------------- prefetch (zero-latency switching)
+
+// Prefetch the next track's stream head (~512KB) and lyrics the moment the
+// current one starts playing. Server-side cache + browser HTTP cache make a
+// subsequent play of that track near-instant; the aborted range request
+// costs a fraction of a track's bandwidth.
+let prefetchSeq = 0;
+function prefetchNext() {
+  if (!state.queue.length) return;
+  let next = state.queueIndex + 1;
+  if (state.shuffle) next = Math.floor(Math.random() * state.queue.length);
+  if (next >= state.queue.length) next = state.repeat === 'all' ? 0 : -1;
+  const t = next >= 0 ? state.queue[next] : null;
+  if (!t) return;
+  const seq = ++prefetchSeq;
+  const id = t.id;
+  // stream head: served from the server's decrypt/store cache, then cached
+  // by the browser; 512KB covers a few seconds of audio start
+  fetch(`/api/stream/${id}`, { headers: { range: 'bytes=0-524287' } }).then(r => r.body?.cancel()).catch(() => {});
+  // lyrics ride along the resolve path; warming it makes panel open instant
+  fetch(`/api/lyrics/${id}`).then(r => r.json()).catch(() => {});
+  if (seq !== prefetchSeq) return; // superseded while in flight — nothing to do
+}
 audio.onplaying = () => {
   $('p-play').innerHTML = ICONS.pause;
   decoratePlayingRow();
   const t = state.queue[state.queueIndex];
   document.title = t ? `▶ ${t.name} · qsyy` : 'qsyy';
+  prefetchNext();
 };
 audio.onpause = () => { $('p-title').textContent = $('p-title').textContent.replace(' — 点 ▶ 开始', ''); $('p-play').innerHTML = ICONS.play; decoratePlayingRow(); };
 audio.ontimeupdate = () => {

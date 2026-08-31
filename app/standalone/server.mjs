@@ -203,7 +203,12 @@ function releaseScanSnapshot(snapshot) {
 // database doesn't change within seconds, so identical scans are collapsed
 // into one shared child process (rapid play-switching used to spawn a copy +
 // an LMDB reader per request and starve everything else).
-const SCAN_CACHE_TTL = 5000;
+// Scan results are cached well past the 5s dedupe window: a track's cached
+// chunk basically never disappears mid-session (the client only adds), so
+// 90s hits keep every replay/revisit at zero subprocess cost. Entries are
+// invalidated implicitly by the janitor sweep.
+const SCAN_CACHE_TTL = 90000;
+const SCAN_DEDUPE_TTL = 5000;
 const scanCache = new Map();   // key → { at, value }
 const scanInflight = new Map(); // key → Promise
 
@@ -212,6 +217,9 @@ function scanKey(args) {
   return `${args['--quality'] || ''}|${ids}`;
 }
 
+// Cache entries are stamped when their LMDB snapshot was taken; a single
+// track probe may hit a stale batch (missing the newest chunk), so results
+// from an older snapshot are re-scanned once when explicitly probed.
 function runScan(extraArgs) {
   const key = scanKey(extraArgs);
   const cached = scanCache.get(key);
@@ -274,6 +282,11 @@ setInterval(() => {
 
 const scanTrack = trackId => runScan(['--track-id', String(trackId)]);
 const scanTracks = trackIds => runScan(['--track-ids', trackIds.join(',')]);
+
+// Keep one warm scan child pre-forked? Not possible with the snapshot-copy
+// model; instead, pre-warm the snapshot itself at boot so the first scan
+// after launch pays only the child spawn, not the DB copy.
+acquireScanSnapshot().then(snapshot => { if (snapshot) releaseScanSnapshot(snapshot); }).catch(() => {});
 
 // ---------------------------------------------------------------- downloads
 
@@ -1337,9 +1350,9 @@ const serverHandler = async (request, response) => {
     }
     if (route === 'GET /api/playlists') {
       // `fresh=1` (同步收藏按钮) forces a real fetch; plain loads serve the
-      // 30s cache so boot/re-entry is instant
+      // 90s cache (auto-sync keeps it fresh on its own 5-min cadence)
       const fresh = url.searchParams.has('fresh');
-      const result = await upstream('/luna/pc/me/playlist', url.search.replace(/^\?/, ''), 'GET', null, fresh ? 0 : 30000);
+      const result = await upstream('/luna/pc/me/playlist', url.search.replace(/^\?/, ''), 'GET', null, fresh ? 0 : 90000);
       sendJson(response, 200, result.json);
       return;
     }
@@ -1359,13 +1372,26 @@ const serverHandler = async (request, response) => {
     if (route === 'GET /api/cache-status') {
       const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean).slice(0, 80);
       if (!ids.length) { sendJson(response, 200, { tracks: {} }); return; }
-      const result = await scanTracks(ids);
+      // per-id hit: reuse cached per-track results and only scan the misses —
+      // paging back over already-visited rows stays subprocess-free
+      const idsSet = new Set(ids);
+      const tracks = {};
+      const misses = [];
+      for (const id of ids) {
+        const hit = scanCache.get(`highest|${id}`);
+        if (hit && Date.now() - hit.at < SCAN_CACHE_TTL && hit.value?.batch?.[id]) tracks[id] = hit.value.batch[id];
+        else misses.push(id);
+      }
+      if (misses.length) {
+        const result = await scanTracks(misses);
+        Object.assign(tracks, result?.batch || {});
+      }
       const store = {};
       for (const id of ids) {
         const status = storeStatus(id);
         if (status && (status.complete || status.progress > 0)) store[id] = status;
       }
-      sendJson(response, 200, { tracks: result?.batch || {}, store });
+      sendJson(response, 200, { tracks, store });
       return;
     }
     if (url.pathname.startsWith('/api/stream/') && request.method === 'GET') {
@@ -1375,6 +1401,12 @@ const serverHandler = async (request, response) => {
       // client-cached previews are 30s; the online path returns 60s at top
       // quality — prefer online for those, keep the cache as fallback
       const clientPreview = candidate?.isPreview === true;
+      // start the online cache/download race immediately in parallel: when the
+      // local file is ready we drop the online work, when it isn't we've saved
+      // a full serialized round-trip (scan → resolve → CDN download)
+      const onlineRace = (clientPreview || !candidate)
+        ? ensureOnlineCached(trackId, true).catch(() => null)
+        : null;
       if (candidate && !clientPreview) {
         const file = candidate.encryption?.encrypted
           ? (decryptedChunkCache.get(candidate.chunkId) || await decryptForStreaming(trackId))
@@ -1382,7 +1414,7 @@ const serverHandler = async (request, response) => {
         if (file) { serveStream(request, response, file); return; }
       }
       if (candidate && clientPreview) {
-        const online = await ensureOnlineCached(trackId, true);
+        const online = await onlineRace;
         if (online?.m4a) { serveStream(request, response, online.m4a); return; }
         if (online?.plainUrl) { proxyOnlineStream(request, response, { url: online.plainUrl }); return; }
         // online unavailable → fall back to the shorter client preview
@@ -1392,7 +1424,7 @@ const serverHandler = async (request, response) => {
         if (file) { serveStream(request, response, file); return; }
       }
       // not cached (or decrypt failed) → online: download (resumable) + decrypt + serve
-      const online = await ensureOnlineCached(trackId, true);
+      const online = onlineRace || await ensureOnlineCached(trackId, true);
       if (online?.m4a) { serveStream(request, response, online.m4a); return; }
       if (online?.plainUrl) { proxyOnlineStream(request, response, { url: online.plainUrl }); return; }
       sendJson(response, 404, { ok: false, error: 'not cached and not resolvable online' });
@@ -1647,7 +1679,8 @@ const serverHandler = async (request, response) => {
       // per-track availability: 智能音效 comes from track_v2 audio_effects (API
       // aligned, tuned per song); the preset catalog mirrors the client's own
       // effect registry (bass_enhance/voice_clean/... ) with equivalent Web
-      // Audio chains in the same config format.
+      // Audio chains in the same config format. Availability is derived from
+      // the resolve result which is already cached — no extra wait here.
       const trackId = url.pathname.split('/').pop();
       const resolved = await ttnetResolve(trackId);
       const map = resolved?.ok ? resolved.effects : null;
