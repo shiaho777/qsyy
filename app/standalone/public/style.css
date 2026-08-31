@@ -477,11 +477,7 @@ button:disabled { opacity: .35; cursor: default; }
     box-shadow: var(--shadow);
   }
   .sidebar.open { transform: translateX(0); }
-  .sidebar-backdrop {
-    position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.5);
-    opacity: 0; pointer-events: none; transition: opacity var(--t-med) var(--ease);
-  }
-  .sidebar-backdrop.show { opacity: 1; pointer-events: auto; }
+  .sidebar-backdrop { background: rgba(0,0,0,.5); }
   .sidebar-toggle { display: grid !important; }
   .main { grid-column: 1; padding: 14px 12px 40px; }
   .hero { min-height: 0; gap: 14px; margin-bottom: 14px; }
@@ -510,3 +506,11 @@ button:disabled { opacity: .35; cursor: default; }
   backdrop-filter: blur(10px); color: var(--muted);
 }
 .sidebar-toggle:active { color: var(--text); }
+
+/* backdrop base: MUST be position:fixed on desktop too — as a plain grid
+   item it would occupy grid cell r1c1 and push the whole layout down one row */
+.sidebar-backdrop {
+  position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.5);
+  opacity: 0; pointer-events: none; transition: opacity var(--t-med) var(--ease);
+}
+.sidebar-backdrop.show { opacity: 1; pointer-events: auto; }
