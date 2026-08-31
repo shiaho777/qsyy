@@ -1911,12 +1911,29 @@ server.on('clientError', (error, socket) => {
 });
 
 // Static assets are tiny and read on every page load — keep them in memory
-// instead of hitting disk per request (contents picked up on server restart).
+// instead of hitting disk per request, BUT re-read when the file changes on
+// disk (mtime): a stale in-memory copy once served an old app.js for the
+// whole session, since frontend edits don't restart the server.
 const staticFiles = (() => {
-  const read = name => {
-    try { return fs.readFileSync(path.join(publicDir, name)); } catch (_) { return Buffer.alloc(0); }
+  const cache = new Map(); // name → { buf, mtimeMs }
+  const load = name => {
+    const file = path.join(publicDir, name);
+    try {
+      const mtimeMs = fs.statSync(file).mtimeMs;
+      let entry = cache.get(name);
+      if (!entry || entry.mtimeMs !== mtimeMs) {
+        entry = { buf: fs.readFileSync(file), mtimeMs };
+        cache.set(name, entry);
+      }
+      return entry.buf;
+    } catch (_) { return Buffer.alloc(0); }
   };
-  return { index: read('index.html'), 'app.js': read('app.js'), 'style.css': read('style.css'), 'manifest.webmanifest': read('manifest.webmanifest') };
+  return {
+    get index() { return load('index.html'); },
+    get 'app.js'() { return load('app.js'); },
+    get 'style.css'() { return load('style.css'); },
+    get 'manifest.webmanifest'() { return load('manifest.webmanifest'); },
+  };
 })();
 
 // (resolve/online cache sweeping merged into the 5-min janitor above)
