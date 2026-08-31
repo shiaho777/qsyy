@@ -23,8 +23,24 @@
 缓存扫描链(`app/bridge/lib/runtime.js`)同样按平台解析:
 restore 脚本、lmdb 模块、`device.node` 探测(Windows/Linux 的
 `resources/app.asar.unpacked` 与 macOS 的 `Contents/Resources/` 布局差异已处理)、
-ffmpeg 与 `LunaCacheV2` 缓存目录。所有路径都可用环境变量覆盖
-(`QSYY_SODA_ROOT` / `QISHUI_CACHE_DIR` / `FFMPEG_PATH` / `QSYY_PLATFORM` 等)。
+ffmpeg 与 `LunaCacheV2` 缓存目录。
+
+## 环境变量
+
+所有路径与行为都可用环境变量覆盖,无需改代码:
+
+| 变量 | 默认 | 作用 |
+|------|------|------|
+| `QSYY_PORT` / `SODA_APP_PORT` | `18790` | 服务监听端口 |
+| `QSYY_HOST` | `127.0.0.1` | 设为 `0.0.0.0` 开放局域网访问 |
+| `QSYY_CACHE_DIR` / `QISHUI_CACHE_DIR` | 客户端 `LunaCacheV2` 位置 | 缓存扫描目录 |
+| `QSYY_COOKIES_DB` | 客户端 `Cookies` 库 | 会话 Cookie 数据库路径 |
+| `QSYY_DOWNLOAD_DIR` | `~/Downloads/qsyy` | 下载输出目录 |
+| `QSYY_SODA_ROOT` / `QISHUI_SODA_ROOT` | 按平台自动定位 | 客户端安装根目录 |
+| `FFMPEG_PATH` | 按平台候选列表查找 | ffmpeg 可执行文件 |
+| `QSYY_PLATFORM` | `process.platform` | 强制按指定平台解析运行时(调试用) |
+| `QSYY_DEBUG` / `SODA_DEBUG` | 关 | 调试日志 |
+| `TTNET_DEBUG` | 关 | 打印 track_v2 原始响应摘要 |
 
 ## 移动端(Android · iOS)
 
@@ -62,11 +78,12 @@ app/
 │   ├── platform.mjs       # 跨平台平台层(客户端定位/Cookie/ffmpeg/文件管理器)
 │   ├── ttnet-helper.mjs   # 常驻签名子进程(复用客户端网络栈,零登录在线播放)
 │   ├── public/            # 前端(原生 JS,无框架,虚拟化懒加载)
-│   └── device.json        # 设备参数覆盖(可选)
+│   └── device.json        # 设备参数覆盖(可选,不入库)
 ├── bridge/
 │   ├── restore_cache.js   # 缓存扫描快照 + CENC 解密 + ffmpeg remux
 │   ├── lib/               # RestoreService / 事件总线 / 跨平台运行时解析
 │   └── node_modules/      # lmdb(原生模块,npm install 安装)
+├── tools/                 # 辅助小工具(decode-wav 调试解码器)
 ├── LICENSE
 └── PLATFORM-macOS.md      # 本文
 ```
@@ -74,9 +91,52 @@ app/
 ## 认证原理
 
 - 会话凭据:读取已登录客户端的 Cookies(明文 SQLite `Cookies` 库)
-  + 设备参数(deviceid/installid)。客户端登录态每 2 分钟自动重读,
-  Cookies 过期后打开一次客户端即可刷新。
-- API 形态:`https://api.qishui.com/luna/pc/*`(GET `/me`、`/me/playlist`、`/playlist/detail` 等)。
+  + 设备参数(deviceid/installid,可在 `device.json` 覆盖)。
+  客户端登录态每 2 分钟自动重读,Cookies 过期后打开一次客户端即可刷新。
+- API 形态:`https://api.qishui.com/luna/pc/*`(GET `/me`、`/me/playlist`、
+  `/playlist/detail` 等),幂等 GET 带 30/60/90 秒短缓存,`fresh=1` 强制直连。
+- 兜底:签名库缺失时走扫码网页会话(`/api/weblogin/*`,passport 接口,
+  会话存 `web-session.json`,不入库、已在 `.gitignore` 排除)。
+
+## 播放通路
+
+`GET /api/stream/:trackId` 按以下优先级出流(全部支持 Range):
+
+1. **客户端缓存直读** — LMDB 快照定位 `chunkId`,未加密条目直接流式返回;
+   CENC 加密条目先解密(并发上限 2,按 chunkId 记忆避免重复解密)
+2. **在线播放** — 客户端缓存只有 30s 试听片段时优先走在线(60s/完整),
+   未缓存时在线通路边下边播,同时后台下载为**增量缓存**
+   (播放专用下载道,批量下载永不抢占),下次播放秒开
+3. **降级链** — ttnet 签名子进程 → 扫码网页会话 → 客户端短试听片段
+
+在线直链由 `ttnet-helper.mjs` 常驻子进程解析:通过 `process.dlopen`
+(mssdk 先于 cronet 引擎加载,三平台同序)只读加载客户端自带的签名库,
+再 require 客户端的 `ttnet.node`,以客户端登录态调用 `track_v2` 拿到
+签名 CDN 直链。子进程崩溃自愈(原生 CHECK 失败只杀 helper,主服务按需重拉)。
+同一响应还顺带带回音效配置、逐字歌词与 VIP 试听判定。
+
+## HTTP API 一览
+
+前端只消费这些接口,第三方集成也以此为准:
+
+| 路由 | 说明 |
+|------|------|
+| `GET /api/me` · `/api/playlists` · `/api/playlist/:id` · `/api/collections` | 官方 API 代理(带短缓存,`?fresh` 直连) |
+| `GET /api/stream/:trackId` | 播放出流(缓存直读 / 在线,支持 Range) |
+| `GET /api/online/:trackId` | 查询在线可播性(音质 / 试听判定) |
+| `GET /api/cache-status?ids=` | 批量查询客户端缓存 + 自有增量缓存状态(≤80 ids) |
+| `GET /api/lyrics/:trackId` | 逐字歌词(v2 JSON + 标准 LRC,随解析落盘) |
+| `GET /api/effects` · `/api/effects/:key` · `/api/effect-config?url=` | 音效目录 / 预置 DSP 链 / 智能音效配置 |
+| `GET /api/cover?url=` | 封面图代理 |
+| `POST /api/download` · `GET /api/downloads` | 下载任务(转码格式 / 音质可选) |
+| `GET /api/progress-stream` · `/api/progress` | 增量缓存进度(SSE 脏门控 / 轮询) |
+| `GET /api/events` | 下载任务事件流(SSE,push-on-change) |
+| `GET /api/monitor/:trackId` | 长轮询(≤120s):等用户在官方客户端播放出缓存 |
+| `GET /api/store/sets` · `/api/store/tracks` 及对应 POST | 缓存库列表 / 切换 / 创建 / 删除 / 清理 / 移除曲目 |
+| `GET /api/backup` · `POST /api/restore` | tar 备份导出 / 流式导入(路径穿越安全) |
+| `GET /api/weblogin/status` · `/qr` · `/poll` · `POST /logout` | 扫码网页会话兜底通路 |
+| `GET /api/stats` | 缓存总大小(info.db 快照只读统计) |
+| `POST /api/open-downloads` · `/api/open-client` | 打开下载目录 / 拉起官方客户端 |
 
 ## 缓存读取与解密原理
 
@@ -95,23 +155,27 @@ moov 明文、音频样本加密,每个音质一条密钥,密钥材料在缓存�
 > `device.node` 仅在遇到加密条目时才真正参与解密;客户端更新后路径变化时,
 > `platform.mjs` 的定位逻辑会按候选列表自动查找,极端情况下可用环境变量覆盖。
 
-## 在线播放原理(零登录)
+扫描稳定性:`entries.db` 被客户端持有时 lmdb 打开可能中断,因此每次扫描都在
+fork 子进程中对文件快照进行(10 秒 TTL 内并发共享同一快照,结果按 key 去重
+合并 5 秒),子进程崩溃自动换新快照重试。
 
-`track_v2` 需要字节系设备签名(x-helios/x-medusa/x-neptune 族)。`ttnet-helper.mjs`
-作为常驻子进程,通过 `process.dlopen`(mssdk 先于 cronet 引擎加载,三平台同序)
-只读加载客户端自带的签名库,再 require 客户端的 `ttnet.node`,以客户端登录态
-调用 `track_v2` 拿到签名 CDN 直链。子进程崩溃自愈(原生 CHECK 失败只杀
-helper,主服务按需重拉)。签名库缺失时 helper 以 `ok:false` 启动,服务端
-自动降级到扫码网页会话通路(`web-session.json`,不入库)。
+## 逐字歌词格式
+
+客户端随 `track_v2` 下发 K 歌 LRC:每行 `[startMs,durMs]` 后跟逐字标签
+`<offsetMs,durMs,0>字`,翻译是时间戳对齐的普通 LRC 块(按毫秒配对,
+不自行推算偏移)。`server.mjs` 解析为 v2 JSON(`lines[].words[]`)与标准
+LRC 双格式,resolve 成功即落盘,面板打开毫秒级命中;部分歌曲只有普通
+`[mm:ss.xx]` LRC,同样支持。
 
 ## 性能设计
 
-- **API keep-alive 连接池**(API / CDN 分池)+ 歌单 API 30/60 秒短缓存,
+- **API keep-alive 连接池**(API / CDN 分池)+ 歌单 API 30/60/90 秒短缓存,
   「同步收藏」带 `fresh=1` 强制直连
 - **LMDB 快照共享**:复制 entries.db 是开销大头,10 秒 TTL 内并发扫描共享同一快照,
-  扫描结果再按 key 去重合并 5 秒
+  扫描结果再按 key 去重合并 5 秒;`cache-status` 按 id 粒度命中,翻页回访零子进程
 - **解密并发治理**:上限 2、按 trackId 去重,成功结果按 chunkId 记忆避免重复解密
 - **下载双车道**:播放专用道 + 后台道(总并发 2),批量缓存永不饿死正在点的歌;
   全新下载走 4 段并行分块,断点续传保持单流
-- **SSE 脏门控**:进度推送只在有下载活动时触发,空闲 CPU 趋零
+- **SSE 脏门控**:进度推送只在有下载活动时触发,空闲 CPU 趋零;
+  任务事件流 push-on-change,无周期性全量序列化
 - **歌词随解析落盘**:resolve 成功即持久化 v2 歌词,面板打开即毫秒级磁盘命中
