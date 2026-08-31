@@ -140,7 +140,11 @@ function upstream(pathname, search = '', method = 'GET', body = null, ttlMs = 0)
           const text = Buffer.concat(chunks).toString('utf8');
           try {
             const result = { status: response.statusCode, json: JSON.parse(text) };
-            if (cacheKey && result.status === 200) {
+            // cache only payloads that actually carry data: an auth-expired
+            // 200 with an error/empty body must not poison the TTL cache
+            const hasData = result.json && Object.keys(result.json).length > 0
+              && result.json.code === undefined && result.json.status_code === undefined;
+            if (cacheKey && result.status === 200 && hasData) {
               apiGetCache.set(cacheKey, { ...result, at: Date.now() });
               if (apiGetCache.size > API_GET_CACHE_MAX) apiGetCache.delete(apiGetCache.keys().next().value);
             }
@@ -212,9 +216,12 @@ const SCAN_DEDUPE_TTL = 5000;
 const scanCache = new Map();   // key → { at, value }
 const scanInflight = new Map(); // key → Promise
 
-function scanKey(args) {
-  const ids = args['--track-ids'] ? args['--track-ids'].join(',') : String(args['--track-id'] || '');
-  return `${args['--quality'] || ''}|${ids}`;
+// Key MUST be derived from the raw argv array: extraArgs is an array, and
+// indexing it by property name ('--track-ids') yields undefined — every scan
+// used to share one cache slot, so one stale/empty result poisoned every
+// track's cache-status (harmless at the old 5s TTL, severe at 90s).
+function scanKey(extraArgs) {
+  return extraArgs.join('|');
 }
 
 // Cache entries are stamped when their LMDB snapshot was taken; a single
@@ -235,39 +242,50 @@ function runScan(extraArgs) {
   const inflight = scanInflight.get(key);
   if (inflight) return inflight;
   const promise = (async () => {
-    const snapshot = await acquireScanSnapshot();
-    if (!snapshot) return null;
-    const seq = ++scanSeq;
-    try {
-      return await new Promise(resolve => {
-        const child = spawn(process.execPath, [
-          RESTORE_SCRIPT, '--scan-child',
-          '--snapshot', snapshot.path,
-          '--lmdb-module', LMDB_MODULE,
-          '--cache-dir', CACHE_DIR,
-          '--quality', 'highest',
-          ...extraArgs,
-        ], { stdio: ['ignore', 'pipe', 'ignore'] });
-        let output = '';
-        const done = value => {
-          try { child.kill(); } catch (_) {}
-          resolve(value);
-        };
-        const timer = setTimeout(() => done(null), 30000);
-        child.stdout.on('data', d => { output += d.toString(); });
-        child.on('error', () => { clearTimeout(timer); done(null); });
-        child.on('close', () => {
-          clearTimeout(timer);
-          try {
-            const lines = output.trim().split(/\r?\n/).filter(Boolean);
-            done(lines.length ? JSON.parse(lines[lines.length - 1]) : null);
-          } catch (_) { done(null); }
+    // a snapshot copied while the client writes entries.db can be unreadable
+    // (LMDB aborts the open) — retry with a fresh snapshot before giving up;
+    // a bare null here used to surface as a bogus "not cached" 404
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const snapshot = await acquireScanSnapshot();
+      if (!snapshot) { await new Promise(r => setTimeout(r, 300 * (attempt + 1))); continue; }
+      const seq = ++scanSeq;
+      try {
+        const value = await new Promise(resolve => {
+          const child = spawn(process.execPath, [
+            RESTORE_SCRIPT, '--scan-child',
+            '--snapshot', snapshot.path,
+            '--lmdb-module', LMDB_MODULE,
+            '--cache-dir', CACHE_DIR,
+            '--quality', 'highest',
+            ...extraArgs,
+          ], { stdio: ['ignore', 'pipe', 'ignore'] });
+          let output = '';
+          const done = value => {
+            try { child.kill(); } catch (_) {}
+            resolve(value);
+          };
+          const timer = setTimeout(() => done(null), 30000);
+          child.stdout.on('data', d => { output += d.toString(); });
+          child.on('error', () => { clearTimeout(timer); done(null); });
+          child.on('close', () => {
+            clearTimeout(timer);
+            try {
+              const lines = output.trim().split(/\r?\n/).filter(Boolean);
+              done(lines.length ? JSON.parse(lines[lines.length - 1]) : null);
+            } catch (_) { done(null); }
+          });
+          if (process.env.QSYY_DEBUG) console.error(`[qsyy] scan #${seq} → ${key.slice(0, 80)}`);
         });
-        if (process.env.QSYY_DEBUG) console.error(`[qsyy] scan #${seq} → ${key.slice(0, 80)}`);
-      });
-    } finally {
-      releaseScanSnapshot(snapshot);
+        if (value !== null) return value;
+        // null child result on a fresh snapshot: retry with a new one
+        releaseScanSnapshot(snapshot);
+        await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+        continue;
+      } catch (_) {
+        releaseScanSnapshot(snapshot);
+      }
     }
+    return null;
   })();
   scanInflight.set(key, promise);
   promise.then(
@@ -1401,18 +1419,21 @@ const serverHandler = async (request, response) => {
       const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean).slice(0, 80);
       if (!ids.length) { sendJson(response, 200, { tracks: {} }); return; }
       // per-id hit: reuse cached per-track results and only scan the misses —
-      // paging back over already-visited rows stays subprocess-free
-      const idsSet = new Set(ids);
+      // paging back over already-visited rows stays subprocess-free.
+      // scanTracks batches in slices of 20 so hits stay granular on re-visit.
       const tracks = {};
       const misses = [];
       for (const id of ids) {
-        const hit = scanCache.get(`highest|${id}`);
+        const hit = scanCache.get(`--track-ids|${id}`);
         if (hit && Date.now() - hit.at < SCAN_CACHE_TTL && hit.value?.batch?.[id]) tracks[id] = hit.value.batch[id];
         else misses.push(id);
       }
       if (misses.length) {
-        const result = await scanTracks(misses);
-        Object.assign(tracks, result?.batch || {});
+        const results = await Promise.all(
+          Array.from({ length: Math.ceil(misses.length / 20) }, (_, i) =>
+            scanTracks(misses.slice(i * 20, (i + 1) * 20))),
+        );
+        for (const result of results) Object.assign(tracks, result?.batch || {});
       }
       const store = {};
       for (const id of ids) {
@@ -1451,8 +1472,11 @@ const serverHandler = async (request, response) => {
           : path.join(CACHE_DIR, `${candidate.chunkId}.bin`);
         if (file) { serveStream(request, response, file); return; }
       }
-      // not cached (or decrypt failed) → online: download (resumable) + decrypt + serve
-      const online = onlineRace || await ensureOnlineCached(trackId, true);
+      // not cached (or decrypt failed) → online: download (resumable) + decrypt + serve.
+      // onlineRace is a PROMISE — `||` binds the promise object itself
+      // (JSON.stringify(promise) === '{}', then serveStream 404s on it).
+      // It must always be awaited.
+      const online = await (onlineRace ?? ensureOnlineCached(trackId, true));
       if (online?.m4a) { serveStream(request, response, online.m4a); return; }
       if (online?.plainUrl) { proxyOnlineStream(request, response, { url: online.plainUrl }); return; }
       sendJson(response, 404, { ok: false, error: 'not cached and not resolvable online' });

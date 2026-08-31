@@ -793,7 +793,21 @@ function startCurrent(autoplay = true) {
       // with AbortError. That's a supersede, not a failure — don't fall back.
       if (err?.name === 'AbortError') return;
       if (audio.src !== `/api/stream/${t.id}` && !audio.src.endsWith(`/api/stream/${t.id}`)) return;
-      // stream failed: check whether the track is simply unavailable online
+      // stream failed: most often a transient (decrypt warming up, scan
+      // snapshot retry). Retry once before concluding anything; only then
+      // distinguish "genuinely unavailable" from "needs the client".
+      let retried = false;
+      try {
+        await new Promise(r => setTimeout(r, 800));
+        const head = await fetch(`/api/stream/${t.id}`, { headers: { range: 'bytes=0-1' } });
+        if (head.ok || head.status === 206) {
+          retried = true;
+          audio.src = `/api/stream/${t.id}`;
+          await audio.play();
+          return;
+        }
+      } catch (_) {}
+      if (retried) return;
       if (state.onlineAvailable) {
         let unavailable = false;
         try {

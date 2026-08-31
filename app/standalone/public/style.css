@@ -79,7 +79,9 @@ button:disabled { opacity: .35; cursor: default; }
 .foot-hint { grid-column: 1 / -1; margin-top: 8px; font-size: 10px; color: var(--faint); text-align: center; line-height: 1.4; }
 
 /* ============ main ============ */
-.main { grid-column: 2; overflow-y: auto; padding: 26px 30px 60px; }
+/* min-height:0 — a grid item defaults to min-height:auto, which lets the
+   row blow past the viewport and push content (hero) out of view */
+.main { grid-column: 2; overflow-y: auto; padding: 26px 30px 60px; min-height: 0; }
 
 /* hero */
 .hero { display: flex; align-items: flex-end; gap: 22px; margin-bottom: 20px; min-height: 120px; animation: heroIn var(--t-slow) var(--ease) both; }
