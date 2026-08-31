@@ -7,7 +7,7 @@
 浏览并播放你的汽水音乐收藏 · 本地缓存直读 · 在线播放 · 逐字歌词 · 音效 · 下载
 
 [![GitHub stars](https://img.shields.io/github/stars/shiaho777/qsyy?style=social)](https://github.com/shiaho777/qsyy/stargazers)
-[![License](https://img.shields.io/badge/license-GPL--3.0%20%2B%20NC-blue)](./mac/LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0%20%2B%20NC-blue)](./app/LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Web%20%7C%20macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Mobile-9cf)](#-全端支持)
 [![PWA](https://img.shields.io/badge/PWA-%E5%8F%AF%E5%AE%89%E8%A3%85-5A0FC8)](#-快速开始)
 
@@ -34,8 +34,8 @@
 git clone https://github.com/shiaho777/qsyy.git
 cd qsyy
 
-npm install --prefix mac/bridge   # 安装依赖(含 lmdb 原生模块)
-npm run standalone                # → http://127.0.0.1:18790
+npm install --prefix app/bridge    # 安装依赖(含 lmdb 原生模块)
+npm run standalone                 # → http://127.0.0.1:18790
 ```
 
 打开浏览器访问 `http://127.0.0.1:18790`,登录态会自动从本机客户端读取,无需任何配置。
@@ -45,24 +45,25 @@ npm run standalone                # → http://127.0.0.1:18790
 | 依赖 | 说明 |
 |------|------|
 | Node.js 18+ | 服务端运行时 |
-| ffmpeg | 可选,下载转码时使用(`brew install ffmpeg`) |
+| ffmpeg | 可选,下载转码时使用(`brew install ffmpeg` / `winget install ffmpeg` / `apt install ffmpeg`) |
 | 汽水音乐客户端 | 同机已安装并登录过一次(只读复用其会话与缓存) |
 
 ## 📱 全端支持
 
-qsyy 本质是一个 Web 应用——**任何有现代浏览器的设备都可以访问它**,手机 / 平板 / 电脑全平台通用。
+qsyy 本质是一个 Web 应用——**任何有现代浏览器的设备都可以访问它**,手机 / 平板 / 电脑全平台通用。服务端支持 macOS / Windows / Linux,自动定位客户端安装与缓存位置。
 
 | 端 | 状态 |
 |----|------|
-| 浏览器(PWA) | ✅ 开箱即用 |
-| macOS | ✅ 当前主力平台(缓存直读 + 在线播放) |
-| Windows | 🚧 计划中(官方 restore 流程已有成熟参考,适配成本低) |
-| Linux | 🚧 计划中 |
-| iOS / Android | 🚧 计划中(浏览器访问已可用,原生壳在路上) |
+| 浏览器(PWA) | ✅ 开箱即用,任何设备 |
+| macOS | ✅ 完整支持(缓存直读 + 在线播放) |
+| Windows | ✅ 完整支持(缓存直读 + 在线播放) |
+| Linux | ✅ 完整支持(缓存直读 + 在线播放) |
+| iOS / Android | ✅ 浏览器访问服务端即可播放 |
 
 ## 🗺️ Roadmap
 
-- [ ] Windows / Linux 缓存直读适配
+- [x] macOS 缓存直读 + 零登录在线播放
+- [x] Windows / Linux 平台适配(客户端自动定位、Cookie 读取、签名库加载)
 - [ ] 移动端 UI 优化
 - [ ] 桌面客户端(Electron / Tauri)
 - [ ] 歌单导入 / 导出
@@ -87,7 +88,7 @@ qsyy 本质是一个 Web 应用——**任何有现代浏览器的设备都可�
 └──────────────┴──────────────┴───────────────┘
 ```
 
-详细原理(认证、缓存解密、歌词格式、性能设计)见 [mac/README-mac.md](./mac/README-mac.md)。
+详细原理(认证、缓存解密、歌词格式、性能设计)见 [app/PLATFORM-macOS.md](./app/PLATFORM-macOS.md)。
 
 ## ⭐ Star History
 
@@ -95,4 +96,4 @@ qsyy 本质是一个 Web 应用——**任何有现代浏览器的设备都可�
 
 ## 📄 许可证
 
-[GPL-3.0 + 非商业附加条款](./mac/LICENSE) · 本项目与汽水音乐官方无关,请支持正版音乐。
+[GPL-3.0 + 非商业附加条款](./app/LICENSE) · 本项目与汽水音乐官方无关,请支持正版音乐。

@@ -9,44 +9,72 @@
 //
 // Native modules can hard-crash (CHECK-failed FATAL); running them in this
 // dedicated process keeps the main server alive — it just respawns on demand.
+//
+// Cross-platform notes:
+//   macOS    — dylibs under Contents/Frameworks, loaded with RTLD_GLOBAL so
+//              mssdk is resident before sscronet looks it up by name.
+//   Windows  — DLLs under resources\app.asar.unpacked; the signing DLL is
+//              preloaded so load-time imports resolve to the resident copy.
+//   Linux    — same preload order via RTLD_GLOBAL; SONAME resolution finds it.
+// If the client or its libraries are missing, the helper starts with
+// ok:false and the server transparently falls back to the QR web-session path.
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { PLATFORM, CLIENT_DATA, CLIENT_PACKAGES, NATIVE_LIBS } from './platform.mjs';
 
 const HOME = os.homedir();
-const APP = '/Applications/汽水音乐.app/Contents/Frameworks';
-const PKG = path.join(HOME, 'Library', 'Application Support', 'SodaMusic', 'Packages');
-const COOKIES_DB = path.join(HOME, 'Library', 'Application Support', 'SodaMusic', 'Cookies');
 
 function latestPackageDir() {
   try {
-    const version = JSON.parse(fs.readFileSync(path.join(PKG, 'config.json'), 'utf8')).latestVersion;
-    return path.join(PKG, version, 'app.asar.unpacked');
+    const version = JSON.parse(fs.readFileSync(path.join(CLIENT_PACKAGES, 'config.json'), 'utf8')).latestVersion;
+    return path.join(CLIENT_PACKAGES, version, 'app.asar.unpacked');
   } catch (_) {
-    return path.join(PKG, '3.6.0', 'app.asar.unpacked');
+    for (const fallback of ['3.6.0']) {
+      const dir = path.join(CLIENT_PACKAGES, fallback, 'app.asar.unpacked');
+      if (fs.existsSync(dir)) return dir;
+    }
+    return '';
   }
 }
 
 const require2 = createRequire(import.meta.url);
-const dlopen = (file) => {
-  try { process.dlopen({ exports: {} }, file, os.constants.dlopen.RTLD_GLOBAL | os.constants.dlopen.RTLD_NOW); return true; }
-  catch (e) { if (!/self-register/.test(e.message)) return false; return true; } // "did not self-register" still leaves the lib loaded
+const dlopen = file => {
+  if (!file || !fs.existsSync(file)) return false;
+  try {
+    process.dlopen({ exports: {} }, file, os.constants.dlopen.RTLD_GLOBAL | os.constants.dlopen.RTLD_NOW);
+    return true;
+  } catch (e) {
+    // "did not self-register" still leaves the lib loaded in the process
+    if (!/self-register/.test(e.message)) return false;
+    return true;
+  }
 };
 
-// Order matters: mssdk must be resident before sscronet looks it up by name.
-const metasecOk = dlopen(path.join(APP, 'mssdk', 'libMetaSecML.dylib'));
-const engineOk = dlopen(path.join(APP, 'libsscronet.dylib'));
+// Order matters on every platform: the signing lib (mssdk) must be resident
+// before the cronet engine resolves it by name.
+const metasecOk = dlopen(NATIVE_LIBS.metasec);
+const engineOk = dlopen(NATIVE_LIBS.cronet);
+
+// The client's ttnet native module (same module name on all platforms).
+const ttnetModule = (() => {
+  const dir = latestPackageDir();
+  if (!dir) return '';
+  const file = path.join(dir, 'ttnet.node');
+  return fs.existsSync(file) ? file : '';
+})();
+
 let ttnet = null;
-if (metasecOk && engineOk) {
-  try { ttnet = require2(path.join(latestPackageDir(), 'ttnet.node')); } catch (_) {}
+if (metasecOk && engineOk && ttnetModule) {
+  try { ttnet = require2(ttnetModule); } catch (_) {}
 }
 
 function readCookies() {
   try {
     return execSync(
-      `sqlite3 "${COOKIES_DB}" "SELECT name || '=' || value FROM cookies WHERE host_key IN ('.qishui.com','.bytedance.com');"`,
+      `sqlite3 "${CLIENT_DATA.cookies}" "SELECT name || '=' || value FROM cookies WHERE host_key IN ('.qishui.com','.bytedance.com');"`,
       { encoding: 'utf8' },
     ).trim().split('\n').filter(Boolean).join('; ');
   } catch (_) { return ''; }
@@ -67,7 +95,8 @@ if (ttnet) {
     ttnet.initTTNet({
       appName: 'SodaMusic', appID: 386088, channel: 'official',
       versionCode: '30060000', deviceID: dev.deviceid,
-      devicePlatform: 'MacOS', deviceType: 'Mac',
+      devicePlatform: PLATFORM === 'darwin' ? 'MacOS' : 'PC',
+      deviceType: PLATFORM === 'darwin' ? 'Mac' : 'PC',
       isMainProcess: true, storagePath: store,
       useInjectMode: false,               // own global context instead of waiting for the client's network service
       domainHttpDns: 'httpdns.volcengine.com',
@@ -171,7 +200,7 @@ async function resolveTrack(trackId) {
 }
 
 // ---- line protocol ----
-process.stdout.write(JSON.stringify({ ok: ready, cmd: 'hello' }) + '\n');
+process.stdout.write(JSON.stringify({ ok: ready, cmd: 'hello', platform: PLATFORM }) + '\n');
 let buffer = '';
 let pending = 0;
 process.stdin.setEncoding('utf8');

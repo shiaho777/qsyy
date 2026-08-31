@@ -1,17 +1,21 @@
-// qsyy standalone app server (macOS).
+// qsyy standalone app server.
 // A self-contained local web app: browse your QiShui collections via the
 // official API (session reused from the installed client), play tracks from
 // the local LunaCacheV2 cache, and download/convert with the existing chain.
 //
-//   node mac/standalone/server.mjs   →  http://127.0.0.1:18790
+//   node app/standalone/server.mjs   →  http://127.0.0.1:18790
 import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import {
+  CLIENT_DATA, OS_CACHE_ROOT,
+  findDeviceNode, findFfmpeg, cookieQueryCommand, openFolder, openClient,
+} from './platform.mjs';
 
 const require = createRequire(import.meta.url);
 const { RestoreService } = require('../bridge/lib/restore-service.js');
@@ -25,17 +29,15 @@ const PORT = Number(process.env.QSYY_PORT || process.env.SODA_APP_PORT || 18790)
 const HOST = '127.0.0.1';
 const API_BASE = 'https://api.qishui.com';
 const CACHE_DIR = process.env.QSYY_CACHE_DIR
-  || path.join(os.homedir(), 'Library', 'Application Support', 'SodaMusic', 'LunaCacheV2');
-const DOWNLOAD_DIR = process.env.QSYY_DOWNLOAD_DIR
-  || path.join(os.homedir(), 'Downloads', 'qsyy');
-const COOKIES_DB = path.join(os.homedir(), 'Library', 'Application Support', 'SodaMusic', 'Cookies');
+  || path.join(CLIENT_DATA.cache, 'LunaCacheV2');
+const DOWNLOAD_DIR = process.env.QSYY_DOWNLOAD_DIR || path.join(os.homedir(), 'Downloads', 'qsyy');
+const COOKIES_DB = process.env.QSYY_COOKIES_DB || CLIENT_DATA.cookies;
 const RESTORE_SCRIPT = path.join(root, '..', 'bridge', 'restore_cache.js');
 const LMDB_MODULE = path.join(root, '..', 'bridge', 'node_modules', 'lmdb');
-const FFMPEG = ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg'].find(fs.existsSync) || 'ffmpeg';
-const DEVICE_NODE = '/Applications/汽水音乐.app/Contents/Resources/app.asar.unpacked/device.node';
-// Decrypted copies for streaming live here; the client's local cache is
-// normally plain, but encrypted entries / CDN streams need real decryption.
-const DECRYPT_DIR = path.join(os.homedir(), 'Library', 'Caches', 'qsyy');
+const FFMPEG = findFfmpeg();
+const DEVICE_NODE = findDeviceNode();
+// Decrypted copies / lyrics / incremental stores live under the OS cache root.
+const DECRYPT_DIR = path.join(OS_CACHE_ROOT, 'qsyy');
 // One-time migration from the previous app name (SodaCollection).
 try {
   const legacyDir = path.join(os.homedir(), 'Library', 'Caches', 'SodaCollection');
@@ -68,10 +70,8 @@ function sessionCookies(callback) {
     callback(cookieCache.value);
     return;
   }
-  execFile('sqlite3', [
-    COOKIES_DB,
-    "SELECT name || '=' || value FROM cookies WHERE host_key IN ('.qishui.com','.bytedance.com');",
-  ], { encoding: 'utf8', timeout: 5000 }, (error, stdout) => {
+  const { cmd, args } = cookieQueryCommand(COOKIES_DB);
+  execFile(cmd, args, { encoding: 'utf8', timeout: 5000 }, (error, stdout) => {
     if (!error) cookieCache = { value: stdout.trim().split('\n').filter(Boolean).join('; '), at: Date.now() };
     callback(cookieCache.value);
   });
@@ -1655,12 +1655,20 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     if (route === 'POST /api/open-downloads') {
-      try { execFileSync('open', [DOWNLOAD_DIR]); sendJson(response, 200, { ok: true }); }
+      try {
+        const { cmd, args } = openFolder(DOWNLOAD_DIR);
+        execFileSync(cmd, args, { stdio: 'ignore' });
+        sendJson(response, 200, { ok: true });
+      }
       catch (error) { sendJson(response, 500, { ok: false, error: error.message }); }
       return;
     }
     if (route === 'POST /api/open-client') {
-      try { execFileSync('open', ['-a', '汽水音乐']); sendJson(response, 200, { ok: true }); }
+      try {
+        const { cmd, args } = openClient();
+        execFileSync(cmd, args, { stdio: 'ignore' });
+        sendJson(response, 200, { ok: true });
+      }
       catch (error) { sendJson(response, 500, { ok: false, error: error.message }); }
       return;
     }

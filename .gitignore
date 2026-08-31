@@ -1,11 +1,10 @@
 # --- 会话凭据 / 隐私(绝不能入库)---
-mac/standalone/web-session.json
-mac/standalone/device.json
+app/standalone/web-session.json
+app/standalone/device.json
 
 # --- 运行时生成 ---
-mac/debug/
+app/debug/
 *.log
-debug-standalone.log
 
 # --- 依赖 ---
 node_modules/
@@ -15,6 +14,7 @@ node_modules/
 .DS_Store?
 ._*
 Thumbs.db
+Desktop.ini
 
 # --- 编辑器 ---
 .vscode/
