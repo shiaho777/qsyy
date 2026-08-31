@@ -2,6 +2,6 @@
   "name": "qsyy",
   "private": true,
   "scripts": {
-    "standalone": "node app/standalone/server.mjs"
+    "standalone": "node --max-semi-space-size=8 --max-old-space-size=256 --optimize-for-size app/standalone/server.mjs"
   }
 }

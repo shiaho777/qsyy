@@ -111,7 +111,7 @@ const cdnAgent = new https.Agent({ keepAlive: true, maxSockets: 32 });
 // around the UI and the 5-minute auto-sync then stop re-hitting the API.
 // POSTs and `fresh=1` requests bypass it.
 const apiGetCache = new Map(); // key → { status, json, at }
-const API_GET_CACHE_MAX = 100;
+const API_GET_CACHE_MAX = 60;
 
 function upstream(pathname, search = '', method = 'GET', body = null, ttlMs = 0) {
   return new Promise(resolveOuter => {
@@ -224,6 +224,14 @@ function runScan(extraArgs) {
   const key = scanKey(extraArgs);
   const cached = scanCache.get(key);
   if (cached && Date.now() - cached.at < SCAN_CACHE_TTL) return Promise.resolve(cached.value);
+  if (scanCache.size > 400) {
+    // hard cap: each entry is a batch result; unbounded growth on long
+    // sessions of browsing many playlists is the only leak path
+    for (const [k, v] of scanCache) {
+      if (Date.now() - v.at >= SCAN_CACHE_TTL) scanCache.delete(k);
+    }
+    while (scanCache.size > 400) scanCache.delete(scanCache.keys().next().value);
+  }
   const inflight = scanInflight.get(key);
   if (inflight) return inflight;
   const promise = (async () => {
@@ -272,12 +280,21 @@ function runScan(extraArgs) {
   return promise;
 }
 
+// janitors merged into one 5-min sweep: a 5s timer woke the loop ~17k/hour
+// to delete entries that stay valid for 90s anyway; lazy TTL checks at read
+// time make correctness independent of the sweep
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of scanCache) {
     if (now - entry.at >= SCAN_CACHE_TTL) scanCache.delete(key);
   }
-}, 5000).unref();
+  for (const [id, hit] of ttnetCache) {
+    if (now - hit.at >= (hit.result.ok ? 20 : 1) * 60 * 1000) ttnetCache.delete(id);
+  }
+  for (const [id, hit] of onlineCache) {
+    if (now - hit.at >= 25 * 60 * 1000) onlineCache.delete(id);
+  }
+}, 300000).unref();
 
 
 const scanTrack = trackId => runScan(['--track-id', String(trackId)]);
@@ -573,31 +590,38 @@ function decryptForStreaming(trackId) {
 }
 
 function serveStream(request, response, file) {
-  if (!fs.existsSync(file)) {
-    response.writeHead(404).end('not found');
-    return;
-  }
-  const stat = fs.statSync(file);
+  let stat;
+  try { stat = fs.statSync(file); } catch (_) { response.writeHead(404).end('not found'); return; }
   const range = request.headers.range;
   const headers = {
     'content-type': 'audio/mp4',
     'accept-ranges': 'bytes',
     'cache-control': 'no-store',
   };
+  let start = 0;
+  let end = stat.size - 1;
   if (range) {
     const match = range.match(/bytes=(\d*)-(\d*)/);
-    const start = match && match[1] ? Number(match[1]) : 0;
-    const end = match && match[2] ? Math.min(Number(match[2]), stat.size - 1) : stat.size - 1;
+    start = match && match[1] ? Number(match[1]) : 0;
+    end = match && match[2] ? Math.min(Number(match[2]), stat.size - 1) : stat.size - 1;
+    if (start > end || start >= stat.size) {
+      response.writeHead(416, { 'content-range': `bytes */${stat.size}` }).end();
+      return;
+    }
     response.writeHead(206, {
       ...headers,
       'content-range': `bytes ${start}-${end}/${stat.size}`,
       'content-length': end - start + 1,
     });
-    fs.createReadStream(file, { start, end }).pipe(response);
   } else {
     response.writeHead(200, { ...headers, 'content-length': stat.size });
-    fs.createReadStream(file).pipe(response);
   }
+  // 256KB highWaterMark: audio streams ride in larger chunks → fewer syscalls
+  // and fewer buffer allocations per second than the 64KB default
+  const stream = fs.createReadStream(file, { start, end, highWaterMark: 262144 });
+  stream.on('error', () => { try { response.destroy(); } catch (_) {} });
+  response.on('close', () => stream.destroy()); // caller gone → stop reading
+  stream.pipe(response);
 }
 
 function proxyImage(url, response) {
@@ -982,7 +1006,11 @@ function switchStore(name) {
   loadStoreMeta();
 }
 const downloadQueue = [];           // { trackId, resolve }
-const effectConfigs = new Map();     // configUrl → parsed DSP chain
+const effectConfigs = new Map();     // configUrl → parsed DSP chain (capped; each config is a few KB)
+function cacheEffectConfig(url, config) {
+  effectConfigs.set(url, config);
+  if (effectConfigs.size > 24) effectConfigs.delete(effectConfigs.keys().next().value);
+}
 
 // 官方音效目录(与客户端 lottieRegistry 的 effect 键一致);
 // DSP 链与 track_v2 下发的智能音效配置同构,由前端 Web Audio 统一渲染
@@ -1705,7 +1733,7 @@ const serverHandler = async (request, response) => {
         res.on('end', () => {
           try {
             const config = JSON.parse(Buffer.concat(chunks).toString());
-            effectConfigs.set(target, config);
+            cacheEffectConfig(target, config);
             sendJson(response, 200, config);
           } catch (_) { sendJson(response, 502, { ok: false }); }
         });
@@ -1819,11 +1847,20 @@ const serverHandler = async (request, response) => {
         'access-control-allow-origin': '*',
       });
       response.write(':ok\n\n');
-      const timer = setInterval(() => {
+      // push-on-change: the 1s serialize-everything timer only existed to
+      // catch job updates; the bus knows when they happen
+      let lastPayload = '';
+      const send = () => {
         const snapshot = [...downloadJobs.values()].slice(-20).map(j => ({ jobId: j.jobId, status: j.status, progress: j.progress, phase: j.phase }));
-        response.write(`data: ${JSON.stringify({ jobs: snapshot })}\n\n`);
-      }, 1000);
-      request.on('close', () => clearInterval(timer));
+        const payload = `data: ${JSON.stringify({ jobs: snapshot })}\n\n`;
+        if (payload === lastPayload) return;
+        lastPayload = payload;
+        try { response.write(payload); } catch (_) {}
+      };
+      const wake = () => send();
+      progressWakers.add(wake);
+      request.on('close', () => progressWakers.delete(wake));
+      send();
       return;
     }
     sendJson(response, 404, { ok: false, error: 'not found' });
@@ -1858,18 +1895,7 @@ const staticFiles = (() => {
   return { index: read('index.html'), 'app.js': read('app.js'), 'style.css': read('style.css'), 'manifest.webmanifest': read('manifest.webmanifest') };
 })();
 
-// Janitor: the resolve/online caches previously grew unbounded for the life
-// of the process (every played/downloaded track added an entry). Entries are
-// stale well before this sweep, so nothing live is evicted.
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, hit] of ttnetCache) {
-    if (now - hit.at >= (hit.result.ok ? 20 : 1) * 60 * 1000) ttnetCache.delete(id);
-  }
-  for (const [id, hit] of onlineCache) {
-    if (now - hit.at >= 25 * 60 * 1000) onlineCache.delete(id);
-  }
-}, 10 * 60 * 1000).unref();
+// (resolve/online cache sweeping merged into the 5-min janitor above)
 
 server.listen(PORT, HOST, () => {
   console.log(`[qsyy] standalone app: http://${HOST}:${PORT}`);
