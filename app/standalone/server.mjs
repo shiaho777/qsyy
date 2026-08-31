@@ -49,6 +49,28 @@ try {
 const logger = createLogger(path.join(root, '..', 'debug', 'qsyy.log'));
 const events = new DownloadEventBus({ logger });
 
+// ---------------------------------------------------------------- crash safety
+
+// Process-level safety net: a stray exception (from a native callback, a
+// malformed response, anywhere) must never take the server down — playback
+// stops for every device on the LAN. Log, count, and keep serving; if errors
+// storm (>60/min) restart is the honest option, so exit and let the
+// supervisor / user relaunch.
+let faultCount = 0;
+let faultWindowAt = Date.now();
+function recordFault(kind, error) {
+  const now = Date.now();
+  if (now - faultWindowAt > 60000) { faultWindowAt = now; faultCount = 0; }
+  faultCount += 1;
+  logger(`process-${kind}`, { message: error?.message || String(error), stack: error?.stack?.split('\n').slice(0, 4).join(' | ') || '' });
+  if (faultCount > 60) {
+    console.error(`[qsyy] ${kind} storm (${faultCount}/min) — exiting for clean restart`);
+    process.exit(1);
+  }
+}
+process.on('uncaughtException', error => recordFault('uncaught-exception', error));
+process.on('unhandledRejection', error => recordFault('unhandled-rejection', error));
+
 // ---------------------------------------------------------------- auth/session
 
 const COMMON_QUERY = (() => {
@@ -393,14 +415,16 @@ async function lyricsForDownload(trackId) {
 }
 
 async function startDownload({ trackId, title, artist, album, quality, outputFormat, coverData }) {
-  fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
-  const jobId = `app-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const job = {
-    jobId, trackId: String(trackId), title: title || '', artist: artist || '', album: album || '',
-    quality: quality || 'highest', outputFormat: outputFormat || 'source',
-    status: 'downloading', progress: 0, phase: '准备恢复缓存', error: '', output: '', startedAt: Date.now(),
-  };
-  downloadJobs.set(jobId, job);
+  let jobId = '';
+  try {
+    fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+    jobId = `app-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const job = {
+      jobId, trackId: String(trackId), title: title || '', artist: artist || '', album: album || '',
+      quality: quality || 'highest', outputFormat: outputFormat || 'source',
+      status: 'downloading', progress: 0, phase: '准备恢复缓存', error: '', output: '', startedAt: Date.now(),
+    };
+    downloadJobs.set(jobId, job);
   const lyricsText = await lyricsForDownload(String(trackId));
   restoreService.restore({
     jobId,
@@ -428,6 +452,18 @@ async function startDownload({ trackId, title, artist, album, quality, outputFor
     persistJobs();
   });
   return job;
+  } catch (error) {
+    // bad input / fs failure: record the failure instead of blowing up the caller
+    logger('download-start-failed', { trackId, message: error?.message || String(error) });
+    const job = {
+      jobId: jobId || `app-${Date.now()}-err`, trackId: String(trackId || ''), title: title || '',
+      artist: artist || '', album: album || '', quality: quality || 'highest',
+      outputFormat: outputFormat || 'source', status: 'failed', progress: 0,
+      phase: '下载失败', error: error?.message || String(error), output: '', startedAt: Date.now(),
+    };
+    if (job.jobId) downloadJobs.set(job.jobId, job);
+    return job;
+  }
 }
 
 // wire event bus into job records by jobId; download activity also flips the
@@ -576,7 +612,6 @@ function proxyImage(url, response) {
 // own signed network stack (mssdk), using the client's session. Crashes are
 // contained (native CHECK failures kill only the helper; we respawn on demand).
 let ttnetChild = null;
-let ttnetBusy = false;
 const ttnetWaiters = [];
 const ttnetCache = new Map(); // trackId → { result, at }
 
@@ -622,8 +657,28 @@ function spawnTtnetHelper() {
       } catch (_) {}
     }
   });
-  child.on('exit', () => { ttnetChild = null; });
+  child.on('error', error => {
+    // spawn/ENOENT etc: fail everyone waiting on this child, don't crash
+    recordFault('ttnet-spawn-error', error);
+    failAllTtnetWaiters('helper spawn failed');
+    ttnetChild = null;
+  });
+  child.on('exit', () => {
+    // a native CHECK failure or stdin close must not strand queued waiters —
+    // they would each hang for their full 20s timeout otherwise
+    if (ttnetChild === child) ttnetChild = null;
+    failAllTtnetWaiters('helper exited');
+  });
   return child;
+}
+
+// Reject every pending waiter (their promise resolves null → caller falls
+// back to the web-session path or reports unavailable).
+function failAllTtnetWaiters(reason) {
+  while (ttnetWaiters.length) {
+    const waiter = ttnetWaiters.shift();
+    try { waiter({ ok: false, error: reason }); } catch (_) {}
+  }
 }
 
 const killTtnetHelper = () => { try { ttnetChild?.kill(); } catch (_) {} };
@@ -631,13 +686,26 @@ process.on('exit', killTtnetHelper);
 process.on('SIGTERM', () => { killTtnetHelper(); process.exit(0); });
 process.on('SIGINT', () => { killTtnetHelper(); process.exit(0); });
 
+// ttnetBusy is a lock around the single-flight resolve; the old polling wait
+// (up to 25s) could livelock if an exception path ever skipped the reset.
+// A proper FIFO queue can't deadlock: every settle path clears the flag.
+let ttnetBusy = false;
+const ttnetTurnQueue = [];
+async function acquireTtnetTurn() {
+  if (!ttnetBusy) { ttnetBusy = true; return; }
+  await new Promise(resolve => ttnetTurnQueue.push(resolve));
+  ttnetBusy = true;
+}
+function releaseTtnetTurn() {
+  ttnetBusy = false;
+  const next = ttnetTurnQueue.shift();
+  if (next) next(); // the woken turn re-locks in acquireTtnetTurn
+}
+
 async function ttnetResolve(trackId) {
   const hit = ttnetCache.get(trackId);
   if (hit && Date.now() - hit.at < (hit.result.ok ? 20 : 1) * 60 * 1000) return hit.result.ok ? hit.result : null;
-  const started = Date.now();
-  while (ttnetBusy && Date.now() - started < 25000) await new Promise(r => setTimeout(r, 150));
-  if (ttnetBusy) return null;
-  ttnetBusy = true;
+  await acquireTtnetTurn();
   try {
     let child = ttnetChild;
     if (!ttnetHealthy()) child = spawnTtnetHelper();
@@ -653,7 +721,15 @@ async function ttnetResolve(trackId) {
         resolve(null);
       }, 20000);
       ttnetWaiters.push(waiter);
-      child.stdin.write(JSON.stringify({ cmd: 'resolve', trackId: String(trackId) }) + '\n');
+      try {
+        child.stdin.write(JSON.stringify({ cmd: 'resolve', trackId: String(trackId) }) + '\n');
+      } catch (error) {
+        // EPIPE: the helper died between the health check and the write
+        clearTimeout(timer);
+        const idx = ttnetWaiters.indexOf(waiter);
+        if (idx >= 0) ttnetWaiters.splice(idx, 1);
+        resolve(null);
+      }
     });
     if (process.env.QSYY_DEBUG || process.env.SODA_DEBUG) console.error('[ttnet] resolve', trackId, JSON.stringify({ ok: result?.ok, error: result?.error }));
     const settled = result || { ok: false, error: 'no-response' };
@@ -669,7 +745,7 @@ async function ttnetResolve(trackId) {
     }
     return settled;
   } finally {
-    ttnetBusy = false;
+    releaseTtnetTurn();
   }
 }
 
@@ -1232,7 +1308,7 @@ function readBody(request) {
   });
 }
 
-const server = http.createServer(async (request, response) => {
+const serverHandler = async (request, response) => {
   const url = new URL(request.url, `http://${HOST}:${PORT}`);
   const route = `${request.method} ${url.pathname}`;
 
@@ -1720,8 +1796,24 @@ const server = http.createServer(async (request, response) => {
     sendJson(response, 404, { ok: false, error: 'not found' });
   } catch (error) {
     logger('standalone-request-failed', { route, message: error?.message || String(error) });
-    sendJson(response, 500, { ok: false, error: error?.message || String(error) });
+    try { sendJson(response, 500, { ok: false, error: error?.message || String(error) }); }
+    catch (_) { try { response.destroy(); } catch (_) {} }
   }
+};
+
+const server = http.createServer((request, response) => {
+  // a rejected handler promise must never escape as an unhandledRejection
+  Promise.resolve(serverHandler(request, response)).catch(error => recordFault('handler-rejection', error));
+});
+
+// Abrupt socket teardowns (phone locking mid-stream, Wi-Fi drops) emit
+// 'clientError'; without a listener Node would answer with a raw 400 and in
+// some paths surface the exception. Reply politely and move on.
+server.on('clientError', (error, socket) => {
+  try {
+    if (socket.writable && !socket.destroyed) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+    else socket.destroy();
+  } catch (_) { try { socket.destroy(); } catch (_) {} }
 });
 
 // Static assets are tiny and read on every page load — keep them in memory
