@@ -1,0 +1,9 @@
+{
+  "name": "qsyy · 收藏播放器",
+  "short_name": "qsyy",
+  "start_url": "http://127.0.0.1:18790/",
+  "display": "standalone",
+  "background_color": "#0a0c12",
+  "theme_color": "#0b0d13",
+  "description": "汽水音乐个人收藏播放器(本地独立版)"
+}

@@ -1,0 +1,25 @@
+QiShuiMusicPlugins License Notice
+
+Copyright (C) 2026 the QiShuiMusicPlugins contributors.
+
+This project uses the GNU General Public License version 3.0 (GPL-3.0)
+as its baseline license. The complete upstream license text is available at:
+
+https://www.gnu.org/licenses/gpl-3.0.html
+
+Additional non-commercial restriction
+--------------------------------------
+
+The copyright holder does not grant permission to use, distribute, sell,
+offer as a service, or otherwise exploit this project for commercial
+purposes without prior written permission from the copyright holder.
+
+This additional restriction is part of the license notice for this project.
+It means that this project is not the unmodified GNU GPL. If you need a
+standard GPL license with GPL permissions unchanged, obtain separate written
+permission from the copyright holder or use a release explicitly marked as
+standard GPL.
+
+This notice does not grant permission to use QiShui (Soda Music) trademarks, servers,
+accounts, or copyrighted media. Use the plugin only with appropriate
+authorization and do not commit or distribute cached audio data.

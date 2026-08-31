@@ -1,0 +1,7 @@
+{
+  "name": "qsyy-mac",
+  "private": true,
+  "scripts": {
+    "standalone": "node mac/standalone/server.mjs"
+  }
+}

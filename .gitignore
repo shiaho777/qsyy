@@ -1,0 +1,22 @@
+# --- 会话凭据 / 隐私(绝不能入库)---
+mac/standalone/web-session.json
+mac/standalone/device.json
+
+# --- 运行时生成 ---
+mac/debug/
+*.log
+debug-standalone.log
+
+# --- 依赖 ---
+node_modules/
+
+# --- 系统 ---
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# --- 编辑器 ---
+.vscode/
+.idea/
+*.swp
