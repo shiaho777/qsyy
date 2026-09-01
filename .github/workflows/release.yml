@@ -42,6 +42,12 @@ jobs:
     runs-on: macos-14
     needs: changelog
     timeout-minutes: 60
+    env:
+      # GH runners stall for 30-60min fetching electron zips from
+      # github releases object storage (seen on two consecutive v1.0.0
+      # attempts); npmmirror serves the same artifacts reliably.
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+      ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
     steps:
       - uses: actions/checkout@v4
 
@@ -82,6 +88,10 @@ jobs:
     runs-on: windows-latest
     needs: changelog
     timeout-minutes: 60
+    env:
+      # same stall-avoidance as desktop-mac, see comment there
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+      ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
     steps:
       - uses: actions/checkout@v4
 
