@@ -67,7 +67,7 @@ qsyy 不做"模拟 EQ",而是**直接解析官方下发的音效配置,在浏览
 | 端 | 产物 |
 |----|------|
 | macOS | `qsyy-x.y.z-arm64.dmg` / `.zip` |
-| Windows | `qsyy-setup-x.y.z.exe`(NSIS 安装器) |
+| Windows | `qsyy-setup-x.y.z.exe`(NSIS 安装器,由维护者构建附加到 Release) |
 | Android | `qsyy-x.y.z.apk`,安装后填入桌面端局域网地址 |
 
 桌面客户端内嵌同一服务端,开箱即用;Android 壳需先在电脑上启动服务端并开启
