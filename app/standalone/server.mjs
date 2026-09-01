@@ -49,6 +49,17 @@ try {
 const logger = createLogger(path.join(root, '..', 'debug', 'qsyy.log'));
 const events = new DownloadEventBus({ logger });
 
+// Child processes run plain Node scripts. When this server lives inside the
+// Electron desktop shell, process.execPath points at the Electron binary,
+// which needs ELECTRON_RUN_AS_NODE=1 to behave as node — without it the
+// binary swallows the script silently (exit 0, no output), so cache scans
+// found nothing and the UI showed every track as uncached. Pure-node runs
+// already have execPath=node; the extra env var is harmless there.
+const CHILD_NODE_ENV = { ...process.env };
+if (!CHILD_NODE_ENV.ELECTRON_RUN_AS_NODE && process.versions.electron) {
+  CHILD_NODE_ENV.ELECTRON_RUN_AS_NODE = '1';
+}
+
 // ---------------------------------------------------------------- crash safety
 
 // Process-level safety net: a stray exception (from a native callback, a
@@ -258,7 +269,7 @@ function runScan(extraArgs) {
             '--cache-dir', CACHE_DIR,
             '--quality', 'highest',
             ...extraArgs,
-          ], { stdio: ['ignore', 'pipe', 'ignore'] });
+          ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
           let output = '';
           const done = value => {
             try { child.kill(); } catch (_) {}
@@ -576,7 +587,7 @@ function decryptForStreaming(trackId) {
           '--quality', 'highest',
           '--wait-ms', '5000',
           '--track-id', String(trackId),
-        ], { stdio: ['ignore', 'pipe', 'ignore'] });
+        ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
         let output = '';
         child.stdout.on('data', d => { output += d.toString(); });
         const timer = setTimeout(() => { try { child.kill(); } catch (_) {} resolve(''); }, 120000);
@@ -691,7 +702,7 @@ async function ttnetResolveProbe() {
 }
 
 function spawnTtnetHelper() {
-  const child = spawn(process.execPath, [path.join(root, 'ttnet-helper.mjs')], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const child = spawn(process.execPath, [path.join(root, 'ttnet-helper.mjs')], { stdio: ['pipe', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
   ttnetChild = child;
   child.stdout.setEncoding('utf8');
   let buffer = '';
@@ -1129,7 +1140,7 @@ function decryptStoreFile(trackId) {
       '--spade', String(meta.spade || ''),
       '--device-node', DEVICE_NODE,
       '--ffmpeg', FFMPEG,
-    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
     let output = '';
     child.stdout.on('data', d => { output += d.toString(); });
     const timer = setTimeout(() => { try { child.kill(); } catch (_) {} resolve(''); }, 120000);

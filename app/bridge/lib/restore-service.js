@@ -88,6 +88,9 @@ class RestoreService {
         cwd: this.path.dirname(runtime.script),
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        // inside the Electron desktop shell processExecPath is the Electron
+        // binary; without this it swallows the script (exit 0, no output)
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE },
       });
       const progressTimer = setInterval(() => {
         if (settled) return;
