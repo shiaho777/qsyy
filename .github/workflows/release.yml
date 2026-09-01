@@ -113,21 +113,20 @@ jobs:
           npm install --prefix app/bridge --no-audit --no-fund
           npm install --prefix desktop --no-audit --no-fund
 
-      - name: Build Windows app (nsis + zip)
+      - name: Build Windows app (nsis)
         working-directory: desktop
         shell: bash
-        # GH runner <-> GitHub releases flakiness stalled the 115MB electron
-        # zip for 29min once; retry once before letting the job fail.
+        # electron-builder's zip target has hung 59min on windows-latest in
+        # three consecutive release attempts (nsis is unaffected); retry
+        # covers residual network flakiness only.
         run: |
-          npm run dist:win || (sleep 10 && npm run dist:win)
-
-      - name: Upload artifacts
+          npm run dist:win || (sleep 10 && npm run dist:win)      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows
           path: |
             desktop/dist/*.exe
-            desktop/dist/*.zip
+            desktop/dist/*.yml
 
   android:
     runs-on: ubuntu-latest
