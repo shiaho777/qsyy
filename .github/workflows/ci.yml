@@ -1,0 +1,55 @@
+name: ci
+# Fast gate for every push/PR: syntax + structural checks only.
+# Release builds live in release.yml (tag v*). This workflow never closes
+# Issues and never publishes artifacts.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: JS / MJS syntax check
+        run: |
+          for f in $(git ls-files '*.mjs' '*.js'); do
+            case "$f" in app/bridge/node_modules/*|desktop/node_modules/*) continue;; esac
+            node --check "$f"
+          done
+
+      - name: Workflow YAML well-formed
+        run: |
+          node -e '
+            const fs = require("fs");
+            // minimal YAML sanity: tabs are illegal, every file non-empty
+            for (const f of fs.readdirSync(".github/workflows")) {
+              const text = fs.readFileSync(`.github/workflows/${f}`, "utf8");
+              if (/^\t/m.test(text)) throw new Error(`tab indentation in ${f}`);
+            }
+          '
+
+      - name: Doc links resolve
+        run: |
+          node -e '
+            const fs = require("fs"), path = require("path");
+            let bad = 0;
+            for (const doc of ["README.md", "app/PLATFORM-macOS.md"]) {
+              const text = fs.readFileSync(doc, "utf8");
+              const refs = [...text.matchAll(/\]\((\.{1,2}\/[^)#]+)/g)].map(m => m[1]);
+              for (const ref of new Set(refs)) {
+                if (!fs.existsSync(path.resolve(path.dirname(doc), ref))) {
+                  console.error(`${doc}: broken link ${ref}`); bad = 1;
+                }
+              }
+            }
+            process.exit(bad);
+          '

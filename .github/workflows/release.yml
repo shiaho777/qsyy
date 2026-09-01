@@ -1,0 +1,145 @@
+name: release
+# Tag-driven three-platform release: macOS (dmg/zip), Windows (nsis/zip),
+# Android (apk). Creates the GitHub Release and publishes a changelog built
+# from Conventional Commits. CI (ci.yml) is the merge gate; this workflow
+# publishes artifacts but never closes Issues.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      notes: ${{ steps.notes.outputs.text }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - id: notes
+        name: Build changelog from conventional commits
+        run: |
+          PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          node scripts/release-notes.mjs "$PREV" "$(git rev-parse --short HEAD)" > notes.md
+          cat notes.md
+          {
+            echo 'text<<CHANGELOG_EOF'
+            cat notes.md
+            echo CHANGELOG_EOF
+          } >> "$GITHUB_OUTPUT"
+
+  desktop-mac:
+    runs-on: macos-14
+    needs: changelog
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          npm install --prefix app/bridge --no-audit --no-fund
+          npm install --prefix desktop --no-audit --no-fund
+
+      - name: Build macOS app (dmg + zip)
+        working-directory: desktop
+        run: npm run dist:mac
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+
+  desktop-win:
+    runs-on: windows-latest
+    needs: changelog
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          npm install --prefix app/bridge --no-audit --no-fund
+          npm install --prefix desktop --no-audit --no-fund
+
+      - name: Build Windows app (nsis + zip)
+        working-directory: desktop
+        shell: bash
+        run: npm run dist:win
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.zip
+
+  android:
+    runs-on: ubuntu-latest
+    needs: changelog
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Assemble debug APK (runnable out of the box)
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Rename APK with version tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "android/qsyy-${TAG}.apk"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: android/qsyy-*.apk
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [changelog, desktop-mac, desktop-win, android]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ needs.changelog.outputs.notes }}
+          files: |
+            artifacts/mac/*
+            artifacts/windows/*
+            artifacts/android/*

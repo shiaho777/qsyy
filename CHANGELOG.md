@@ -1,0 +1,24 @@
+# 更新日志
+
+所有显著变更记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
+版本号遵循语义化版本;每条 Release 的详细说明由 `scripts/release-notes.mjs`
+从 Conventional Commits 自动生成(见 AGENTS.md 的发版规范)。
+
+## [1.0.0] - 2026-09-01
+
+### 新功能
+- 三端客户端:macOS(dmg/zip)、Windows(nsis 安装器/zip)、Android(apk),
+  tag 推送后由 GitHub Actions 自动构建并发布到 Release
+- 更新日志自动化:release workflow 按 Conventional Commits 生成发布说明
+- `desktop/`:Electron 壳,进程内加载 standalone 服务,零逻辑重复
+- `android/`:WebView 壳,首次启动配置服务端地址,前台服务保活播放
+- `.github/workflows/release.yml`:三端矩阵构建 + Release 发布
+- `.github/workflows/ci.yml`:push/PR 门禁(语法检查、workflow 校验、文档链接)
+- `AGENTS.md`:交付 / 发版行为规范与项目经验库
+
+### 文档
+- README 重写为"核心功能"驱动结构(音效 / 音质 / 源文件与转码 / 三层缓存机制)
+- PLATFORM-macOS.md 补全环境变量总表、HTTP API 一览、播放通路降级链
+- 平台范围收敛:服务端 macOS / Windows,移动端 Android
+
+[1.0.0]: https://github.com/shiaho777/qsyy/releases/tag/v1.0.0
