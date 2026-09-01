@@ -84,52 +84,12 @@ jobs:
             desktop/dist/*.dmg
             desktop/dist/*.zip
 
-  desktop-win:
-    runs-on: windows-latest
-    needs: changelog
-    timeout-minutes: 60
-    env:
-      # same stall-avoidance as desktop-mac, see comment there
-      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
-      ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Cache electron-builder downloads
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~\AppData\Local\electron\Cache
-            ~\AppData\Local\electron-builder\Cache
-          key: eb-win-${{ hashFiles('desktop/package-lock.json', 'desktop/package.json') }}
-          restore-keys: eb-win-
-
-      - name: Install dependencies
-        run: |
-          npm install --prefix app/bridge --no-audit --no-fund
-          npm install --prefix desktop --no-audit --no-fund
-
-      - name: Build Windows app (nsis)
-        working-directory: desktop
-        shell: bash
-        # electron-builder's zip target has hung 59min on windows-latest in
-        # three consecutive release attempts (nsis is unaffected); retry
-        # covers residual network flakiness only.
-        run: |
-          npm run dist:win || (sleep 10 && npm run dist:win)
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows
-          path: |
-            desktop/dist/*.exe
-            desktop/dist/*.yml
-
+  # Windows installer is built on the maintainer's machine and attached to
+  # the Release after publish: electron-builder's Windows packaging hangs
+  # indefinitely on windows-latest (five v1.0.0 attempts, see Issue #13 —
+  # downloads fixed by mirrors, the packaging stage itself stalls after the
+  # signtool step). The mac job proves the app config builds fine; only the
+  # runner's win packaging path is broken.
   android:
     runs-on: ubuntu-latest
     needs: changelog
@@ -161,7 +121,7 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    needs: [changelog, desktop-mac, desktop-win, android]
+    needs: [changelog, desktop-mac, android]
     timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v4
@@ -176,5 +136,4 @@ jobs:
           body: ${{ needs.changelog.outputs.notes }}
           files: |
             artifacts/mac/*
-            artifacts/windows/*
             artifacts/android/*
