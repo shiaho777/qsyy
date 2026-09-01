@@ -68,7 +68,7 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
    | 端 | 产物 | 构建机 |
    |----|------|--------|
    | macOS | `qsyy-X.Y.Z-arm64.dmg` + zip(arm64/x64) | `macos-14` |
-   | Windows | `qsyy-setup-X.Y.Z.exe`(NSIS)+ zip(x64) | `windows-latest` |
+   | Windows | `qsyy-setup-X.Y.Z.exe`(NSIS) | `windows-latest` |
    | Android | `qsyy-X.Y.Z.apk`(debug 签名,开箱即装) | `ubuntu-latest` |
    四个 job(changelog / desktop-mac / desktop-win / android)汇入 `publish`,
    由它建 Release 并附产物;Notes 来自 changelog job 的输出。
@@ -147,6 +147,13 @@ cd desktop && npm install && npm start           # 桌面壳冒烟
 ```
 
 ### 踩坑记录(新坑追加在这里)
+
+- **electron-builder 的 Windows zip target 会挂死**:连续三次发版尝试中,
+  `building target=zip` 在 windows-latest 上停滞 30–60 分钟直至 job 超时
+  (dmg/zip 组合在 macos 上同期 2 分钟完成;NSIS 不受影响)。Windows 只出
+  NSIS 安装器,不要再加回 zip target。electron 二进制下载用
+  `ELECTRON_MIRROR`/`ELECTRON_BUILDER_BINARIES_MIRROR` 指向 npmmirror,
+  实测 115MB 仅需 2.7s(GitHub releases 对象存储会长时间停滞)。
 
 - **Gradle wrapper 生成**:本机 Gradle(8.5)低于项目要求(8.9)时,`gradle
   wrapper` 会在配置阶段就失败(Android 插件的 version-check 先于 wrapper 任务跑)。
