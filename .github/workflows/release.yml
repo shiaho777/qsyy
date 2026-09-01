@@ -124,12 +124,15 @@ jobs:
     needs: [changelog, desktop-mac, android]
     timeout-minutes: 10
     steps:
+      # checkout FIRST: actions/checkout cleans the workspace, and with the
+      # previous (download → checkout) order it wiped the downloaded
+      # artifacts/ directory, so the upload step found nothing (v1.0.2)
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
-
-      - uses: actions/checkout@v4
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
