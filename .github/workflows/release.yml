@@ -127,6 +127,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          # flatten: download-artifact nests each artifact under
+          # artifacts/<name>/, so patterns must include that level
+          merge-multiple: true
 
       - uses: actions/checkout@v4
 
@@ -135,5 +138,6 @@ jobs:
         with:
           body: ${{ needs.changelog.outputs.notes }}
           files: |
-            artifacts/mac/*
-            artifacts/android/*
+            artifacts/*.dmg
+            artifacts/*.zip
+            artifacts/*.apk
