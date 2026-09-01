@@ -127,8 +127,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          # flatten: download-artifact nests each artifact under
-          # artifacts/<name>/, so patterns must include that level
           merge-multiple: true
 
       - uses: actions/checkout@v4
@@ -137,7 +135,20 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body: ${{ needs.changelog.outputs.notes }}
-          files: |
-            artifacts/*.dmg
-            artifacts/*.zip
-            artifacts/*.apk
+
+      - name: Upload assets (layout-agnostic)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # download-artifact's target directory has shifted between versions
+          # (artifacts/<name>/ on some runs, artifact/ on others) — globbing a
+          # fixed path silently missed files twice. Locate real files by name
+          # anywhere in the workspace instead.
+          set -e
+          mkdir -p assets
+          find . -path ./.git -prune -o -path ./assets -prune -o \
+            -type f \( -name '*.dmg' -o -name '*-mac.zip' -o -name '*.apk' \) \
+            -exec cp {} assets/ \;
+          ls -la assets/
+          test -n "$(ls -A assets)"
+          gh release upload "$GITHUB_REF_NAME" assets/* --clobber
