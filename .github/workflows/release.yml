@@ -120,7 +120,9 @@ jobs:
         # three consecutive release attempts (nsis is unaffected); retry
         # covers residual network flakiness only.
         run: |
-          npm run dist:win || (sleep 10 && npm run dist:win)      - name: Upload artifacts
+          npm run dist:win || (sleep 10 && npm run dist:win)
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows
