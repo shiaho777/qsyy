@@ -10,18 +10,18 @@
 数据/缓存目录(`CLIENT_DATA`)、Cookie 读取方式、ffmpeg 查找、
 文件管理器与客户端拉起命令。新增平台 = 在这个文件里加一个分支。
 
-| 关注点 | macOS | Windows | Linux |
-|--------|-------|---------|-------|
-| 客户端安装 | `/Applications/汽水音乐.app` | `%LOCALAPPDATA%\Programs\qishui`(含 Program Files 回退) | `/opt/qishui` 等标准路径 |
-| 客户端数据 | `~/Library/Application Support/SodaMusic` | `%APPDATA%\SodaMusic` | `~/.config/SodaMusic`(遵循 XDG) |
-| Cookie 库 | 同上目录 `Cookies`(明文 SQLite) | 同上 | 同上 |
-| 签名库 | `Contents/Frameworks` 下的 dylib | `resources\app.asar.unpacked` 下的 DLL | 同 Windows 布局,`.so` |
-| ffmpeg | Homebrew 路径 | `C:/ffmpeg/bin` 等 | `/usr/bin` 等 |
-| 打开目录 | `open` | `explorer` | `xdg-open` |
-| qsyy 自有缓存 | `~/Library/Caches/qsyy` | `%LOCALAPPDATA%\qsyy` | `$XDG_CACHE_HOME/qsyy` |
+| 关注点 | macOS | Windows |
+|--------|-------|---------|
+| 客户端安装 | `/Applications/汽水音乐.app` | `%LOCALAPPDATA%\Programs\qishui`(含 Program Files 回退) |
+| 客户端数据 | `~/Library/Application Support/SodaMusic` | `%APPDATA%\SodaMusic` |
+| Cookie 库 | 同上目录 `Cookies`(明文 SQLite) | 同上 |
+| 签名库 | `Contents/Frameworks` 下的 dylib | `resources\app.asar.unpacked` 下的 DLL |
+| ffmpeg | Homebrew 路径 | `C:/ffmpeg/bin` 等 |
+| 打开目录 | `open` | `explorer` |
+| qsyy 自有缓存 | `~/Library/Caches/qsyy` | `%LOCALAPPDATA%\qsyy` |
 
 缓存扫描链(`app/bridge/lib/runtime.js`)同样按平台解析:
-restore 脚本、lmdb 模块、`device.node` 探测(Windows/Linux 的
+restore 脚本、lmdb 模块、`device.node` 探测(Windows 的
 `resources/app.asar.unpacked` 与 macOS 的 `Contents/Resources/` 布局差异已处理)、
 ffmpeg 与 `LunaCacheV2` 缓存目录。
 
@@ -42,7 +42,7 @@ ffmpeg 与 `LunaCacheV2` 缓存目录。
 | `QSYY_DEBUG` / `SODA_DEBUG` | 关 | 调试日志 |
 | `TTNET_DEBUG` | 关 | 打印 track_v2 原始响应摘要 |
 
-## 移动端(Android · iOS)
+## 移动端(Android)
 
 qsyy 是 Web 应用,手机 / 平板浏览器直接访问服务端即可使用完整 UI,
 无需安装任何东西:
@@ -60,10 +60,9 @@ QSYY_HOST=0.0.0.0 npm run standalone
   ≤1020px 平板档隐藏专辑列
 - **触屏优化**:`pointer: coarse` 下加大按钮/行高触控目标,进度条 `touch-action: none`
   支持拖动,MediaSession 让锁屏/控制中心显示曲目与快捷键
-- **PWA 安装**:Android Chrome「安装应用」、iOS Safari「添加到主屏幕」均可获得
-  独立全屏窗口(含 `apple-mobile-web-app` 全套 meta、safe-area 适配、SVG 图标)
-- **音频播放**:所有流式接口都支持 Range,移动浏览器(含 iOS Safari 的
-  严格 Range 要求)可正常拖动进度
+- **PWA 安装**:Android Chrome「安装应用」即可获得独立全屏窗口
+  (含 manifest、safe-area 适配、SVG 图标)
+- **音频播放**:所有流式接口都支持 Range,移动浏览器可正常拖动进度
 
 平台差异说明:桌面客户端的缓存为 App 私有目录(移动端无 root 不可读),
 因此手机浏览器上「本地缓存直读」不可用,播放走**在线播放通路**(已默认支持),

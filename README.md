@@ -8,7 +8,7 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/shiaho777/qsyy?style=social)](https://github.com/shiaho777/qsyy/stargazers)
 [![License](https://img.shields.io/badge/license-GPL--3.0%20%2B%20NC-blue)](./app/LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Web%20%7C%20macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Mobile-9cf)](#全端支持)
+[![Platform](https://img.shields.io/badge/platform-Web%20%7C%20macOS%20%7C%20Windows%20%7C%20Android-9cf)](#全端支持)
 [![PWA](https://img.shields.io/badge/PWA-%E5%8F%AF%E5%AE%89%E8%A3%85-5A0FC8)](#快速开始)
 
 </div>
@@ -102,16 +102,14 @@ npm run standalone                 # → http://127.0.0.1:18790
 
 ## 全端支持
 
-qsyy 本质是一个 Web 应用——**任何有现代浏览器的设备都可以访问它**,手机 / 平板 / 电脑全平台通用。服务端支持 macOS / Windows / Linux,自动定位客户端安装与缓存位置。
+qsyy 本质是一个 Web 应用——**任何有现代浏览器的设备都可以访问它**,手机 / 平板 / 电脑通用。服务端支持 macOS / Windows,自动定位客户端安装与缓存位置。
 
 | 端 | 状态 |
 |----|------|
 | 浏览器(PWA) | 开箱即用,任何设备 |
 | macOS | 完整支持(缓存直读 + 在线播放) |
 | Windows | 完整支持(缓存直读 + 在线播放) |
-| Linux | 完整支持(缓存直读 + 在线播放) |
 | Android | 浏览器 / PWA 访问,移动端 UI + 在线播放 |
-| iOS | 浏览器 / 添加到主屏幕,移动端 UI + 在线播放 |
 
 局域网访问(手机连同一 Wi-Fi):
 
@@ -120,13 +118,13 @@ QSYY_HOST=0.0.0.0 npm run standalone
 # → [qsyy] LAN: http://192.168.x.x:18790
 ```
 
-移动端为响应式 UI(≤720px 抽屉侧栏、紧凑播放条、触控目标加大),PWA 安装后获得独立全屏窗口;所有流式接口支持 Range,iOS Safari 的严格 Range 要求也已覆盖。
+移动端为响应式 UI(≤720px 抽屉侧栏、紧凑播放条、触控目标加大),PWA 安装后获得独立全屏窗口;所有流式接口支持 Range,进度拖动在移动浏览器上表现一致。
 
 ## Roadmap
 
 - [x] macOS 缓存直读 + 零登录在线播放
-- [x] Windows / Linux 平台适配(客户端自动定位、Cookie 读取、签名库加载)
-- [x] Android / iOS 移动端适配(响应式 UI、抽屉侧栏、PWA 安装、LAN 访问)
+- [x] Windows 平台适配(客户端自动定位、Cookie 读取、签名库加载)
+- [x] Android 移动端适配(响应式 UI、抽屉侧栏、PWA 安装、LAN 访问)
 - [ ] 桌面客户端(Electron / Tauri)
 - [ ] 歌单导入 / 导出
 - [ ] 更多音效与可视化
