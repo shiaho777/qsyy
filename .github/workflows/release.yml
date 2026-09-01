@@ -41,13 +41,25 @@ jobs:
   desktop-mac:
     runs-on: macos-14
     needs: changelog
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      # electron-builder re-downloads ~115MB of Electron + code-sign binaries
+      # per run; a cold Windows runner stalled 29min on that download and hit
+      # the job timeout. Cache the electron-builder store by lockfile hash.
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: eb-mac-${{ hashFiles('desktop/package-lock.json', 'desktop/package.json') }}
+          restore-keys: eb-mac-
 
       - name: Install dependencies
         run: |
@@ -69,13 +81,22 @@ jobs:
   desktop-win:
     runs-on: windows-latest
     needs: changelog
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: eb-win-${{ hashFiles('desktop/package-lock.json', 'desktop/package.json') }}
+          restore-keys: eb-win-
 
       - name: Install dependencies
         run: |
@@ -85,7 +106,10 @@ jobs:
       - name: Build Windows app (nsis + zip)
         working-directory: desktop
         shell: bash
-        run: npm run dist:win
+        # GH runner <-> GitHub releases flakiness stalled the 115MB electron
+        # zip for 29min once; retry once before letting the job fail.
+        run: |
+          npm run dist:win || (sleep 10 && npm run dist:win)
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
