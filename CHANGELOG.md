@@ -4,6 +4,16 @@
 版本号遵循语义化版本;每条 Release 的详细说明由 `scripts/release-notes.mjs`
 从 Conventional Commits 自动生成(见 AGENTS.md 的发版规范)。
 
+## [1.0.2] - 2026-09-01
+
+### 修复
+- 桌面版本地缓存全部显示为未缓存:Electron 内 spawn 的 Node 子进程(scan /
+  decrypt / ttnet-helper / restore)缺 `ELECTRON_RUN_AS_NODE=1`,被应用二进制
+  静默吞掉,缓存扫描永远为空(Issue #20)
+- 顺带确认 v1.0.1 的单实例锁正常,连续点击 Dock 图标不再叠开窗口
+
+[1.0.2]: https://github.com/shiaho777/qsyy/releases/tag/v1.0.2
+
 ## [1.0.1] - 2026-09-01
 
 ### 修复

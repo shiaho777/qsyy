@@ -1,7 +1,7 @@
 {
   "name": "qsyy-desktop",
   "productName": "qsyy",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "qsyy 桌面客户端壳:内嵌 standalone 服务",
   "main": "main.mjs",
