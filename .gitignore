@@ -20,3 +20,11 @@ Desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# --- 客户端构建 ---
+android/build/
+android/app/build/
+android/local.properties
+android/.gradle/
+desktop/dist/
+desktop/node_modules/

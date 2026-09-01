@@ -1,0 +1,50 @@
+{
+  "name": "qsyy-desktop",
+  "productName": "qsyy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "qsyy 桌面客户端壳:内嵌 standalone 服务",
+  "main": "main.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.shiaho777.qsyy",
+    "productName": "qsyy",
+    "asar": true,
+    "directories": { "output": "dist", "buildResources": "assets" },
+    "files": [
+      "main.mjs",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "../app", "to": "app", "filter": ["**/*", "!bridge/node_modules/lmdb/**/build/Release/*.pdb"] }
+    ],
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64", "x64"] }
+      ],
+      "category": "public.app-category.music",
+      "identity": null
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "qsyy-setup-${version}.${ext}"
+    }
+  }
+}

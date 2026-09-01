@@ -62,6 +62,19 @@ qsyy 不做"模拟 EQ",而是**直接解析官方下发的音效配置,在浏览
 
 ## 快速开始
 
+**客户端安装**(推荐):从 [Releases](https://github.com/shiaho777/qsyy/releases/latest) 下载对应平台的安装包,每次发布均附带更新日志:
+
+| 端 | 产物 |
+|----|------|
+| macOS | `qsyy-x.y.z-arm64.dmg` / `.zip` |
+| Windows | `qsyy-setup-x.y.z.exe`(NSIS 安装器)/ `.zip` |
+| Android | `qsyy-x.y.z.apk`,安装后填入桌面端局域网地址 |
+
+桌面客户端内嵌同一服务端,开箱即用;Android 壳需先在电脑上启动服务端并开启
+局域网访问(`QSYY_HOST=0.0.0.0`)。
+
+**源码运行**:
+
 ```bash
 git clone https://github.com/shiaho777/qsyy.git
 cd qsyy
@@ -107,9 +120,9 @@ qsyy 本质是一个 Web 应用——**任何有现代浏览器的设备都可�
 | 端 | 状态 |
 |----|------|
 | 浏览器(PWA) | 开箱即用,任何设备 |
-| macOS | 完整支持(缓存直读 + 在线播放) |
-| Windows | 完整支持(缓存直读 + 在线播放) |
-| Android | 浏览器 / PWA 访问,移动端 UI + 在线播放 |
+| macOS | 客户端(dmg/zip)+ 服务端,缓存直读 + 在线播放 |
+| Windows | 客户端(NSIS/zip)+ 服务端,缓存直读 + 在线播放 |
+| Android | 客户端(apk)或浏览器 / PWA,移动端 UI + 在线播放 |
 
 局域网访问(手机连同一 Wi-Fi):
 
@@ -125,7 +138,7 @@ QSYY_HOST=0.0.0.0 npm run standalone
 - [x] macOS 缓存直读 + 零登录在线播放
 - [x] Windows 平台适配(客户端自动定位、Cookie 读取、签名库加载)
 - [x] Android 移动端适配(响应式 UI、抽屉侧栏、PWA 安装、LAN 访问)
-- [ ] 桌面客户端(Electron / Tauri)
+- [x] 三端客户端发版(macOS dmg / Windows NSIS / Android apk,tag 自动构建)
 - [ ] 歌单导入 / 导出
 - [ ] 更多音效与可视化
 
