@@ -6,9 +6,7 @@
 import { app, BrowserWindow, shell, Menu } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 
-const require = createRequire(import.meta.url);
 const root = path.dirname(fileURLToPath(import.meta.url));
 // Repo layout: desktop/main.mjs → ../app/standalone/server.mjs. In packaged
 // apps the app/ tree ships inside the asar, same relative position.
@@ -18,6 +16,25 @@ const serverDir = path.join(root, '..', 'app', 'standalone');
 // default stable so the window only ever aims at one port.
 process.env.QSYY_PORT = process.env.QSYY_PORT || '18790';
 process.env.QSYY_HOST = '127.0.0.1';
+
+// Single instance: a second launch (Dock click during a slow start, an app
+// copy still running from the DMG, double-clicking the binary) must focus
+// the existing window instead of stacking a whole new server + window.
+// Without this, every overlapping launch produced another visible window.
+if (!app.requestSingleInstanceLock()) {
+  app.exit(0);
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    } else {
+      createWindow();
+    }
+  });
+}
 
 // server.mjs starts an http server at import time (top-level await style
 // module). Importing it is the boot; failures must surface as a dialog
@@ -49,9 +66,6 @@ function createWindow() {
     },
   });
 
-  // Media keys / Now Playing: proxy the page's MediaSession metadata to the
-  // OS integration Electron already provides via `media-*` handlers.
-  mainWindow.webContents.on('media-started-playing', () => {});
   mainWindow.loadURL(serverUrl);
 
   // External links (roadmap links, GitHub) open in the system browser; the
@@ -64,25 +78,41 @@ function createWindow() {
 }
 
 // A short retry loop: server.mjs listens synchronously during import, but on
-// slow disks the listen callback may trail the first loadURL by a beat.
+// slow disks the listen callback may trail the first loadURL by a beat. The
+// probe hits `/` (in-memory route, no auth/backend work) with a hard timeout
+// — the previous probe used /api/weblogin/status, which awaits the signing
+// helper (up to 4s) and made the first launch feel hung.
+async function serverAlive() {
+  const { net } = await import('electron');
+  return new Promise(resolve => {
+    const timer = setTimeout(() => { try { request.abort(); } catch (_) {} resolve(false); }, 1500);
+    const request = net.request(`${serverUrl}/`);
+    request.on('response', res => {
+      res.resume();
+      clearTimeout(timer);
+      resolve(res.statusCode === 200);
+    });
+    request.on('error', () => { clearTimeout(timer); resolve(false); });
+    request.end();
+  });
+}
+
 async function boot() {
   Menu.setApplicationMenu(null);
   createWindow();
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      const { net } = await import('electron');
-      const ok = await new Promise(resolve => {
-        const request = net.request(`${serverUrl}/api/weblogin/status`);
-        request.on('response', res => resolve(res.statusCode === 200));
-        request.on('error', () => resolve(false));
-        request.end();
-      });
-      if (ok) { mainWindow.loadURL(serverUrl); break; }
-    } catch (_) {}
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (await serverAlive()) {
+      mainWindow.loadURL(serverUrl);
+      break;
+    }
     await new Promise(resolve => setTimeout(resolve, 250));
   }
 }
 
 app.whenReady().then(boot);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('activate', () => { if (!mainWindow) createWindow(); });
+app.on('activate', () => {
+  // count real windows, not just our reference: a lost reference must never
+  // let repeated Dock clicks stack extra windows
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
