@@ -46,6 +46,26 @@ const APP_VERSION = (() => {
   return 'dev';
 })();
 const APP_REPO = 'https://github.com/shiaho777/qsyy';
+// 最新 Release 解析(检查更新兜底):api.github.com 未登录限流 60 次/小时，
+// 共享出口 IP 极易被耗尽(403)；github.com 网页的 /releases/latest 302 跳转
+// 不受该限制，直接读 Location 拿 tag。结果缓存 5 分钟。
+let latestReleaseCache = { tag: '', at: 0 };
+function resolveLatestRelease() {
+  if (latestReleaseCache.tag && Date.now() - latestReleaseCache.at < 5 * 60 * 1000) {
+    return Promise.resolve(latestReleaseCache.tag);
+  }
+  return new Promise(resolve => {
+    const req = https.get(`${APP_REPO}/releases/latest`, { headers: { 'user-agent': 'qsyy-update-check' } }, res => {
+      res.resume();
+      const m = (res.headers.location || '').match(/\/releases\/tag\/([^/?#]+)/);
+      const tag = m ? decodeURIComponent(m[1]) : '';
+      if (tag) latestReleaseCache = { tag, at: Date.now() };
+      resolve(tag);
+    });
+    req.on('error', () => resolve(''));
+    req.setTimeout(8000, () => { try { req.destroy(); } catch (_) {} resolve(''); });
+  });
+}
 const RESTORE_SCRIPT = path.join(root, '..', 'bridge', 'restore_cache.js');
 const LMDB_MODULE = path.join(root, '..', 'bridge', 'node_modules', 'lmdb');
 const FFMPEG = findFfmpeg();
@@ -1891,6 +1911,11 @@ const serverHandler = async (request, response) => {
     }
     if (route === 'GET /api/version') {
       sendJson(response, 200, { ok: true, version: APP_VERSION, repo: APP_REPO });
+      return;
+    }
+    if (route === 'GET /api/latest-release') {
+      const tag = await resolveLatestRelease();
+      sendJson(response, 200, tag ? { ok: true, tag } : { ok: false, error: 'resolve failed' });
       return;
     }
     if (route === 'GET /api/stats') {

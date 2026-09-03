@@ -23,6 +23,14 @@
 
 [1.1.1]: https://github.com/shiaho777/qsyy/releases/tag/v1.1.1
 
+## [1.1.2] - 2026-09-03
+
+### 修复
+- 检查更新撞上 GitHub API 限流时误报连不上:新增 `GET /api/latest-release`
+  服务端兜底（读网页 302 跳转拿 tag），失败时直接打开 Releases 页(Issue #28)
+
+[1.1.2]: https://github.com/shiaho777/qsyy/releases/tag/v1.1.2
+
 ## [1.0.2] - 2026-09-01
 
 ### 修复
