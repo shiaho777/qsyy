@@ -135,6 +135,7 @@ app/
 | `GET /api/backup` · `POST /api/restore` | tar 备份导出 / 流式导入(路径穿越安全) |
 | `GET /api/weblogin/status` · `/qr` · `/poll` · `POST /logout` | 扫码网页会话兜底通路 |
 | `GET /api/stats` | 缓存总大小(info.db 快照只读统计) |
+| `GET /api/version` | 应用版本号 + 仓库地址(侧栏 GitHub 行 / 检查更新) |
 | `POST /api/open-downloads` · `/api/open-client` | 打开下载目录 / 拉起官方客户端 |
 
 ## 缓存读取与解密原理

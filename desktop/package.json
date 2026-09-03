@@ -1,7 +1,7 @@
 {
   "name": "qsyy-desktop",
   "productName": "qsyy",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "private": true,
   "description": "qsyy 桌面客户端壳:内嵌 standalone 服务",
   "main": "main.mjs",
@@ -28,6 +28,7 @@
       { "from": "../app", "to": "app", "filter": ["**/*", "!bridge/node_modules/lmdb/**/build/Release/*.pdb"] }
     ],
     "mac": {
+      "icon": "assets/icon.icns",
       "target": [
         { "target": "dmg", "arch": ["arm64"] },
         { "target": "zip", "arch": ["arm64", "x64"] }
@@ -36,6 +37,7 @@
       "identity": null
     },
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
         { "target": "nsis", "arch": ["x64"] }
       ]
