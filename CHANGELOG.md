@@ -4,6 +4,18 @@
 版本号遵循语义化版本;每条 Release 的详细说明由 `scripts/release-notes.mjs`
 从 Conventional Commits 自动生成(见 AGENTS.md 的发版规范)。
 
+## [1.1.0] - 2026-09-03
+
+### 新功能
+- 三端应用图标统一为汽水罐:SVG 矢量源 + `scripts/make-icons.py` 一键生成
+  (桌面 icns/ico、Android 自适应图标、PWA manifest 与 favicon)，替换旧占位
+  SVG(Issue #24)
+- 侧栏底部 GitHub 行:仓库入口 + 版本号展示，右侧内嵌「检查更新」按钮，
+  对比 GitHub 最新 Release，有新版直达对应 release 页(Issue #23)
+- 新增 `GET /api/version`(版本号 + 仓库地址)
+
+[1.1.0]: https://github.com/shiaho777/qsyy/releases/tag/v1.1.0
+
 ## [1.0.2] - 2026-09-01
 
 ### 修复
