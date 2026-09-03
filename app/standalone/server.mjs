@@ -1399,6 +1399,23 @@ const serverHandler = async (request, response) => {
         return;
       }
     }
+    // 应用图标:public/icons 下的生成产物(见 scripts/make-icons.py)。
+    // 文件名白名单(无斜杠/无点点,防路径穿越),命中则长缓存。
+    if (url.pathname.startsWith('/icons/')) {
+      const name = url.pathname.slice('/icons/'.length);
+      const m = name.match(/^([a-z0-9-]+)\.(png|svg|ico)$/i);
+      const types = { png: 'image/png', svg: 'image/svg+xml', ico: 'image/x-icon' };
+      if (m) {
+        const buf = staticFiles.icon(name);
+        if (buf.length) {
+          response.writeHead(200, { 'content-type': types[m[2].toLowerCase()], 'cache-control': 'public, max-age=86400' })
+            .end(buf);
+          return;
+        }
+      }
+      response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
+      return;
+    }
 
     if (route === 'GET /api/me') {
       const result = await upstream('/luna/pc/me', '', 'GET', null, 30000);
@@ -1944,6 +1961,7 @@ const staticFiles = (() => {
     get 'app.js'() { return load('app.js'); },
     get 'style.css'() { return load('style.css'); },
     get 'manifest.webmanifest'() { return load('manifest.webmanifest'); },
+    icon: name => load(`icons/${name}`),
   };
 })();
 

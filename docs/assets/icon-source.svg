@@ -1,0 +1,63 @@
+<!-- qsyy 应用图标矢量源:汽水罐 + 音符(透明底)。
+     按聊天图片重绘:青→绿渐变罐身、黑色描边、拉环、气泡、八分音符。
+     若拿到原图高清 PNG,可将其命名为 icon-source.png 放同目录,
+     scripts/make-icons.mjs 会优先用 PNG 生成各端产物。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="canGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2CEAD9"/>
+      <stop offset="0.45" stop-color="#4DEDA6"/>
+      <stop offset="1" stop-color="#C2F42E"/>
+    </linearGradient>
+    <linearGradient id="rimGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#5FF5E2"/>
+      <stop offset="0.5" stop-color="#3EEAD0"/>
+      <stop offset="1" stop-color="#7DEBA8"/>
+    </linearGradient>
+    <linearGradient id="baseGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4FE89A"/>
+      <stop offset="1" stop-color="#B8EE2A"/>
+    </linearGradient>
+    <linearGradient id="tabGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6FF7E3"/>
+      <stop offset="1" stop-color="#3FE3C8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 罐身 -->
+  <path d="M84,116 C82,240 82,320 88,392 C92,430 162,454 256,454 C350,454 420,430 424,392 C430,320 430,240 428,116 Z"
+        fill="url(#canGrad)" stroke="#0C1016" stroke-width="14" stroke-linejoin="round"/>
+  <!-- 底部收口 -->
+  <ellipse cx="256" cy="428" rx="152" ry="30" fill="url(#baseGrad)" stroke="#0C1016" stroke-width="13"/>
+
+  <!-- 左侧高光 -->
+  <rect x="110" y="168" width="34" height="228" rx="17" fill="#FFFFFF" opacity="0.38"/>
+  <rect x="152" y="168" width="10" height="228" rx="5" fill="#FFFFFF" opacity="0.22"/>
+
+  <!-- 顶部沿 -->
+  <ellipse cx="256" cy="112" rx="172" ry="46" fill="url(#rimGrad)" stroke="#0C1016" stroke-width="14"/>
+  <!-- 顶部开口 -->
+  <ellipse cx="256" cy="112" rx="136" ry="30" fill="#0B0D13" stroke="#0C1016" stroke-width="10"/>
+
+  <!-- 拉环 -->
+  <g transform="rotate(-24 340 62)">
+    <ellipse cx="340" cy="62" rx="60" ry="33" fill="url(#tabGrad)" stroke="#0C1016" stroke-width="13"/>
+    <ellipse cx="340" cy="62" rx="24" ry="13" fill="#0B0D13"/>
+  </g>
+
+  <!-- 气泡 -->
+  <g fill="#0D1218">
+    <circle cx="148" cy="196" r="27"/>
+    <circle cx="208" cy="228" r="17"/>
+    <circle cx="164" cy="268" r="21"/>
+    <circle cx="354" cy="382" r="17"/>
+    <circle cx="338" cy="412" r="16"/>
+  </g>
+
+  <!-- 八分音符 -->
+  <g fill="#0D1218">
+    <ellipse cx="216" cy="352" rx="68" ry="52" transform="rotate(-12 216 352)"/>
+    <path d="M270,170 L302,170 L302,330 L270,336 Z"/>
+    <path d="M302,168 C362,176 398,218 390,302 C378,262 356,238 302,232 Z"/>
+  </g>
+</svg>
