@@ -1472,14 +1472,26 @@ async function checkUpdate() {
     const info = await api('/api/version').catch(() => ({}));
     const local = info?.version || 'dev';
     const repoPath = new URL($('gh-link').href).pathname; // 单一来源:页面的仓库链接
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 8000);
     let tag = '';
+    // 主通道:GitHub API(快)。共享出口 IP 撞上未登录限流(403)是常态，
+    // 失败不报错，静默走服务端兜底。
     try {
-      const r = await fetch(`https://api.github.com/repos${repoPath}/releases/latest`, { signal: ctl.signal });
-      if (r.ok) tag = (await r.json()).tag_name || '';
-    } finally { clearTimeout(timer); }
-    if (!tag) { toast('检查失败:连不上 GitHub，稍后再试', 'err'); return; }
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 8000);
+      try {
+        const r = await fetch(`https://api.github.com/repos${repoPath}/releases/latest`, { signal: ctl.signal });
+        if (r.ok) tag = (await r.json()).tag_name || '';
+      } finally { clearTimeout(timer); }
+    } catch (_) {}
+    // 兜底:服务端读 github.com 网页跳转拿 tag(不受 API 限流影响)
+    if (!tag) {
+      try { tag = (await api('/api/latest-release')).tag || ''; } catch (_) {}
+    }
+    if (!tag) {
+      toast('检查失败:GitHub 访问受限，已为你打开 Releases 页', 'err');
+      window.open(`${$('gh-link').href}/releases`, '_blank');
+      return;
+    }
     if (local !== 'dev' && cmpVersion(tag.replace(/^v/, ''), local) <= 0) {
       toast(`已是最新版 v${local}`, 'ok');
       return;
