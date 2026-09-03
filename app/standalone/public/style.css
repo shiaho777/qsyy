@@ -76,7 +76,14 @@ button:disabled { opacity: .35; cursor: default; }
 .sidebar-foot { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 12px 14px; border-top: 1px solid var(--line-soft); }
 .foot-btn { width: 100%; padding: 8px; border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 12px; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 .foot-btn:hover { background: var(--panel-2); color: var(--text); }
-.foot-hint { grid-column: 1 / -1; margin-top: 8px; font-size: 10px; color: var(--faint); text-align: center; line-height: 1.4; }
+.foot-meta { grid-column: 1 / -1; margin-top: 8px; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 10px; background: var(--panel); }
+.foot-meta a { display: inline-flex; color: var(--muted); }
+.foot-meta a:hover { color: var(--text); }
+.foot-meta .ic { width: 15px; height: 15px; vertical-align: 0; }
+.app-version { font-size: 10px; color: var(--faint); white-space: nowrap; }
+.update-btn { margin-left: auto; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line-soft); color: var(--muted); font-size: 11px; white-space: nowrap; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.update-btn:hover { background: var(--panel-2); color: var(--text); }
+.update-btn:disabled { opacity: .5; }
 
 /* ============ main ============ */
 /* min-height:0 — a grid item defaults to min-height:auto, which lets the

@@ -16,6 +16,9 @@ const serverDir = path.join(root, '..', 'app', 'standalone');
 // default stable so the window only ever aims at one port.
 process.env.QSYY_PORT = process.env.QSYY_PORT || '18790';
 process.env.QSYY_HOST = '127.0.0.1';
+// 侧栏 GitHub 行展示 + 检查更新:Electron 的真实版本只有这里拿得到
+// (server 读不到 asar 内的 package.json),随服务一起注入。
+process.env.QSYY_VERSION = process.env.QSYY_VERSION || app.getVersion();
 
 // Single instance: a second launch (Dock click during a slow start, an app
 // copy still running from the DMG, double-clicking the binary) must focus

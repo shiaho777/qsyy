@@ -1438,10 +1438,56 @@ setInterval(() => { loadPlaylists(false).catch(() => {}); }, 5 * 60 * 1000);
 
 let footCacheText = '';
 function updateFootHint() {
-  const el = $('foot-hint');
-  if (!el) return;
+  // 缓存量小字已并入 GitHub 行(Issue #23),这里只更新它的悬停提示
+  const meta = $('foot-meta');
+  if (!meta) return;
   const mode = state.onlineAvailable ? '未缓存直接在线播放' : '未缓存需在汽水播放或扫码解锁';
-  el.textContent = footCacheText ? `${mode} · ${footCacheText}` : mode;
+  meta.title = footCacheText ? `${mode} · ${footCacheText}` : mode;
+}
+
+// ------------------------------------------------------------------ about/update
+
+function cmpVersion(a, b) {
+  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+async function loadAppVersion() {
+  try {
+    const v = await api('/api/version');
+    if (v?.version && v.version !== 'dev') $('app-version').textContent = `v${v.version}`;
+  } catch (_) {}
+}
+
+async function checkUpdate() {
+  const btn = $('check-update');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  toast('正在检查更新…');
+  try {
+    const info = await api('/api/version').catch(() => ({}));
+    const local = info?.version || 'dev';
+    const repoPath = new URL($('gh-link').href).pathname; // 单一来源:页面的仓库链接
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 8000);
+    let tag = '';
+    try {
+      const r = await fetch(`https://api.github.com/repos${repoPath}/releases/latest`, { signal: ctl.signal });
+      if (r.ok) tag = (await r.json()).tag_name || '';
+    } finally { clearTimeout(timer); }
+    if (!tag) { toast('检查失败:连不上 GitHub，稍后再试', 'err'); return; }
+    if (local !== 'dev' && cmpVersion(tag.replace(/^v/, ''), local) <= 0) {
+      toast(`已是最新版 v${local}`, 'ok');
+      return;
+    }
+    toast(`发现新版 ${tag}(当前 ${local === 'dev' ? 'dev' : `v${local}`})，正在打开…`, 'ok');
+    window.open(`${$('gh-link').href}/releases/tag/${tag}`, '_blank');
+  } catch (e) { toast(`检查失败:${e.message}`, 'err'); }
+  finally { btn.disabled = false; }
 }
 
 async function loadStats() {
@@ -1477,6 +1523,7 @@ setInterval(loadStats, 10 * 60 * 1000);
   }).catch(() => {});
   if ($('fx-select')) $('fx-select').onchange = e => applyEffect(e.target.value || null);
   if ($('store-btn')) $('store-btn').onclick = openStorePanel;
+  if ($('check-update')) $('check-update').onclick = checkUpdate;
   if ($('store-close')) $('store-close').onclick = () => $('store-panel').classList.add('hidden');
   if ($('backup-btn')) $('backup-btn').onclick = () => {
     toast('正在打包当前缓存库(浏览器开始下载)…');
@@ -1527,6 +1574,7 @@ setInterval(loadStats, 10 * 60 * 1000);
     // boot in parallel: /api/me + /api/stats + /api/effects don't depend on
     // the playlist, and loadPlaylists already calls loadMe itself
     loadStats();
+    loadAppVersion();
     await loadPlaylists(true);
     if (!restoreQueue()) {
       const saved = ls.get('lastTrack', null);

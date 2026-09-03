@@ -34,6 +34,18 @@ const CACHE_DIR = process.env.QSYY_CACHE_DIR
   || path.join(CLIENT_DATA.cache, 'LunaCacheV2');
 const DOWNLOAD_DIR = process.env.QSYY_DOWNLOAD_DIR || path.join(os.homedir(), 'Downloads', 'qsyy');
 const COOKIES_DB = process.env.QSYY_COOKIES_DB || CLIENT_DATA.cookies;
+// 应用版本号(侧栏 GitHub 行展示 + 检查更新比对):桌面壳由 main.mjs 经
+// QSYY_VERSION 注入 app.getVersion();源码运行读仓库 desktop/package.json;
+// 兜底 'dev'(此时检查更新只报远端版本,不做新旧判定)。
+const APP_VERSION = (() => {
+  if (process.env.QSYY_VERSION) return process.env.QSYY_VERSION;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, '..', '..', 'desktop', 'package.json'), 'utf8'));
+    if (pkg.version) return pkg.version;
+  } catch (_) {}
+  return 'dev';
+})();
+const APP_REPO = 'https://github.com/shiaho777/qsyy';
 const RESTORE_SCRIPT = path.join(root, '..', 'bridge', 'restore_cache.js');
 const LMDB_MODULE = path.join(root, '..', 'bridge', 'node_modules', 'lmdb');
 const FFMPEG = findFfmpeg();
@@ -1875,6 +1887,10 @@ const serverHandler = async (request, response) => {
         setTimeout(check, 3000);
       };
       check();
+      return;
+    }
+    if (route === 'GET /api/version') {
+      sendJson(response, 200, { ok: true, version: APP_VERSION, repo: APP_REPO });
       return;
     }
     if (route === 'GET /api/stats') {
