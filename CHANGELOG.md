@@ -16,6 +16,13 @@
 
 [1.1.0]: https://github.com/shiaho777/qsyy/releases/tag/v1.1.0
 
+## [1.1.1] - 2026-09-03
+
+### 重构
+- 侧栏底部「管理缓存」不再独占一行，与「同步收藏」并排(Issue #26)
+
+[1.1.1]: https://github.com/shiaho777/qsyy/releases/tag/v1.1.1
+
 ## [1.0.2] - 2026-09-01
 
 ### 修复
