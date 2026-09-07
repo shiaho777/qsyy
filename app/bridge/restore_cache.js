@@ -407,7 +407,12 @@ function runScanChild(args) {
       ...('track-id' in args ? ['--track-id', args['track-id']] : []),
       ...('track-ids' in args ? ['--track-ids', args['track-ids']] : []),
       ...asUrlList(args['audio-url']).flatMap(url => ['--audio-url', url]),
-    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    ], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      // execPath may be the Electron binary inside the desktop shell; never
+      // rely on env inheritance alone (same guard as restore-service.js)
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: process.versions.electron ? '1' : process.env.ELECTRON_RUN_AS_NODE },
+    });
     let output = '';
     const finish = value => {
       try { child.kill(); } catch (_) {}

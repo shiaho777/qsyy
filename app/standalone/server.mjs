@@ -92,6 +92,39 @@ if (!CHILD_NODE_ENV.ELECTRON_RUN_AS_NODE && process.versions.electron) {
   CHILD_NODE_ENV.ELECTRON_RUN_AS_NODE = '1';
 }
 
+// Every spawned child registers here. Orphaned children outlive the server
+// as ghost processes (re-parented to launchd on macOS, immune to normal
+// Dock quit), so the whole set — not just ttnet-helper — is torn down on
+// exit. Previously only ttnet-helper was killed; scan/decrypt/download
+// children leaked whenever the desktop shell quit mid-flight.
+const spawnedChildren = new Set();
+function trackChild(child) {
+  spawnedChildren.add(child);
+  const drop = () => spawnedChildren.delete(child);
+  child.on('close', drop);
+  child.on('error', drop);
+  return child;
+}
+// POSIX: spawn the child as its own process-group leader, so kill(-pid)
+// takes down its own spawns too (ffmpeg remux, restore_cache.js's scan
+// grandchild). Windows has no kill(-pid) and `detached` opens a console —
+// plain child.kill() is the best effort there.
+function spawnTracked(command, args, options = {}) {
+  const opts = process.platform === 'win32' ? options : { ...options, detached: true };
+  return trackChild(spawn(command, args, opts));
+}
+function killAllChildren() {
+  for (const child of spawnedChildren) {
+    try {
+      if (process.platform === 'win32') child.kill();
+      else process.kill(-child.pid);
+    } catch (_) {
+      try { child.kill(); } catch (_) {}
+    }
+  }
+  spawnedChildren.clear();
+}
+
 // ---------------------------------------------------------------- crash safety
 
 // Process-level safety net: a stray exception (from a native callback, a
@@ -294,7 +327,7 @@ function runScan(extraArgs) {
       const seq = ++scanSeq;
       try {
         const value = await new Promise(resolve => {
-          const child = spawn(process.execPath, [
+          const child = spawnTracked(process.execPath, [
             RESTORE_SCRIPT, '--scan-child',
             '--snapshot', snapshot.path,
             '--lmdb-module', LMDB_MODULE,
@@ -373,6 +406,9 @@ const restoreService = new RestoreService({
   events,
   logger,
   timeoutMs: 180000,
+  // route its download children through the registry so they are killed on
+  // server exit instead of orphaning (its env handling stays intact)
+  spawnProcess: spawnTracked,
 });
 
 const downloadJobs = new Map();
@@ -609,7 +645,7 @@ function decryptForStreaming(trackId) {
     try {
       fs.mkdirSync(DECRYPT_DIR, { recursive: true });
       return await new Promise(resolve => {
-        const child = spawn(process.execPath, [
+        const child = spawnTracked(process.execPath, [
           RESTORE_SCRIPT,
           '--cache-dir', CACHE_DIR,
           '--output-dir', DECRYPT_DIR,
@@ -734,7 +770,7 @@ async function ttnetResolveProbe() {
 }
 
 function spawnTtnetHelper() {
-  const child = spawn(process.execPath, [path.join(root, 'ttnet-helper.mjs')], { stdio: ['pipe', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
+  const child = spawnTracked(process.execPath, [path.join(root, 'ttnet-helper.mjs')], { stdio: ['pipe', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
   ttnetChild = child;
   child.stdout.setEncoding('utf8');
   let buffer = '';
@@ -779,10 +815,11 @@ function failAllTtnetWaiters(reason) {
   }
 }
 
-const killTtnetHelper = () => { try { ttnetChild?.kill(); } catch (_) {} };
-process.on('exit', killTtnetHelper);
-process.on('SIGTERM', () => { killTtnetHelper(); process.exit(0); });
-process.on('SIGINT', () => { killTtnetHelper(); process.exit(0); });
+// Tear down the whole registry, not just ttnet-helper: scan/decrypt/
+// download children must not outlive the server as ghost processes.
+process.on('exit', killAllChildren);
+process.on('SIGTERM', () => { killAllChildren(); process.exit(0); });
+process.on('SIGINT', () => { killAllChildren(); process.exit(0); });
 
 // ttnetBusy is a lock around the single-flight resolve; the old polling wait
 // (up to 25s) could livelock if an exception path ever skipped the reset.
@@ -1165,7 +1202,7 @@ function decryptStoreFile(trackId) {
   const meta = storeMeta.get(trackId) || {};
   return new Promise(resolve => {
     const target = m4aPath(trackId);
-    const child = spawn(process.execPath, [
+    const child = spawnTracked(process.execPath, [
       RESTORE_SCRIPT, '--decrypt-online',
       '--input', partPath(trackId),
       '--output', target,
@@ -1698,7 +1735,7 @@ const serverHandler = async (request, response) => {
         'content-type': 'application/x-tar',
         'content-disposition': `attachment; filename="qsyy-cache-${stamp}.tar"`,
       });
-      const child = spawn('tar', ['-cf', '-', '-C', STORE_DIR, '.']);
+      const child = spawnTracked('tar', ['-cf', '-', '-C', STORE_DIR, '.']);
       child.stdout.pipe(response);
       child.stderr.resume();
       child.on('close', () => {
