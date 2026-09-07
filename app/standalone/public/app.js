@@ -1,5 +1,7 @@
 // qsyy — standalone frontend for the QiShui local player.
 /* global MediaMetadata */
+// 首帧淡入:boot 里首个 rAF 揭开,避免白屏硬切;下面还有超时兜底
+document.body.classList.add('booting');
 const $ = id => document.getElementById(id);
 const ls = {
   // storage keys renamed soda-app-* → qsyy-*; fall back to the old key once,
@@ -67,8 +69,8 @@ function toast(message, kind = '') {
   el.className = `toast ${kind}`;
   el.textContent = message;
   $('toasts').appendChild(el);
-  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; }, 3200);
-  setTimeout(() => el.remove(), 3600);
+  setTimeout(() => el.classList.add('out'), 3200);
+  setTimeout(() => el.remove(), 3620);
 }
 
 function fmtTime(ms) {
@@ -77,6 +79,71 @@ function fmtTime(ms) {
 }
 function esc(s) {
   return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+// 图片淡入:等真正解码完成再显形(complete 对已缓存/空 src 也成立,占位底色照常显示)
+function armImg(img) {
+  if (!img) return;
+  if (img.complete) { img.classList.add('loaded'); return; }
+  img.addEventListener('load', () => img.classList.add('loaded'), { once: true });
+}
+function armImgs(root) { root.querySelectorAll('img').forEach(armImg); }
+
+// 从封面取色,派生整窗对角渐变主题(对齐官方汽水客户端:封面主色铺整窗背景,
+// 左下深 → 右上浅)。官方色值来自接口 cover_color.base_five_color,此处用 canvas
+// 自采样:16x16 抽样,饱和度加权取主色,再按官方截图实测(底 L≈18-29%,顶 L≈30-48%,
+// 顶≈底x1.7)派生深/中/浅三档写进 @property 注册的颜色变量,渐变随切歌平滑过渡。
+const glowCanvas = document.createElement('canvas');
+const clamp01 = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const hslStr = (h, s, l) =>
+  `hsl(${Math.round(h)},${Math.round(clamp01(s, 0, 1) * 100)}%,${Math.round(clamp01(l, 0, 1) * 100)}%)`;
+function applyCoverGlow(url) {
+  if (!url) return;
+  const img = new Image();
+  img.onload = () => {
+    try {
+      const sz = 16;
+      glowCanvas.width = glowCanvas.height = sz;
+      const ctx = glowCanvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, sz, sz);
+      const { data } = ctx.getImageData(0, 0, sz, sz);
+      let r = 0, g = 0, b = 0, wSum = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const rr = data[i], gg = data[i + 1], bb = data[i + 2];
+        const mx = Math.max(rr, gg, bb), mn = Math.min(rr, gg, bb);
+        if (mx < 36) continue;                    // 跳过近黑
+        const sat = mx - mn;
+        if (sat < 10) continue;                   // 跳过灰白
+        const w = sat * (0.5 + mx / 255);         // 饱和且亮的像素权重大
+        r += rr * w; g += gg * w; b += bb * w; wSum += w;
+      }
+      if (!wSum) return;
+      r /= wSum; g /= wSum; b /= wSum;
+      const rs = document.documentElement.style;
+      rs.setProperty('--glow', `${Math.round(r)},${Math.round(g)},${Math.round(b)}`);
+      // RGB → HSL
+      const rn = r / 255, gn = g / 255, bn = b / 255;
+      const cmax = Math.max(rn, gn, bn), cmin = Math.min(rn, gn, bn);
+      const l = (cmax + cmin) / 2, d = cmax - cmin;
+      const sH = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+      let h = 0;
+      if (d > 0) {
+        if (cmax === rn) h = 60 * (((gn - bn) / d) % 6);
+        else if (cmax === gn) h = 60 * ((bn - rn) / d + 2);
+        else h = 60 * ((rn - gn) / d + 4);
+      }
+      h = (h + 360) % 360;
+      // 派生三档:底 L≈18-29% → 顶 L≈30-48%(≈1.7 倍),饱和度收拢防艳俗
+      const sB = clamp01(sH * 0.95, 0.10, 0.48);
+      const sT = clamp01(sH * 0.9, 0.08, 0.42);
+      const lB = clamp01(0.13 + 0.24 * l, 0.13, 0.30);
+      const lT = clamp01(lB * (1.25 + 0.5 * l) + 0.03, 0.28, 0.47);
+      rs.setProperty('--th-deep', hslStr(h, sB, lB));
+      rs.setProperty('--th-mid', hslStr(h, (sB + sT) / 2, (lB + lT) * 0.47));
+      rs.setProperty('--th-lite', hslStr(h, sT, lT));
+    } catch (_) {}
+  };
+  img.src = url;
 }
 function coverUrl(info, size = 220) {
   if (!info?.uri) return '';
@@ -103,6 +170,7 @@ async function loadMe() {
       <img src="${coverUrl(info.larger_avatar_url || info.avatar_url, 80)}" alt="">
       <div><div class="name">${esc(info.nickname || '')}</div>
       <div class="hint">${state.playlists.length ? state.playlists.length + ' 个歌单' : '已登录'}</div></div>` : '';
+    armImgs($('user'));
   } catch (_) {
     $('user').innerHTML = '<div class="hint" style="padding:4px 6px">登录态失效 — 打开一次汽水音乐后点同步</div>';
   }
@@ -126,6 +194,7 @@ async function loadPlaylists(openSaved = true, fresh = false) {
   document.querySelectorAll('.pl-item').forEach(el => {
     el.onclick = () => openPlaylist(state.playlists[Number(el.dataset.i)]);
   });
+  armImgs($('playlists'));
   loadMe();
   if (target) openPlaylist(target, openSaved);
 }
@@ -167,7 +236,7 @@ function renderHero() {
   const cur = state.current;
   const playing = state.queue[state.queueIndex];
   $('hero').innerHTML = `
-    <img id="hero-cover" class="hero-cover" src="${(playing?.cover || cur.cover) ? coverUrl(playing?.cover || cur.cover, 300) : ''}" alt="" data-url="${playing?.cover || cur.cover || ''}">
+    <div class="hero-cover-wrap"><img id="hero-cover" class="hero-cover" src="${(playing?.cover || cur.cover) ? coverUrl(playing?.cover || cur.cover, 300) : ''}" alt="" data-url="${playing?.cover || cur.cover || ''}"></div>
     <div class="hero-info">
       <div class="hero-kicker" id="hero-kicker">${playing ? '<span class="live-dot"></span>正在播放' : 'PLAYLIST'}</div>
       <div class="hero-title">${esc(cur.title)}</div>
@@ -177,6 +246,7 @@ function renderHero() {
         <button id="shuffle-play" class="btn ghost">⤨ 随机播放</button>
       </div>
     </div>`;
+  armImg($('hero-cover'));
   if ($('play-all')) $('play-all').onclick = () => { setQueue(visibleTracks().slice(), 0); };
   if ($('shuffle-play')) $('shuffle-play').onclick = () => {
     const list = visibleTracks().slice();
@@ -198,8 +268,9 @@ function updateHeroPlayback() {
   const url = coverUrl(t.cover, 300);
   if (img.dataset.url === t.cover) return;
   img.dataset.url = t.cover;
-  img.style.opacity = '0';
-  const reveal = () => requestAnimationFrame(() => { img.style.opacity = '1'; });
+  applyCoverGlow(url);
+  img.classList.remove('loaded');
+  const reveal = () => requestAnimationFrame(() => { img.classList.add('loaded'); });
   img.onload = reveal;
   img.src = url;
   if (img.complete) reveal();
@@ -296,6 +367,7 @@ function rowEl(t, i) {
   el.querySelector('.hovp').onclick = e => { e.stopPropagation(); playOrPrime(t); };
   el.onclick = () => playOrPrime(t);
   el.onmouseenter = () => requestCacheStatus([t.id]);
+  armImgs(el);
   return el;
 }
 
@@ -779,7 +851,10 @@ function startCurrent(autoplay = true) {
   decoratePlayingRow();
   $('p-title').textContent = t.name;
   $('p-artist').textContent = t.artists.join(' / ');
-  $('p-cover').src = t.cover ? coverUrl(t.cover, 140) : '';
+  const pCover = $('p-cover');
+  pCover.classList.remove('loaded');
+  pCover.src = t.cover ? coverUrl(t.cover, 140) : '';
+  applyCoverGlow(t.cover ? coverUrl(t.cover, 96) : '');
   $('p-queue-count').textContent = state.queue.length > 0 ? `${state.queueIndex + 1}/${state.queue.length}` : '';
   renderQueuePanel();
   updateMediaSession(t);
@@ -972,6 +1047,23 @@ if ($('p-play')) $('p-play').onclick = () => { if (!audio.src) { const v = visib
 if ($('p-prev')) $('p-prev').onclick = () => playNextIndex(-1);
 if ($('p-next')) $('p-next').onclick = () => playNextIndex(1);
 
+// 播放栏封面:常驻淡入(src 每次切歌都换,once 不够),点开看大图
+if ($('p-cover')) {
+  $('p-cover').addEventListener('load', () => $('p-cover').classList.add('loaded'));
+  $('p-cover').addEventListener('click', () => {
+    const t = state.queue[state.queueIndex];
+    if (!t?.cover) return;
+    $('ce-art').src = coverUrl(t.cover, 720);
+    $('ce-title').textContent = t.name;
+    $('ce-artist').textContent = t.artists.join(' / ');
+    $('cover-expander').classList.add('open');
+  });
+}
+const coverExpander = $('cover-expander');
+function closeCoverExpander() { coverExpander?.classList.remove('open'); }
+if ($('ce-close')) $('ce-close').onclick = closeCoverExpander;
+if (coverExpander) coverExpander.addEventListener('click', e => { if (e.target === coverExpander) closeCoverExpander(); });
+
 const REPEAT_SVG = '<svg class="ic" viewBox="0 0 24 24"><path d="M4 12V9a3 3 0 0 1 3-3h13m0 0l-3-3m3 3l-3 3M20 12v3a3 3 0 0 1-3 3H4m0 0l3 3m-3-3l3-3"/></svg>';
 function updateModeButtons() {
   $('p-shuffle').classList.toggle('active', state.shuffle);
@@ -1015,19 +1107,33 @@ function renderQueuePanel() {
   document.querySelectorAll('.q-item').forEach(el => {
     el.onclick = () => { state.queueIndex = Number(el.dataset.i); startCurrent(); };
   });
+  armImgs($('queue-list'));
+}
+// 面板开关与侧栏按钮高亮同步(closing 视为已关)
+function syncSideButtons() {
+  const open = id => { const el = $(id); return Boolean(el) && !el.classList.contains('hidden') && !el.classList.contains('closing'); };
+  $('p-queue-btn')?.classList.toggle('on', open('queue-panel'));
+  $('p-downloads-btn')?.classList.toggle('on', open('downloads-panel'));
+  $('p-lyrics-btn')?.classList.toggle('on', open('lyrics-panel'));
 }
 // panel helpers: fade out before hiding so closing isn't abrupt
 function closePanel(el) {
   if (el.classList.contains('hidden')) return;
   el.classList.add('closing');
-  setTimeout(() => { el.classList.add('hidden'); el.classList.remove('closing'); }, 190);
+  // 只有仍在 closing 状态才落 hidden:若期间被重新打开(remove closing),不抢关
+  setTimeout(() => { if (el.classList.contains('closing')) { el.classList.add('hidden'); el.classList.remove('closing'); } }, 190);
+  syncSideButtons();
 }
 
 if ($('p-queue-btn')) $('p-queue-btn').onclick = () => {
-  $('queue-panel').classList.remove('hidden');
+  const panel = $('queue-panel');
+  // 再点一次同一按钮 = 关闭(toggle)
+  if (!panel.classList.contains('hidden')) { closePanel(panel); return; }
+  panel.classList.remove('hidden');
   closePanel($('downloads-panel'));
   closePanel($('lyrics-panel'));
   renderQueuePanel();
+  syncSideButtons();
 };
 if ($('close-queue')) $('close-queue').onclick = () => closePanel($('queue-panel'));
 
@@ -1250,10 +1356,15 @@ async function loadLyrics(track) {
 
 if ($('p-lyrics-btn')) $('p-lyrics-btn').onclick = () => {
   const panel = $('lyrics-panel');
+  // 再点一次同一按钮 = 关闭(toggle)
+  if (!panel.classList.contains('hidden')) {
+    stopLyricsLoop(); closePanel(panel); ls.set('lyrics-open', false); return;
+  }
   panel.classList.remove('hidden');
   closePanel($('queue-panel'));
   closePanel($('downloads-panel'));
   ls.set('lyrics-open', true);
+  syncSideButtons();
   const t = state.queue[state.queueIndex];
   if (!t) { renderLyrics('播放一首歌来查看歌词'); return; }
   if (lyricsState.trackId !== t.id || !lyricsState.lines.length) {
@@ -1265,7 +1376,7 @@ if ($('p-lyrics-btn')) $('p-lyrics-btn').onclick = () => {
   highlightLyric(true);
   startLyricsLoop();
 };
-if ($('lyrics-close')) $('lyrics-close').onclick = () => { stopLyricsLoop(); closePanel($('lyrics-panel')); ls.set('lyrics-open', false); };
+if ($('lyrics-close')) $('lyrics-close').onclick = () => { stopLyricsLoop(); closePanel($('lyrics-panel')); ls.set('lyrics-open', false); syncSideButtons(); };
 
 window.addEventListener('resize', () => {
   if ($('lyrics-panel').classList.contains('hidden')) return;
@@ -1313,8 +1424,14 @@ function openDownloads() {
   closePanel($('lyrics-panel'));
   closePanel($('store-panel'));
   $('downloads-panel').classList.remove('hidden');
+  syncSideButtons();
 }
-if ($('p-downloads-btn')) $('p-downloads-btn').onclick = openDownloads;
+if ($('p-downloads-btn')) $('p-downloads-btn').onclick = () => {
+  const panel = $('downloads-panel');
+  // 再点一次同一按钮 = 关闭(toggle);openDownloads 供下载流程强制打开,不做 toggle
+  if (!panel.classList.contains('hidden')) { closePanel(panel); return; }
+  openDownloads();
+};
 if ($('close-downloads')) $('close-downloads').onclick = () => closePanel($('downloads-panel'));
 
 async function pollDownloads() {
@@ -1411,6 +1528,7 @@ if ($('quality-select')) $('quality-select').onchange = e => { state.quality = e
 if ($('format-select')) $('format-select').onchange = e => { state.fmt = e.target.value; ls.set('fmt', state.fmt); toast(`默认格式:${e.target.selectedOptions[0].textContent}`, 'ok'); };
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape' && coverExpander?.classList.contains('open')) { closeCoverExpander(); return; }
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   // mobile browsers have no hardware keyboard; skip path is harmless
   if (e.code === 'Space') { e.preventDefault(); $('p-play').click(); }
@@ -1513,6 +1631,9 @@ async function loadStats() {
 setInterval(loadStats, 10 * 60 * 1000);
 
 (async () => {
+  // 首帧淡入:下一帧揭开 .booting;超时兜底防极端情况下白屏
+  requestAnimationFrame(() => document.body.classList.remove('booting'));
+  setTimeout(() => document.body.classList.remove('booting'), 800);
   updateModeButtons();
   // mobile: sidebar drawer toggle (elements only visible under 720px)
   const sidebar = document.querySelector('.sidebar');

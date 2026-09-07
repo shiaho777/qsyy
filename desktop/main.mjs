@@ -3,7 +3,7 @@
 // standalone`) and points a BrowserWindow at it. The server module resolves
 // the client install, cache and cookies exactly as it does headless, so the
 // desktop app is a pure presentation shell — no server logic is duplicated.
-import { app, BrowserWindow, shell, Menu } from 'electron';
+import { app, BrowserWindow, shell, Menu, nativeImage } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,6 +11,11 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 // Repo layout: desktop/main.mjs → ../app/standalone/server.mjs. In packaged
 // apps the app/ tree ships inside the asar, same relative position.
 const serverDir = path.join(root, '..', 'app', 'standalone');
+
+// Dev-shell identity: when run from source (`npm start`), Electron otherwise
+// shows the stock Electron icon + "Electron" name in Dock / About. setName
+// must happen before app ready; the dock icon is applied in boot().
+app.setName('qsyy');
 
 // The server reads QSYY_PORT at import time and prints its URL; keep the
 // default stable so the window only ever aims at one port.
@@ -102,6 +107,13 @@ async function serverAlive() {
 
 async function boot() {
   Menu.setApplicationMenu(null);
+  // 开发壳 Dock 品牌:让 `npm start` 跑起来的窗口也显示 qsyy 图标和名字
+  if (process.platform === 'darwin' && app.dock) {
+    try {
+      const img = nativeImage.createFromPath(path.join(root, 'assets', 'icon.png'));
+      if (!img.isEmpty()) app.dock.setIcon(img);
+    } catch (_) {}
+  }
   createWindow();
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if (await serverAlive()) {
