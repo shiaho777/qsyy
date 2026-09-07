@@ -22,6 +22,7 @@
   <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
 
   <aside class="sidebar">
+    <div class="brand"><img src="/icons/favicon.svg" alt=""><div><div class="b-name">qsyy</div><div class="b-tag">汽水收藏播放器</div></div></div>
     <div id="user" class="user"></div>
     <div class="nav-caption">我的歌单</div>
     <nav id="playlists" class="playlists"></nav>
@@ -151,6 +152,12 @@
       <div id="lyrics-empty" class="lyrics-empty">播放一首歌来查看歌词</div>
       <div id="lyrics-lines" class="lyrics-lines"></div>
     </div>
+  </div>
+
+  <div id="cover-expander" class="cover-expander" aria-hidden="true">
+    <img id="ce-art" class="ce-art" alt="">
+    <div class="ce-meta"><div id="ce-title" class="ce-title"></div><div id="ce-artist" class="ce-artist"></div></div>
+    <button id="ce-close" class="ce-close" title="关闭 (Esc)">✕</button>
   </div>
 
   <div id="toasts" class="toasts"></div>
