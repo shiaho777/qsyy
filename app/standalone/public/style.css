@@ -259,6 +259,8 @@ body::before {
 .eq i:nth-child(2) { height: 100%; animation-delay: -.3s; }
 .eq i:nth-child(3) { height: 45%; animation-delay: -.5s; }
 .eq.paused i { animation-play-state: paused; }
+/* 实时模式:停掉假循环动画,柱子高度由 analyser 频谱经 rAF 直写 transform */
+.eq.live i { animation: none; height: 100%; transform: scaleY(.18); transform-origin: bottom; will-change: transform; }
 @keyframes eq { 0%, 100% { transform: scaleY(.4); } 50% { transform: scaleY(1); } }
 
 .track img.cover {
@@ -318,10 +320,11 @@ body::before {
   width: 40px; height: 40px; border-radius: 50%;
   background: #f2f2f5; color: #0b0b0e;
   display: grid; place-items: center;
-  box-shadow: 0 6px 20px rgba(255,255,255,.1), 0 3px 10px rgba(0,0,0,.45);
+  box-shadow: 0 3px 12px rgba(0,0,0,.5);
   transition: transform var(--t-fast) var(--ease), background var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
 }
-.controls .buttons > button.play:hover { background: #ffffff; transform: scale(1.07); box-shadow: 0 8px 26px rgba(255,255,255,.16), 0 4px 12px rgba(0,0,0,.5); }
+/* hover 不要白色光晕:泛光会糊住深色图标,看不清播放/暂停态 */
+.controls .buttons > button.play:hover { background: #ffffff; transform: scale(1.06); box-shadow: 0 5px 16px rgba(0,0,0,.55); }
 .controls .buttons > button.play:active { transform: scale(.93); }
 .mode.active { color: #fff !important; }
 .progress { display: flex; align-items: center; gap: 12px; width: 100%; max-width: 640px; }
@@ -567,6 +570,39 @@ body::before {
   display: grid; place-items: center; font-size: 18px; transition: all var(--t-fast) var(--ease);
 }
 .cover-expander .ce-close:hover { color: var(--text); background: var(--panel-3); border-color: var(--line-strong); }
+
+/* ============ my cache (multi-library) ============ */
+/* sidebar: two scroll lists coexist; 我的缓存 capped so playlists keep room */
+.stores { max-height: 38%; }
+.nav-caption .cap-btn {
+  margin-left: auto; padding: 0 7px; border-radius: 7px; border: 1px solid var(--line-soft);
+  color: var(--muted); font-size: 12px; line-height: 1.4; background: var(--panel);
+  transition: all var(--t-fast) var(--ease);
+}
+.nav-caption .cap-btn:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-2); }
+.nav-caption { display: flex; align-items: center; }
+.st-item img { width: 38px; height: 38px; border-radius: 9px; object-fit: cover; background: var(--panel-2); }
+/* store view hero actions + import dropdown */
+.store-hero-actions { flex-wrap: wrap; gap: 8px; }
+.st-import-wrap { position: relative; display: inline-block; }
+.st-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; min-width: 120px;
+  display: flex; flex-direction: column; gap: 2px; padding: 5px;
+  background: rgba(20,20,26,.96); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow-lg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  animation: panelIn 200ms var(--spring);
+}
+.st-menu button { text-align: left; padding: 7px 12px; border-radius: 8px; color: var(--muted); font-size: 12.5px; transition: all var(--t-fast) var(--ease); }
+.st-menu button:hover { color: var(--text); background: var(--panel-2); }
+.btn.st-danger { color: var(--danger); border-color: rgba(255,123,138,.3); }
+.btn.st-danger:hover { background: rgba(255,123,138,.08); border-color: rgba(255,123,138,.5); }
+/* store track rows: # / title / size / state / actions */
+.track.store-row { grid-template-columns: 40px 1fr 90px 80px 64px; }
+.track.store-row .st-size { text-align: right; font-variant-numeric: tabular-nums; }
+.track.store-row .st-state { color: var(--faint); }
+.track.store-row .st-state.ok { color: var(--ok); }
+.track.store-row .cell-cache { justify-content: flex-end; }
+.hero-cover.no-cover { opacity: 1; background: linear-gradient(135deg, var(--panel-2), var(--panel-3)); }
 
 /* ============ mobile / tablet(Android · iOS · narrow windows)============ */
 
