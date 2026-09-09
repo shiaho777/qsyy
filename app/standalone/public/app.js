@@ -39,6 +39,8 @@ const state = {
   effect: ls.get('effect', null),   // 当前音效 key(null=关)
   trackEffects: [],                // 当前曲目可用音效
   effectOn: false,
+  storeView: null,                 // 当前打开的缓存库视图 { name } | null(歌单视图)
+  storeSets: [], storeActive: '', storeTracks: [],
 };
 
 const audio = $('audio');
@@ -191,7 +193,7 @@ async function loadPlaylists(openSaved = true, fresh = false) {
       ${p.cover ? `<img loading="lazy" src="${coverUrl(p.cover, 96)}" alt="">` : ''}
       <div><div class="t">${esc(p.title)}</div><div class="c">${p.count} 首</div></div>
     </div>`).join('');
-  document.querySelectorAll('.pl-item').forEach(el => {
+  document.querySelectorAll('#playlists .pl-item').forEach(el => {
     el.onclick = () => openPlaylist(state.playlists[Number(el.dataset.i)]);
   });
   armImgs($('playlists'));
@@ -200,8 +202,13 @@ async function loadPlaylists(openSaved = true, fresh = false) {
 }
 
 async function openPlaylist(pl, resume = false) {
-  document.querySelectorAll('.pl-item').forEach(el =>
+  document.querySelectorAll('#playlists .pl-item').forEach(el =>
     el.classList.toggle('active', state.playlists[Number(el.dataset.i)]?.id === pl.id));
+  // leaving the cache-library view: back to playlist mode
+  state.storeView = null;
+  ls.set('storeView', '');
+  setMainMode('playlist');
+  loadStores();
   ls.set('lastPlaylist', pl.id);
   state.current = {
     id: pl.id, title: pl.title, cover: pl.cover, count: pl.count,
@@ -384,6 +391,7 @@ function qualityBadges(qualities) {
 // Only when both are unavailable do we fall back to "play it once in the
 // official client so it gets cached" flow.
 function playOrPrime(t) {
+  ensureGraph();   // 用户手势内建图,AudioContext 才能恢复;否则静音
   const info = state.cacheStatus.get(t.id);
   const list = visibleTracks().slice();
   const idx = list.findIndex(x => x.id === t.id);
@@ -416,6 +424,9 @@ function primeInClient(t) {
 
 let audioCtx = null;
 let mediaSource = null;      // MediaElementSource(只能建一次)
+let outputTap = null;        // 常驻汇流点:mediaSource → (音效链) → outputTap → analyser → destination
+let analyser = null;         // 实时频谱分析,驱动列表小波浪
+let eqFreq = null;
 let effectChain = { input: null, output: null, nodes: [] };
 
 function dbToGain(db) { return Math.pow(10, db / 20); }
@@ -525,9 +536,17 @@ function ensureGraph() {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     mediaSource = audioCtx.createMediaElementSource(audio);
-    mediaSource.connect(audioCtx.destination);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 32;                 // 16 个频点,够驱动 3 根柱子
+    analyser.smoothingTimeConstant = 0.7;
+    eqFreq = new Uint8Array(analyser.frequencyBinCount);
+    outputTap = audioCtx.createGain();
+    mediaSource.connect(outputTap);
+    outputTap.connect(analyser);
+    analyser.connect(audioCtx.destination);
   }
-  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  if (audioCtx.state === 'suspended') audioCtx.resume().then(startEqLoop).catch(() => {});
+  else startEqLoop();
 }
 
 function teardownEffectChain() {
@@ -536,7 +555,45 @@ function teardownEffectChain() {
     try { (n.output || n).disconnect(); } catch (_) {}
   }
   effectChain = { input: null, output: null, nodes: [] };
-  try { mediaSource.disconnect(); mediaSource.connect(audioCtx.destination); } catch (_) {}
+  try { mediaSource.disconnect(); mediaSource.connect(outputTap); } catch (_) {}
+}
+
+// ---------------------------------------------------------------- real-time equalizer (playing row)
+// 读 analyser 的真实频谱驱动列表里那三根柱子,替代无限循环的假动画。
+// 低频/中频/高频各取一段频点平均,平滑后写 scaleY;暂停时伏到最低。
+let eqRaf = 0;
+const eqSmooth = [0.18, 0.18, 0.18];
+function eqFloor() {
+  const eq = document.querySelector('.track.playing .eq.live');
+  if (eq) eq.querySelectorAll('i').forEach(el => { el.style.transform = 'scaleY(0.18)'; });
+}
+function startEqLoop() {
+  if (eqRaf || !analyser || !eqFreq) return;
+  const tick = () => {
+    eqRaf = 0;
+    if (!audioCtx || audioCtx.state !== 'running' || audio.paused) { eqFloor(); return; }
+    const eq = document.querySelector('.track.playing .eq');
+    if (eq) {
+      eq.classList.add('live');
+      analyser.getByteFrequencyData(eqFreq);
+      const bars = eq.querySelectorAll('i');
+      const band = (a, b) => { let s = 0; for (let k = a; k <= b; k += 1) s += eqFreq[k]; return s / ((b - a + 1) * 255); };
+      const targets = [band(1, 4), band(5, 9), band(10, 15)];
+      for (let i = 0; i < 3; i += 1) {
+        if (!bars[i]) break;
+        const v = Math.min(1, Math.pow(targets[i], 0.75) * 1.15);
+        eqSmooth[i] += (v - eqSmooth[i]) * 0.4;
+        bars[i].style.transform = `scaleY(${(0.18 + eqSmooth[i] * 0.82).toFixed(3)})`;
+      }
+    }
+    eqRaf = requestAnimationFrame(tick);
+  };
+  eqRaf = requestAnimationFrame(tick);
+}
+function stopEqLoop() {
+  if (eqRaf) cancelAnimationFrame(eqRaf);
+  eqRaf = 0;
+  eqFloor();
 }
 
 async function applyEffect(key) {
@@ -561,7 +618,7 @@ async function applyEffect(key) {
       prev.connect(input);
       prev = output;
     }
-    prev.connect(audioCtx.destination);
+    prev.connect(outputTap);
     effectChain = { input: nodes[0] ? (nodes[0].input || nodes[0]) : null, output: prev, nodes };
     state.effectOn = true;
   } catch (e) {
@@ -606,73 +663,152 @@ function renderFxOptions() {
     : '当前歌曲无智能音效;预置音效为官方同款目录,Web Audio 实时渲染';
 }
 
-// ---------------------------------------------------------------- store manager (cache sets / list / backup)
+// ---------------------------------------------------------------- my cache (multi-library manager)
 
-async function openStorePanel() {
-  // Panels share one anchor (right/bottom) and one z-index, so a sibling left
-  // open paints over this one — the wider lyrics panel hides it completely.
-  closePanel($('queue-panel'));
-  closePanel($('downloads-panel'));
-  closePanel($('lyrics-panel'));
-  $('store-panel').classList.remove('hidden');
-  await Promise.all([renderStoreSets(), renderStoreTracks()]);
-}
+const storeCoverUrl = name => `/api/store/cover?set=${encodeURIComponent(name)}`;
+const storeJson = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+let pendingImportMode = 'merge';
 
-async function renderStoreSets() {
+async function loadStores() {
   try {
     const r = await (await fetch('/api/store/sets')).json();
-    $('store-sets-hint').textContent = `${r.sets.length} 个库`;
-    $('store-sets').innerHTML = r.sets.map(set => `
-      <div class="store-set ${set.active ? 'active' : ''}" data-set="${esc(set.name)}">
-        <span class="s-name">${esc(set.name)}</span>
-        ${set.active ? '<span class="s-tag">使用中</span>' : ''}
-        <span class="s-meta">${set.tracks} 首 · ${(set.size / 1048576).toFixed(1)}MB</span>
-        ${set.active ? '' : `<button class="mini-btn s-switch">切换</button><button class="mini-btn s-del">删除</button>`}
-      </div>`).join('');
-    $('store-sets').querySelectorAll('.store-set').forEach(row => {
-      const name = row.dataset.set;
-      row.querySelector('.s-switch')?.addEventListener('click', async () => {
-        const r = await (await fetch('/api/store/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) })).json();
-        if (r?.ok) { toast(`已切换到缓存库「${name}」`, 'ok'); setTimeout(() => location.reload(), 600); }
-        else toast(r?.error || '切换失败', 'err');
-      });
-      row.querySelector('.s-del')?.addEventListener('click', async () => {
-        if (!confirm(`删除缓存库「${name}」?其中歌曲将全部移除。`)) return;
-        await fetch('/api/store/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
-        renderStoreSets();
-      });
+    state.storeSets = r.sets || [];
+    state.storeActive = r.active;
+    $('stores').innerHTML = state.storeSets.map((s, i) => `
+      <div class="pl-item st-item${state.storeView?.name === s.name ? ' active' : ''}" data-i="${i}">
+        <img loading="lazy" src="${storeCoverUrl(s.name)}" alt="" onerror="this.style.display='none'">
+        <div><div class="t">${esc(s.name)}</div><div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${s.active ? ' · 使用中' : ''}</div></div>
+      </div>`).join('') || '<div class="store-empty">还没有缓存库 — 播放在线歌曲会自动建立</div>';
+    $('stores').querySelectorAll('.st-item').forEach(el => {
+      el.onclick = () => openStoreView(state.storeSets[Number(el.dataset.i)].name);
     });
+    armImgs($('stores'));
   } catch (_) {}
 }
 
-async function renderStoreTracks() {
-  try {
-    const r = await (await fetch('/api/store/tracks')).json();
-    const list = r.tracks || [];
-    $('store-tracks-hint').textContent = `${list.length} 首 · ${list.filter(t => t.preview).length} 试听`;
-    if (!list.length) {
-      $('store-tracks').innerHTML = '<div class="store-empty">当前缓存库还没有歌曲 — 播放过的在线歌曲会自动缓存到这里</div>';
-      return;
-    }
-    // 曲名:优先用元数据里存的,再用已加载歌单里的,最后退化为 ID
-    const known = new Map();
-    for (const t of (state.current?.tracks || [])) known.set(String(t.id), t.name);
-    $('store-tracks').innerHTML = list.map(t => `
-      <div class="store-track" data-id="${t.id}">
-        <span class="t-name">${esc(t.name || known.get(String(t.id)) || `曲目 ${String(t.id).slice(-6)}`)}${t.preview ? ' <span class="cap-hint">试听</span>' : ''}</span>
-        <span class="t-size">${(t.size / 1048576).toFixed(1)}MB${t.complete ? '' : ' · 未完成'}</span>
-        <button class="mini-btn t-del">移除</button>
-      </div>`).join('');
-    $('store-tracks').querySelectorAll('.store-track').forEach(row => {
-      row.querySelector('.t-del').addEventListener('click', async () => {
-        await fetch('/api/store/remove-track', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: row.dataset.id }) });
-        state.storeProgress.delete(row.dataset.id);
-        renderStoreTracks();
-        renderStoreSets();
-        decorateCacheBadges();
-      });
-    });
-  } catch (_) {}
+function setMainMode(mode) {
+  const store = mode === 'store';
+  document.querySelector('.toolbar').classList.toggle('hidden', store);
+  $('list-head').classList.toggle('hidden', store);
+  $('sentinel').classList.toggle('hidden', store);
+  if (store) { state.filtered = null; $('search').value = ''; }
+}
+
+function openStoreView(name) {
+  state.storeView = { name };
+  ls.set('storeView', name);
+  setMainMode('store');
+  $('tracks').innerHTML = '';
+  renderStoreHero();
+  renderStoreTracksView();
+  loadStores();
+}
+
+async function renderStoreHero() {
+  const name = state.storeView?.name;
+  if (!name) return;
+  const r = await (await fetch('/api/store/sets')).json();
+  const set = (r.sets || []).find(s => s.name === name);
+  if (!set) { state.storeView = null; ls.set('storeView', ''); setMainMode('playlist'); return; }
+  state.storeSets = r.sets; state.storeActive = r.active;
+  $('hero').innerHTML = `
+    <div class="hero-cover-wrap"><img id="hero-cover" class="hero-cover" src="${storeCoverUrl(name)}" alt="" onerror="this.classList.add('no-cover')"></div>
+    <div class="hero-info">
+      <div class="hero-kicker">缓存库${set.active ? ' · <span class="live-dot"></span>使用中' : ''}</div>
+      <div class="hero-title">${esc(set.name)}</div>
+      <div class="hero-sub">${set.tracks} 首 · ${(set.size / 1048576).toFixed(1)}MB</div>
+      <div class="hero-actions store-hero-actions">
+        ${set.active ? '' : '<button id="st-use" class="btn primary">使用此库</button>'}
+        <span class="st-import-wrap"><button id="st-import" class="btn ghost">导入 ▾</button>
+          <span id="st-menu" class="st-menu hidden"><button data-mode="merge">合并导入</button><button data-mode="replace">替换导入</button></span></span>
+        <button id="st-cover" class="btn ghost">设置封面</button>
+        ${set.cover ? '<button id="st-cover-rm" class="btn ghost">移除封面</button>' : ''}
+        <button id="st-backup" class="btn ghost">备份</button>
+        ${set.active ? '<button id="st-clear" class="btn ghost">清空</button>' : ''}
+        <button id="st-del" class="btn ghost st-danger">删除</button>
+      </div>
+    </div>`;
+  armImg($('hero-cover'));
+  if ($('st-use')) $('st-use').onclick = async () => {
+    const res = await storeJson('/api/store/switch', { name });
+    if (res?.ok) { ls.set('storeView', name); toast(`已切换到缓存库「${name}」`, 'ok'); setTimeout(() => location.reload(), 500); }
+    else toast(res?.error || '切换失败', 'err');
+  };
+  if ($('st-import')) $('st-import').onclick = () => $('st-menu').classList.toggle('hidden');
+  $('st-menu')?.querySelectorAll('button').forEach(b => {
+    b.onclick = () => { pendingImportMode = b.dataset.mode; $('st-menu').classList.add('hidden'); $('restore-file').click(); };
+  });
+  if ($('st-cover')) $('st-cover').onclick = () => $('cover-file').click();
+  if ($('st-cover-rm')) $('st-cover-rm').onclick = async () => {
+    const res = await storeJson('/api/store/cover', { name, data: '' });
+    if (res?.ok) { toast('封面已移除', 'ok'); renderStoreHero(); loadStores(); }
+  };
+  if ($('st-backup')) $('st-backup').onclick = () => {
+    toast('正在打包该缓存库(浏览器开始下载)…');
+    const a = document.createElement('a');
+    a.href = `/api/backup?set=${encodeURIComponent(name)}`; a.download = '';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  if ($('st-clear')) $('st-clear').onclick = async () => {
+    if (!confirm(`清空缓存库「${name}」的全部歌曲?`)) return;
+    await fetch('/api/store/clear', { method: 'POST' });
+    state.storeProgress.clear(); toast('已清空', 'ok');
+    renderStoreHero(); renderStoreTracksView(); loadStores(); decorateCacheBadges();
+  };
+  if ($('st-del')) $('st-del').onclick = async () => {
+    if (!confirm(`删除缓存库「${name}」?其中歌曲将全部移除。`)) return;
+    const res = await storeJson('/api/store/delete', { name });
+    if (res?.ok) { ls.set('storeView', ''); toast(`已删除「${name}」`, 'ok'); setTimeout(() => location.reload(), 500); }
+    else toast(res?.error || '删除失败', 'err');
+  };
+}
+
+async function renderStoreTracksView() {
+  const name = state.storeView?.name;
+  if (!name) return;
+  const r = await (await fetch(`/api/store/tracks?set=${encodeURIComponent(name)}`)).json();
+  const list = r.tracks || [];
+  state.storeTracks = list;
+  const isActiveSet = name === state.storeActive;
+  if (!list.length) {
+    $('tracks').innerHTML = '<div class="empty">这个缓存库还没有歌曲 — 播放过的在线歌曲会自动缓存到使用中的库</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  list.forEach((t, i) => frag.appendChild(storeRowEl(t, i, isActiveSet)));
+  $('tracks').innerHTML = '';
+  $('tracks').appendChild(frag);
+}
+
+function storeRowEl(t, i, isActiveSet) {
+  const el = document.createElement('div');
+  el.className = 'track store-row';
+  el.dataset.id = t.id;
+  el.style.setProperty('--i', String(i));
+  const playable = isActiveSet && t.complete;
+  el.innerHTML = `
+    <div class="cell-idx"><span class="num">${i + 1}</span>${playable ? `<button class="hovp" title="播放">${ICONS.playRow}</button>` : ''}</div>
+    <div class="name"><span class="t-name">${esc(t.name || `曲目 ${String(t.id).slice(-6)}`)}</span>${t.preview ? '<span class="badge preview">试听</span>' : ''}${t.quality ? `<span class="badge cached">${esc(t.quality)}</span>` : ''}</div>
+    <div class="artist st-size">${(t.size / 1048576).toFixed(1)}MB</div>
+    <div class="album st-state${t.complete ? ' ok' : ''}">${t.complete ? '已缓存' : '未完成'}</div>
+    <div class="cell-cache"><button class="mini-btn st-rm">移除</button></div>`;
+  const play = () => { if (!playable) { if (!isActiveSet) toast('先「使用此库」再播放', 'err'); return; } playStoreTrack(i); };
+  el.onclick = play;
+  el.querySelector('.hovp')?.addEventListener('click', e => { e.stopPropagation(); play(); });
+  el.querySelector('.st-rm').addEventListener('click', async e => {
+    e.stopPropagation();
+    await storeJson('/api/store/remove-track', { id: t.id, set: state.storeView?.name });
+    state.storeProgress.delete(t.id);
+    renderStoreTracksView(); renderStoreHero(); loadStores(); decorateCacheBadges();
+  });
+  return el;
+}
+
+function playStoreTrack(i) {
+  const playable = (state.storeTracks || []).filter(t => t.complete);
+  const idx = playable.findIndex(t => t.id === state.storeTracks[i].id);
+  const objs = playable.map(t => ({ id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`, artists: [], album: '', duration: 0, cover: null, vip: false, qualities: [] }));
+  if (idx >= 0) setQueue(objs, idx);
 }
 
 // ---------------------------------------------------------------- online availability (client session)
@@ -962,8 +1098,9 @@ audio.onplaying = () => {
   const t = state.queue[state.queueIndex];
   document.title = t ? `▶ ${t.name} · qsyy` : 'qsyy';
   prefetchNext();
+  startEqLoop();
 };
-audio.onpause = () => { $('p-title').textContent = $('p-title').textContent.replace(' — 点 ▶ 开始', ''); $('p-play').innerHTML = ICONS.play; decoratePlayingRow(); };
+audio.onpause = () => { $('p-title').textContent = $('p-title').textContent.replace(' — 点 ▶ 开始', ''); $('p-play').innerHTML = ICONS.play; decoratePlayingRow(); stopEqLoop(); };
 audio.ontimeupdate = () => {
   highlightLyric();
   if (!audio.duration || seeking) return;
@@ -1043,9 +1180,9 @@ if ($('p-vol-icon')) $('p-vol-icon').onclick = () => {
   setVolIcon();
 };
 
-if ($('p-play')) $('p-play').onclick = () => { if (!audio.src) { const v = visibleTracks(); if (v.length) setQueue(v.slice(), 0); return; } audio.paused ? audio.play() : audio.pause(); };
-if ($('p-prev')) $('p-prev').onclick = () => playNextIndex(-1);
-if ($('p-next')) $('p-next').onclick = () => playNextIndex(1);
+if ($('p-play')) $('p-play').onclick = () => { ensureGraph(); if (!audio.src) { const v = visibleTracks(); if (v.length) setQueue(v.slice(), 0); return; } audio.paused ? audio.play() : audio.pause(); };
+if ($('p-prev')) $('p-prev').onclick = () => { ensureGraph(); playNextIndex(-1); };
+if ($('p-next')) $('p-next').onclick = () => { ensureGraph(); playNextIndex(1); };
 
 // 播放栏封面:常驻淡入(src 每次切歌都换,once 不够),点开看大图
 if ($('p-cover')) {
@@ -1086,7 +1223,7 @@ function updateMediaSession(t) {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: t.name, artist: t.artists.join(' / '), album: t.album || '', artwork,
     });
-    navigator.mediaSession.setActionHandler('play', () => audio.play());
+    navigator.mediaSession.setActionHandler('play', () => { ensureGraph(); audio.play(); });
     navigator.mediaSession.setActionHandler('pause', () => audio.pause());
     navigator.mediaSession.setActionHandler('previoustrack', () => playNextIndex(-1));
     navigator.mediaSession.setActionHandler('nexttrack', () => playNextIndex(1));
@@ -1105,7 +1242,7 @@ function renderQueuePanel() {
       <div><div class="q-name">${esc(t.name)}</div><div class="q-artist">${esc(t.artists.join(' / '))}</div></div>
     </div>`).join('');
   document.querySelectorAll('.q-item').forEach(el => {
-    el.onclick = () => { state.queueIndex = Number(el.dataset.i); startCurrent(); };
+    el.onclick = () => { ensureGraph(); state.queueIndex = Number(el.dataset.i); startCurrent(); };
   });
   armImgs($('queue-list'));
 }
@@ -1634,6 +1771,10 @@ setInterval(loadStats, 10 * 60 * 1000);
   // 首帧淡入:下一帧揭开 .booting;超时兜底防极端情况下白屏
   requestAnimationFrame(() => document.body.classList.remove('booting'));
   setTimeout(() => document.body.classList.remove('booting'), 800);
+  // AudioContext 被系统挂起(如蓝牙断连)时的兜底:任何点击/按键都尝试恢复
+  ['pointerdown', 'keydown'].forEach(evt => document.addEventListener(evt, () => {
+    if (audioCtx?.state === 'suspended') audioCtx.resume().then(startEqLoop).catch(() => {});
+  }, { passive: true }));
   updateModeButtons();
   // mobile: sidebar drawer toggle (elements only visible under 720px)
   const sidebar = document.querySelector('.sidebar');
@@ -1655,52 +1796,45 @@ setInterval(loadStats, 10 * 60 * 1000);
     }
   }).catch(() => {});
   if ($('fx-select')) $('fx-select').onchange = e => applyEffect(e.target.value || null);
-  if ($('store-btn')) $('store-btn').onclick = openStorePanel;
-  if ($('check-update')) $('check-update').onclick = checkUpdate;
-  if ($('store-close')) $('store-close').onclick = () => $('store-panel').classList.add('hidden');
-  if ($('backup-btn')) $('backup-btn').onclick = () => {
-    toast('正在打包当前缓存库(浏览器开始下载)…');
-    const a = document.createElement('a');
-    a.href = '/api/backup';
-    a.download = '';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  if ($('store-btn')) $('store-btn').onclick = async () => {
+    const r = await (await fetch('/api/store/sets')).json();
+    openStoreView(r.active);
   };
-  if ($('restore-btn')) $('restore-btn').onclick = () => $('restore-file').click();
+  if ($('check-update')) $('check-update').onclick = checkUpdate;
   if ($('restore-file')) $('restore-file').onchange = async e => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    const setName = file.name.replace(/\.tar$/i, '');
-    toast(`正在导入「${file.name}」(${(file.size / 1048576).toFixed(1)}MB)…`);
+    const name = state.storeView?.name;
+    if (!name) { toast('先在侧栏「我的缓存」选择一个缓存库再导入', 'err'); return; }
+    const mode = pendingImportMode;
+    toast(`正在${mode === 'merge' ? '合并' : '替换'}导入「${file.name}」到「${name}」(${(file.size / 1048576).toFixed(1)}MB)…`);
     try {
-      const r = await (await fetch(`/api/restore?set=${encodeURIComponent(setName)}`, { method: 'POST', body: file })).json();
+      const r = await (await fetch(`/api/restore?set=${encodeURIComponent(name)}&mode=${mode}&activate=0`, { method: 'POST', body: file })).json();
       if (r?.ok) {
-        toast(`导入完成:${r.imported} 个文件,已切换到缓存库「${r.set}」`, 'ok');
-        setTimeout(() => location.reload(), 1000);
-      } else {
-        toast('导入失败:' + (r?.error || '文件格式不正确'), 'err');
-      }
-    } catch (err) {
-      toast('导入失败:' + err.message, 'err');
-    }
+        toast(`导入完成:${r.imported} 个文件${r.skipped ? `,跳过 ${r.skipped}` : ''}`, 'ok');
+        renderStoreHero(); renderStoreTracksView(); loadStores(); decorateCacheBadges();
+      } else toast('导入失败:' + (r?.error || '文件格式不正确'), 'err');
+    } catch (err) { toast('导入失败:' + err.message, 'err'); }
+  };
+  if ($('cover-file')) $('cover-file').onchange = async e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const name = state.storeView?.name;
+    if (!name) return;
+    if (!/^image\//.test(file.type)) { toast('请选择图片文件(jpg/png/webp)', 'err'); return; }
+    const data = await new Promise(res => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(file); });
+    const r = await storeJson('/api/store/cover', { name, data });
+    if (r?.ok) { toast('封面已更新', 'ok'); renderStoreHero(); loadStores(); }
+    else toast(r?.error || '封面设置失败', 'err');
   };
   if ($('store-new-btn')) $('store-new-btn').onclick = async () => {
-    const name = $('store-new-name').value.trim();
+    const name = (prompt('新缓存库名称(1-32 位中文/字母/数字/短横线):') || '').trim();
     if (!name) return;
-    const r = await (await fetch('/api/store/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) })).json();
-    if (r?.ok) { $('store-new-name').value = ''; renderStoreSets(); toast(`已新建缓存库「${name}」`, 'ok'); }
+    const r = await storeJson('/api/store/create', { name });
+    if (r?.ok) { toast(`已新建缓存库「${name}」`, 'ok'); loadStores(); openStoreView(name); }
     else toast(r?.error || '新建失败', 'err');
-  };
-  if ($('store-clear-btn')) $('store-clear-btn').onclick = async () => {
-    if (!confirm('清空当前缓存库的全部歌曲?')) return;
-    await fetch('/api/store/clear', { method: 'POST' });
-    toast('已清空', 'ok');
-    renderStoreSets();
-    renderStoreTracks();
-    state.storeProgress.clear();
-    decorateCacheBadges();
   };
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   try {
@@ -1708,7 +1842,11 @@ setInterval(loadStats, 10 * 60 * 1000);
     // the playlist, and loadPlaylists already calls loadMe itself
     loadStats();
     loadAppVersion();
+    loadStores();
     await loadPlaylists(true);
+    // reopen the cache-library view if that's where the user last was
+    const lastStore = ls.get('storeView', '');
+    if (lastStore) openStoreView(lastStore);
     if (!restoreQueue()) {
       const saved = ls.get('lastTrack', null);
       // queue restore happens after playlist loads in openPlaylist resume path
