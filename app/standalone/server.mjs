@@ -1652,17 +1652,54 @@ const serverHandler = async (request, response) => {
         for (const name of fs.readdirSync(STORES_ROOT)) {
           const dir = path.join(STORES_ROOT, name);
           if (!fs.statSync(dir).isDirectory()) continue;
-          let tracks = 0, size = 0;
+          let tracks = 0, size = 0, cover = null;
           for (const f of fs.readdirSync(dir)) {
             const st = fs.statSync(path.join(dir, f));
+            const cm = f.match(/^cover\.(jpg|jpeg|png|webp)$/i);
+            if (cm) { cover = cm[1].toLowerCase(); continue; } // 封面不计入缓存体积
             size += st.size;
             if (f.endsWith('.m4a')) tracks += 1;
           }
-          sets.push({ name, tracks, size, active: name === activeStoreName() });
+          sets.push({ name, tracks, size, cover, active: name === activeStoreName() });
         }
       } catch (_) {}
       sets.sort((a, b) => (b.active - a.active) || a.name.localeCompare(b.name));
       sendJson(response, 200, { active: activeStoreName(), sets });
+      return;
+    }
+    if (route === 'GET /api/store/cover') {
+      // serve a set's cover image (stores/<name>/cover.*); 404 when absent
+      const name = url.searchParams.get('set') || '';
+      if (!setNameOk(name)) { sendJson(response, 400, { ok: false }); return; }
+      const dir = path.join(STORES_ROOT, name);
+      let file = null;
+      try { file = fs.readdirSync(dir).find(f => /^cover\.(jpg|jpeg|png|webp)$/i.test(f)); } catch (_) {}
+      if (!file) { sendJson(response, 404, { ok: false }); return; }
+      const ext = file.split('.').pop().toLowerCase();
+      const types = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+      try {
+        const buf = fs.readFileSync(path.join(dir, file));
+        response.writeHead(200, { 'content-type': types[ext] || 'image/jpeg', 'cache-control': 'public, max-age=3600' }).end(buf);
+      } catch (_) { sendJson(response, 404, { ok: false }); }
+      return;
+    }
+    if (route === 'POST /api/store/cover') {
+      // set/remove a set's cover. data = base64 data URL; empty string removes.
+      const input = await readBody(request);
+      const name = String(input.name || '');
+      if (!setNameOk(name) || !fs.existsSync(path.join(STORES_ROOT, name))) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
+      const dir = path.join(STORES_ROOT, name);
+      const removeOld = () => { try { for (const f of fs.readdirSync(dir)) if (/^cover\./i.test(f)) fs.unlinkSync(path.join(dir, f)); } catch (_) {} };
+      const data = String(input.data || '');
+      if (!data) { removeOld(); sendJson(response, 200, { ok: true }); return; }
+      const m = data.match(/^data:image\/(jpg|jpeg|png|webp);base64,(.+)$/is);
+      if (!m) { sendJson(response, 400, { ok: false, error: '仅支持 jpg/png/webp 图片' }); return; }
+      const buf = Buffer.from(m[2], 'base64');
+      if (buf.length > 3 * 1024 * 1024) { sendJson(response, 400, { ok: false, error: '封面过大(上限 3MB)' }); return; }
+      removeOld();
+      const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
+      try { fs.writeFileSync(path.join(dir, `cover.${ext}`), buf); sendJson(response, 200, { ok: true }); }
+      catch (_) { sendJson(response, 500, { ok: false }); }
       return;
     }
     if (route === 'POST /api/store/switch') {
@@ -1692,25 +1729,49 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'GET /api/store/tracks') {
+      const wantSet = url.searchParams.get('set') || activeStoreName();
       const tracks = [];
-      for (const [id, meta] of storeMeta) {
-        const complete = meta.complete && fs.existsSync(m4aPath(id));
-        let size = 0;
-        try { size = complete ? fs.statSync(m4aPath(id)).size : meta.downloaded; } catch (_) {}
-        tracks.push({ id, name: meta.name || '', complete, preview: Boolean(meta.preview), size, quality: meta.quality || '' });
+      if (wantSet === activeStoreName()) {
+        for (const [id, meta] of storeMeta) {
+          const complete = meta.complete && fs.existsSync(m4aPath(id));
+          let size = 0;
+          try { size = complete ? fs.statSync(m4aPath(id)).size : meta.downloaded; } catch (_) {}
+          tracks.push({ id, name: meta.name || '', complete, preview: Boolean(meta.preview), size, quality: meta.quality || '' });
+        }
+      } else {
+        // browsing a non-active set: read its dir directly (storeMeta is active-only)
+        const dir = path.join(STORES_ROOT, wantSet);
+        try {
+          for (const f of fs.readdirSync(dir)) {
+            if (!f.endsWith('.json')) continue;
+            try {
+              const meta = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+              if (!meta?.trackId) continue;
+              const id = String(meta.trackId);
+              const complete = Boolean(meta.complete) && fs.existsSync(path.join(dir, `${id}.m4a`));
+              let size = 0;
+              try { size = complete ? fs.statSync(path.join(dir, `${id}.m4a`)).size : (meta.downloaded || 0); } catch (_) {}
+              tracks.push({ id, name: meta.name || '', complete, preview: Boolean(meta.preview), size, quality: meta.quality || '' });
+            } catch (_) {}
+          }
+        } catch (_) {}
       }
       tracks.sort((a, b) => Number(b.complete) - Number(a.complete) || (b.size - a.size));
-      sendJson(response, 200, { set: activeStoreName(), tracks });
+      sendJson(response, 200, { set: wantSet, tracks });
       return;
     }
     if (route === 'POST /api/store/remove-track') {
       const input = await readBody(request);
       const id = String(input.id || '');
       if (!/^\d+$/.test(id)) { sendJson(response, 400, { ok: false }); return; }
+      const setName = String(input.set || '');
+      const otherSet = setName && setName !== activeStoreName() ? setName : null;
+      if (otherSet && (!setNameOk(otherSet) || !fs.existsSync(path.join(STORES_ROOT, otherSet)))) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
+      const dir = otherSet ? path.join(STORES_ROOT, otherSet) : STORE_DIR;
       for (const suffix of ['m4a', 'json', 'part']) {
-        try { fs.unlinkSync(path.join(STORE_DIR, `${id}.${suffix}`)); } catch (_) {}
+        try { fs.unlinkSync(path.join(dir, `${id}.${suffix}`)); } catch (_) {}
       }
-      storeMeta.delete(id);
+      if (!otherSet) storeMeta.delete(id);
       sendJson(response, 200, { ok: true });
       return;
     }
@@ -1722,20 +1783,36 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'GET /api/backup') {
-      // stream the whole incremental-cache store as a tar (audio is already
-      // compressed, so no gzip pass) — backup.json rides along as manifest
-      const manifest = {
-        version: 1, app: 'qsyy', createdAt: Date.now(),
-        tracks: [...storeMeta.values()].map(m => ({ id: m.trackId, complete: Boolean(m.complete && fs.existsSync(m4aPath(m.trackId))), preview: Boolean(m.preview) })),
-      };
-      const manifestPath = path.join(STORE_DIR, 'backup.json');
+      // stream a whole cache set as a tar (audio is already compressed, so no
+      // gzip pass) — backup.json rides along as manifest. ?set= picks the set
+      // (default: active); the set's cover.* rides along automatically.
+      const setName = url.searchParams.get('set') || activeStoreName();
+      const backupDir = setName === activeStoreName() ? STORE_DIR : path.join(STORES_ROOT, setName);
+      const manifestTracks = setName === activeStoreName()
+        ? [...storeMeta.values()].map(m => ({ id: m.trackId, complete: Boolean(m.complete && fs.existsSync(m4aPath(m.trackId))), preview: Boolean(m.preview) }))
+        : (() => {
+          const out = [];
+          try {
+            for (const f of fs.readdirSync(backupDir)) {
+              if (!f.endsWith('.json')) continue;
+              try {
+                const meta = JSON.parse(fs.readFileSync(path.join(backupDir, f), 'utf8'));
+                if (meta?.trackId) out.push({ id: meta.trackId, complete: Boolean(meta.complete), preview: Boolean(meta.preview) });
+              } catch (_) {}
+            }
+          } catch (_) {}
+          return out;
+        })();
+      const manifest = { version: 1, app: 'qsyy', createdAt: Date.now(), set: setName, tracks: manifestTracks };
+      const manifestPath = path.join(backupDir, 'backup.json');
       try { fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 1)); } catch (_) {}
       const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      // header must stay latin1: raw CJK set name is invalid — use RFC5987 filename*
       response.writeHead(200, {
         'content-type': 'application/x-tar',
-        'content-disposition': `attachment; filename="qsyy-cache-${stamp}.tar"`,
+        'content-disposition': `attachment; filename="qsyy-cache-${stamp}.tar"; filename*=UTF-8''${encodeURIComponent(`qsyy-cache-${setName}-${stamp}.tar`)}`,
       });
-      const child = spawnTracked('tar', ['-cf', '-', '-C', STORE_DIR, '.']);
+      const child = spawnTracked('tar', ['-cf', '-', '-C', backupDir, '.']);
       child.stdout.pipe(response);
       child.stderr.resume();
       child.on('close', () => {
@@ -1746,15 +1823,20 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'POST /api/restore') {
-      // streaming tar import into a NEW set (named after the backup file),
-      // then switched active. Only accepts plain <trackId>.<m4a|json|part>
-      // entries (path-traversal safe by construction).
+      // streaming tar import into a set (named after the backup file, or an
+      // existing one). mode=merge keeps existing tracks (same-id overwritten);
+      // mode=replace (default) wipes the target first. activate=1 switches to
+      // it afterwards (default: replace→activate, merge→stay). Only accepts
+      // plain <trackId>.<m4a|json|part> + cover.* entries (traversal-safe).
       let setName = (url.searchParams.get('set') || '').replace(/\.tar$/i, '').trim();
       if (!setNameOk(setName)) setName = `导入-${new Date().toISOString().slice(5, 10).replace('-', '')}`;
+      const importMode = url.searchParams.get('mode') === 'merge' ? 'merge' : 'replace';
+      const activateParam = url.searchParams.get('activate');
+      const shouldActivate = activateParam != null ? activateParam === '1' : importMode === 'replace';
       const targetDir = path.join(STORES_ROOT, setName);
-      fs.rmSync(targetDir, { recursive: true, force: true });
+      if (importMode !== 'merge') fs.rmSync(targetDir, { recursive: true, force: true });
       fs.mkdirSync(targetDir, { recursive: true });
-      const validEntry = name => /^\d+\.(m4a|json|part)$/.test(name);
+      const validEntry = name => /^(\d+\.(m4a|json|part)|cover\.(jpg|jpeg|png|webp))$/i.test(name);
       let imported = 0;
       let skipped = 0;
       let buffer = Buffer.alloc(0);
@@ -1813,8 +1895,9 @@ const serverHandler = async (request, response) => {
           }
         }
         if (current?.out) current.out.end();
-        switchStore(setName);
-        sendJson(response, 200, { ok: true, imported, skipped, set: setName });
+        if (setName === activeStoreName()) { storeMeta.clear(); loadStoreMeta(); }   // 合并进活动库:刷新内存 meta
+        else if (shouldActivate) switchStore(setName);                                // 替换导入默认切到该库
+        sendJson(response, 200, { ok: true, imported, skipped, set: setName, mode: importMode });
       } catch (error) {
         sendJson(response, 500, { ok: false, error: error.message });
       }
