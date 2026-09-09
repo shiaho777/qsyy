@@ -667,7 +667,35 @@ function renderFxOptions() {
 
 const storeCoverUrl = name => `/api/store/cover?set=${encodeURIComponent(name)}`;
 const storeJson = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
-let pendingImportMode = 'merge';
+
+// 导入流程:选文件 → 一个弹窗里问 合并/替换(单入口,选择出现在导入时) → 执行
+let pendingImportFile = null;
+function openImportModal() {
+  const m = $('import-modal');
+  if (!m) return;
+  m.classList.remove('hidden');
+  requestAnimationFrame(() => m.classList.add('open'));
+}
+function closeImportModal() {
+  const m = $('import-modal');
+  if (!m) return;
+  m.classList.remove('open');
+  setTimeout(() => m.classList.add('hidden'), 220);
+  pendingImportFile = null;
+}
+async function runImport(mode) {
+  const job = pendingImportFile;
+  closeImportModal();
+  if (!job) return;
+  toast(`正在${mode === 'merge' ? '合并' : '替换'}导入「${job.file.name}」到「${job.name}」…`);
+  try {
+    const r = await (await fetch(`/api/restore?set=${encodeURIComponent(job.name)}&mode=${mode}&activate=0`, { method: 'POST', body: job.file })).json();
+    if (r?.ok) {
+      toast(`导入完成:${r.imported} 个文件${r.skipped ? `,跳过 ${r.skipped}` : ''}`, 'ok');
+      renderStoreHero(); renderStoreTracksView(); loadStores(); decorateCacheBadges();
+    } else toast('导入失败:' + (r?.error || '文件格式不正确'), 'err');
+  } catch (err) { toast('导入失败:' + err.message, 'err'); }
+}
 
 async function loadStores() {
   try {
@@ -719,10 +747,6 @@ async function renderStoreHero() {
       <div class="hero-sub">${set.tracks} 首 · ${(set.size / 1048576).toFixed(1)}MB</div>
       <div class="hero-actions store-hero-actions">
         ${set.active ? '' : '<button id="st-use" class="btn primary">使用此库</button>'}
-        <select id="st-import-mode" class="pill-select" title="导入方式:合并保留原有曲目,替换整体覆盖">
-          <option value="merge">合并导入</option>
-          <option value="replace">替换导入</option>
-        </select>
         <button id="st-import" class="btn ghost">导入…</button>
         <button id="st-cover" class="btn ghost">设置封面</button>
         ${set.cover ? '<button id="st-cover-rm" class="btn ghost">移除封面</button>' : ''}
@@ -737,7 +761,7 @@ async function renderStoreHero() {
     if (res?.ok) { ls.set('storeView', name); toast(`已切换到缓存库「${name}」`, 'ok'); setTimeout(() => location.reload(), 500); }
     else toast(res?.error || '切换失败', 'err');
   };
-  if ($('st-import')) $('st-import').onclick = () => { pendingImportMode = $('st-import-mode')?.value || 'merge'; $('restore-file').click(); };
+  if ($('st-import')) $('st-import').onclick = () => $('restore-file').click();
   if ($('st-cover')) $('st-cover').onclick = () => $('cover-file').click();
   if ($('st-cover-rm')) $('st-cover-rm').onclick = async () => {
     const res = await storeJson('/api/store/cover', { name, data: '' });
@@ -1665,6 +1689,7 @@ if ($('quality-select')) $('quality-select').onchange = e => { state.quality = e
 if ($('format-select')) $('format-select').onchange = e => { state.fmt = e.target.value; ls.set('fmt', state.fmt); toast(`默认格式:${e.target.selectedOptions[0].textContent}`, 'ok'); };
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape' && $('import-modal') && !$('import-modal').classList.contains('hidden')) { closeImportModal(); return; }
   if (e.code === 'Escape' && coverExpander?.classList.contains('open')) { closeCoverExpander(); return; }
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   // mobile browsers have no hardware keyboard; skip path is harmless
@@ -1801,22 +1826,23 @@ setInterval(loadStats, 10 * 60 * 1000);
     openStoreView(r.active);
   };
   if ($('check-update')) $('check-update').onclick = checkUpdate;
-  if ($('restore-file')) $('restore-file').onchange = async e => {
+  // 选完文件 → 弹窗里问 合并/替换(单入口导入)
+  if ($('restore-file')) $('restore-file').onchange = e => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
     const name = state.storeView?.name;
     if (!name) { toast('先在侧栏「我的缓存」选择一个缓存库再导入', 'err'); return; }
-    const mode = pendingImportMode;
-    toast(`正在${mode === 'merge' ? '合并' : '替换'}导入「${file.name}」到「${name}」(${(file.size / 1048576).toFixed(1)}MB)…`);
-    try {
-      const r = await (await fetch(`/api/restore?set=${encodeURIComponent(name)}&mode=${mode}&activate=0`, { method: 'POST', body: file })).json();
-      if (r?.ok) {
-        toast(`导入完成:${r.imported} 个文件${r.skipped ? `,跳过 ${r.skipped}` : ''}`, 'ok');
-        renderStoreHero(); renderStoreTracksView(); loadStores(); decorateCacheBadges();
-      } else toast('导入失败:' + (r?.error || '文件格式不正确'), 'err');
-    } catch (err) { toast('导入失败:' + err.message, 'err'); }
+    pendingImportFile = { file, name };
+    $('im-set').textContent = name;
+    $('im-file').textContent = `${file.name} · ${(file.size / 1048576).toFixed(1)}MB`;
+    openImportModal();
   };
+  if ($('im-merge')) $('im-merge').onclick = () => runImport('merge');
+  if ($('im-replace')) $('im-replace').onclick = () => runImport('replace');
+  if ($('im-cancel')) $('im-cancel').onclick = closeImportModal;
+  const importModal = $('import-modal');
+  if (importModal) importModal.addEventListener('click', e => { if (e.target === importModal) closeImportModal(); });
   if ($('cover-file')) $('cover-file').onchange = async e => {
     const file = e.target.files?.[0];
     e.target.value = '';
