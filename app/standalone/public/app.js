@@ -719,8 +719,11 @@ async function renderStoreHero() {
       <div class="hero-sub">${set.tracks} 首 · ${(set.size / 1048576).toFixed(1)}MB</div>
       <div class="hero-actions store-hero-actions">
         ${set.active ? '' : '<button id="st-use" class="btn primary">使用此库</button>'}
-        <span class="st-import-wrap"><button id="st-import" class="btn ghost">导入 ▾</button>
-          <span id="st-menu" class="st-menu hidden"><button data-mode="merge">合并导入</button><button data-mode="replace">替换导入</button></span></span>
+        <select id="st-import-mode" class="pill-select" title="导入方式:合并保留原有曲目,替换整体覆盖">
+          <option value="merge">合并导入</option>
+          <option value="replace">替换导入</option>
+        </select>
+        <button id="st-import" class="btn ghost">导入…</button>
         <button id="st-cover" class="btn ghost">设置封面</button>
         ${set.cover ? '<button id="st-cover-rm" class="btn ghost">移除封面</button>' : ''}
         <button id="st-backup" class="btn ghost">备份</button>
@@ -734,10 +737,7 @@ async function renderStoreHero() {
     if (res?.ok) { ls.set('storeView', name); toast(`已切换到缓存库「${name}」`, 'ok'); setTimeout(() => location.reload(), 500); }
     else toast(res?.error || '切换失败', 'err');
   };
-  if ($('st-import')) $('st-import').onclick = () => $('st-menu').classList.toggle('hidden');
-  $('st-menu')?.querySelectorAll('button').forEach(b => {
-    b.onclick = () => { pendingImportMode = b.dataset.mode; $('st-menu').classList.add('hidden'); $('restore-file').click(); };
-  });
+  if ($('st-import')) $('st-import').onclick = () => { pendingImportMode = $('st-import-mode')?.value || 'merge'; $('restore-file').click(); };
   if ($('st-cover')) $('st-cover').onclick = () => $('cover-file').click();
   if ($('st-cover-rm')) $('st-cover-rm').onclick = async () => {
     const res = await storeJson('/api/store/cover', { name, data: '' });
@@ -1829,13 +1829,24 @@ setInterval(loadStats, 10 * 60 * 1000);
     if (r?.ok) { toast('封面已更新', 'ok'); renderStoreHero(); loadStores(); }
     else toast(r?.error || '封面设置失败', 'err');
   };
-  if ($('store-new-btn')) $('store-new-btn').onclick = async () => {
-    const name = (prompt('新缓存库名称(1-32 位中文/字母/数字/短横线):') || '').trim();
+  if ($('store-new-btn')) $('store-new-btn').onclick = () => {
+    const form = $('store-new-form');
+    form.classList.toggle('hidden');
+    if (!form.classList.contains('hidden')) $('store-new-name').focus();
+  };
+  const doCreateStore = async () => {
+    const name = ($('store-new-name').value || '').trim();
     if (!name) return;
     const r = await storeJson('/api/store/create', { name });
-    if (r?.ok) { toast(`已新建缓存库「${name}」`, 'ok'); loadStores(); openStoreView(name); }
-    else toast(r?.error || '新建失败', 'err');
+    if (r?.ok) {
+      $('store-new-name').value = '';
+      $('store-new-form').classList.add('hidden');
+      toast(`已新建缓存库「${name}」`, 'ok');
+      loadStores(); openStoreView(name);
+    } else toast(r?.error || '新建失败', 'err');
   };
+  if ($('store-new-ok')) $('store-new-ok').onclick = doCreateStore;
+  if ($('store-new-name')) $('store-new-name').addEventListener('keydown', e => { if (e.key === 'Enter') doCreateStore(); });
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   try {
     // boot in parallel: /api/me + /api/stats + /api/effects don't depend on

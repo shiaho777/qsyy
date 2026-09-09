@@ -574,6 +574,7 @@ body::before {
 /* ============ my cache (multi-library) ============ */
 /* sidebar: two scroll lists coexist; 我的缓存 capped so playlists keep room */
 .stores { max-height: 38%; }
+.sidebar .store-new { padding: 0 10px 6px; }
 .nav-caption .cap-btn {
   margin-left: auto; padding: 0 7px; border-radius: 7px; border: 1px solid var(--line-soft);
   color: var(--muted); font-size: 12px; line-height: 1.4; background: var(--panel);
@@ -582,18 +583,8 @@ body::before {
 .nav-caption .cap-btn:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-2); }
 .nav-caption { display: flex; align-items: center; }
 .st-item img { width: 38px; height: 38px; border-radius: 9px; object-fit: cover; background: var(--panel-2); }
-/* store view hero actions + import dropdown */
-.store-hero-actions { flex-wrap: wrap; gap: 8px; }
-.st-import-wrap { position: relative; display: inline-block; }
-.st-menu {
-  position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; min-width: 120px;
-  display: flex; flex-direction: column; gap: 2px; padding: 5px;
-  background: rgba(20,20,26,.96); border: 1px solid var(--line); border-radius: 12px;
-  box-shadow: var(--shadow-lg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-  animation: panelIn 200ms var(--spring);
-}
-.st-menu button { text-align: left; padding: 7px 12px; border-radius: 8px; color: var(--muted); font-size: 12.5px; transition: all var(--t-fast) var(--ease); }
-.st-menu button:hover { color: var(--text); background: var(--panel-2); }
+/* store view hero actions (import mode uses a native pill-select, like the toolbar) */
+.store-hero-actions { flex-wrap: wrap; gap: 8px; align-items: center; }
 .btn.st-danger { color: var(--danger); border-color: rgba(255,123,138,.3); }
 .btn.st-danger:hover { background: rgba(255,123,138,.08); border-color: rgba(255,123,138,.5); }
 /* store track rows: # / title / size / state / actions */
