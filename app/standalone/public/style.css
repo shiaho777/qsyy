@@ -583,8 +583,25 @@ body::before {
 .nav-caption .cap-btn:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-2); }
 .nav-caption { display: flex; align-items: center; }
 .st-item img { width: 38px; height: 38px; border-radius: 9px; object-fit: cover; background: var(--panel-2); }
-/* store view hero actions (import mode uses a native pill-select, like the toolbar) */
+/* store view hero actions (import asks merge/replace in one dialog after file pick) */
 .store-hero-actions { flex-wrap: wrap; gap: 8px; align-items: center; }
+/* generic centered modal (import merge/replace choice) */
+.modal {
+  position: fixed; inset: 0; z-index: 70; display: grid; place-items: center;
+  background: rgba(4,4,8,.6); backdrop-filter: blur(14px) saturate(140%); -webkit-backdrop-filter: blur(14px) saturate(140%);
+  opacity: 0; pointer-events: none; transition: opacity 220ms var(--ease);
+}
+.modal.open { opacity: 1; pointer-events: auto; }
+.modal-card {
+  width: min(420px, calc(100vw - 48px)); padding: 22px 24px;
+  background: rgba(20,20,26,.94); border: 1px solid var(--line); border-radius: 18px;
+  box-shadow: var(--shadow-lg);
+  transform: translateY(12px) scale(.97); transition: transform 260ms var(--spring);
+}
+.modal.open .modal-card { transform: none; }
+.modal-title { font-size: 15px; font-weight: 700; letter-spacing: .3px; }
+.modal-sub { color: var(--muted); font-size: 12.5px; margin-top: 7px; word-break: break-all; }
+.modal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .btn.st-danger { color: var(--danger); border-color: rgba(255,123,138,.3); }
 .btn.st-danger:hover { background: rgba(255,123,138,.08); border-color: rgba(255,123,138,.5); }
 /* store track rows: # / title / size / state / actions */
