@@ -53,6 +53,14 @@
         <input id="search" type="text" placeholder="在当前歌单内搜索…" autocomplete="off">
       </div>
       <div class="toolbar-actions">
+        <select id="sort-select" class="pill-select" title="排序方式;拖动列表行可自定义顺序,「同步收藏」恢复汽水默认排序">
+          <option value="default">默认排序</option>
+          <option value="az">字母 A→Z</option>
+          <option value="duration">时长 短→长</option>
+          <option value="random">随机</option>
+          <option value="lyric">有歌词在前</option>
+          <option value="custom" disabled>自定义</option>
+        </select>
         <select id="fx-select" class="pill-select" title="音效:智能音效为汽水接口逐曲调校,其余为官方同款目录,Web Audio 实时渲染"></select>
         <select id="quality-select" class="pill-select" title="下载音质">
           <option value="lossless">无损音质</option>
