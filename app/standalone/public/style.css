@@ -225,6 +225,11 @@ body::before {
   animation-delay: calc(min(var(--i, 0), 24) * 18ms);
 }
 @keyframes rowIn { from { opacity: 0; transform: translateY(8px); } }
+/* 排序生效后整表重渲染,关掉行入场动画避免每次分页/拖动都闪一遍 */
+.tracks.no-anim .track { animation: none; }
+.track.dragging { opacity: .35; }
+.track.drop-above { box-shadow: 0 -2px 0 0 rgba(255,255,255,.65); }
+.track.drop-below { box-shadow: 0 2px 0 0 rgba(255,255,255,.65); }
 .track:hover { background: var(--panel); }
 .track:active { transform: scale(.996); }
 /* playing highlight: animated overlay so it can fade in/out */

@@ -223,12 +223,14 @@ async function openPlaylist(pl, resume = false) {
   document.querySelector('.main').scrollTop = 0;
   history.scrollRestoration = 'manual';
   await loadMore();
+  await restorePlaylistOrder();
   if (resume) {
     const last = ls.get('lastTrack', null);
     if (last && last.playlistId === pl.id) {
-      const idx = state.current.tracks.findIndex(t => t.id === last.trackId);
+      const list = displayTracks();
+      const idx = list.findIndex(t => t.id === last.trackId);
       if (idx >= 0) {
-        state.queue = state.current.tracks.slice();
+        state.queue = list.slice();
         state.queueIndex = idx;
         startCurrent(false);
         const pos = Number(last.position) || 0;
@@ -310,12 +312,15 @@ async function loadMore() {
           album: t.album?.name || '', duration: Number(t.duration) || 0,
           cover: t.album?.url_cover, vip: (t.is_vip === true) || (t.audition_info?.is_audition === true),
           qualities: Array.isArray(t.bit_rates) ? t.bit_rates.map(b => b.quality || b).filter(Boolean) : [],
+          // 有无歌词的近似信号:接口无显式字段,词作者/卡拉OK支持任一即视为有词
+          lyric: Boolean(t.song_maker_team?.lyricists?.length) || Boolean(t.karaoke?.supported),
         };
       });
     cur.tracks.push(...items);
     cur.hasMore = Boolean(data?.has_more) && Boolean(data?.next_cursor);
     cur.cursor = data?.next_cursor || '';
-    appendRows(items, startIdx);
+    if (cur.order) rerenderRows(items.map(t => t.id));
+    else appendRows(items, startIdx);
     updateHeroSub();
   } catch (e) {
     toast(`歌单加载失败:${e.message}`, 'err');
@@ -327,7 +332,92 @@ async function loadMore() {
 // ------------------------------------------------------------------ rendering (incremental)
 
 function visibleTracks() {
-  return state.filtered ?? state.current?.tracks ?? [];
+  return state.filtered ?? displayTracks();
+}
+
+// ------------------------------------------------------------------ ordering (sort / drag)
+
+// 显示顺序 = order.ids 映射出曲目,不在 ids 里的(后加载的新歌)按官方顺序追加在尾部。
+// state.current.tracks 始终保持官方顺序(分页追加的真相源),order 只是视图层排序。
+function displayTracks() {
+  const cur = state.current;
+  if (!cur?.tracks) return [];
+  if (!cur.order?.ids?.length) return cur.tracks;
+  const byId = new Map(cur.tracks.map(t => [t.id, t]));
+  const seen = new Set();
+  const list = [];
+  for (const id of cur.order.ids) {
+    const t = byId.get(id);
+    if (t && !seen.has(id)) { seen.add(id); list.push(t); }
+  }
+  for (const t of cur.tracks) if (!seen.has(t.id)) list.push(t);
+  return list;
+}
+
+// 排序生效期间整表重渲染,关掉行入场动画避免每页追加都闪一遍
+function rerenderRows(extraIds) {
+  const cur = state.current;
+  if (!cur) return;
+  const list = visibleTracks();
+  const frag = document.createDocumentFragment();
+  list.forEach((t, i) => frag.appendChild(rowEl(t, i)));
+  $('tracks').classList.add('no-anim');
+  $('tracks').innerHTML = '';
+  $('tracks').appendChild(frag);
+  cur.rendered = list.length;
+  if (extraIds?.length) requestCacheStatus(extraIds);
+  decoratePlayingRow();
+}
+
+// 顺序持久化:自定义/随机记 ids(必须),其余只记模式(新歌加入后重排自动纳入)
+function persistOrder() {
+  const cur = state.current;
+  if (!cur) return;
+  const o = cur.order;
+  if (!o) { ls.set('order-' + cur.id, null); return; }
+  ls.set('order-' + cur.id, (o.mode === 'custom' || o.mode === 'random') ? { mode: o.mode, ids: o.ids } : { mode: o.mode });
+}
+
+function applySortMode(mode, savedIds) {
+  const cur = state.current;
+  if (!cur) return;
+  if (mode === 'default') cur.order = null;
+  else if ((mode === 'custom' || mode === 'random') && savedIds?.length) cur.order = { mode, ids: savedIds };
+  else {
+    const list = cur.tracks.slice(); // 从官方顺序起算,排序结果与显示顺序解耦
+    if (mode === 'az') {
+      list.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN', { sensitivity: 'base', numeric: true }));
+    } else if (mode === 'duration') {
+      list.sort((a, b) => (a.duration || 0) - (b.duration || 0));
+    } else if (mode === 'lyric') {
+      list.sort((a, b) => (b.lyric ? 1 : 0) - (a.lyric ? 1 : 0)); // 有词在前,组内保持原相对顺序(稳定排序)
+    } else if (mode === 'random') {
+      for (let i = list.length - 1; i > 0; i -= 1) { const j = Math.floor(Math.random() * (i + 1)); [list[i], list[j]] = [list[j], list[i]]; }
+    } else if (mode === 'custom') {
+      list.length = 0; list.push(...displayTracks()); // 无保存顺序时:固化当前显示顺序
+    }
+    cur.order = { mode, ids: list.map(t => t.id) };
+  }
+  persistOrder();
+  rerenderRows();
+  if ($('sort-select')) $('sort-select').value = mode;
+}
+
+// 排序要对整个歌单生效,先把分页拉完(失败循环保护:上限 50 页)
+async function loadAllTracks() {
+  const cur = state.current;
+  if (!cur) return;
+  let guard = 0;
+  while (cur.hasMore && !cur.loading && guard < 50) { await loadMore(); guard += 1; }
+}
+
+async function restorePlaylistOrder() {
+  const cur = state.current;
+  if (!cur) return;
+  const saved = ls.get('order-' + cur.id, null);
+  if (!saved?.mode || saved.mode === 'default') { cur.order = null; if ($('sort-select')) $('sort-select').value = 'default'; return; }
+  if (cur.hasMore) await loadAllTracks();
+  applySortMode(saved.mode, saved.ids);
 }
 
 function showSkeleton() {
@@ -362,6 +452,7 @@ function rowEl(t, i) {
   el.className = 'track';
   el.dataset.id = t.id;
   el.style.setProperty('--i', String(i));
+  el.draggable = true;   // 拖动排序(搜索过滤时 dragstart 会拦下)
   const qualityTags = qualityBadges(t.qualities);
   el.innerHTML = `
     <div class="cell-idx"><span class="num">${i + 1}</span><button class="hovp" title="播放">${ICONS.playRow}</button><div class="eq"><i></i><i></i><i></i></div></div>
@@ -374,6 +465,7 @@ function rowEl(t, i) {
   el.querySelector('.hovp').onclick = e => { e.stopPropagation(); playOrPrime(t); };
   el.onclick = () => playOrPrime(t);
   el.onmouseenter = () => requestCacheStatus([t.id]);
+  el.querySelectorAll('img').forEach(img => { img.draggable = false; }); // 别劫持行拖拽
   armImgs(el);
   return el;
 }
@@ -747,7 +839,7 @@ async function renderStoreHero() {
       <div class="hero-sub">${set.tracks} 首 · ${(set.size / 1048576).toFixed(1)}MB</div>
       <div class="hero-actions store-hero-actions">
         ${set.active ? '' : '<button id="st-use" class="btn primary">使用此库</button>'}
-        <button id="st-import" class="btn ghost">导入…</button>
+        <button id="st-import" class="btn ghost">导入</button>
         <button id="st-cover" class="btn ghost">设置封面</button>
         ${set.cover ? '<button id="st-cover-rm" class="btn ghost">移除封面</button>' : ''}
         <button id="st-backup" class="btn ghost">备份</button>
@@ -1672,7 +1764,7 @@ if ($('search')) $('search').oninput = e => {
     const cur = state.current;
     if (!cur) return;
     if (!q) { state.filtered = null; rebuildRows(); return; }
-    state.filtered = cur.tracks.filter(t =>
+    state.filtered = displayTracks().filter(t =>
       t.name.toLowerCase().includes(q)
       || t.artists.join(' ').toLowerCase().includes(q)
       || (t.album || '').toLowerCase().includes(q));
@@ -1701,10 +1793,85 @@ document.addEventListener('keydown', e => {
 });
 
 if ($('refresh')) $('refresh').onclick = async () => {
-  toast('同步收藏…');
-  try { await loadPlaylists(false, true); toast('已同步', 'ok'); }
-  catch (e) { toast(`同步失败:${e.message}`, 'err'); }
+  toast('同步收藏…(歌单顺序将重置为汽水默认)');
+  try {
+    // 同步官方数据 = 放弃全部本地排序:清空所有歌单的自定义顺序
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith('qsyy-order-')) { try { localStorage.removeItem(key); } catch (_) {} }
+      else if (key.startsWith('soda-app-order-')) { try { localStorage.removeItem(key); } catch (_) {} }
+    }
+    await loadPlaylists(false, true);
+    toast('已同步,顺序已恢复汽水默认', 'ok');
+  } catch (e) { toast(`同步失败:${e.message}`, 'err'); }
 };
+
+// ------------------------------------------------------------------ sort-select + drag-to-reorder
+
+if ($('sort-select')) {
+  $('sort-select').value = state.current?.order?.mode || 'default';
+  $('sort-select').onchange = async e => {
+    const mode = e.target.value;
+    if (mode === 'custom') return; // 占位项,由拖拽触发进入
+    await loadAllTracks();
+    applySortMode(mode);
+    const labels = { az: '字母 A→Z', duration: '时长 短→长', lyric: '有歌词在前', random: '随机' };
+    if (labels[mode]) toast(`已按${labels[mode]}排序`, 'ok');
+  };
+}
+
+// 拖动排序:委托在 #tracks 上;搜索过滤中禁用;拖完固化当前顺序为 custom
+(() => {
+  const tracksEl = $('tracks');
+  if (!tracksEl) return;
+  let dragId = null;
+  let dragOverEl = null;
+  tracksEl.addEventListener('dragstart', e => {
+    const row = e.target.closest('.track');
+    if (!row || state.filtered) { e.preventDefault(); return; }
+    dragId = row.dataset.id;
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', dragId); } catch (_) {}
+    row.classList.add('dragging');
+  });
+  tracksEl.addEventListener('dragend', () => {
+    dragId = null;
+    tracksEl.querySelectorAll('.track.dragging').forEach(el => el.classList.remove('dragging'));
+    tracksEl.querySelectorAll('.track.drop-above, .track.drop-below').forEach(el => el.classList.remove('drop-above', 'drop-below'));
+    dragOverEl = null;
+  });
+  tracksEl.addEventListener('dragover', e => {
+    if (!dragId || state.filtered) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const row = e.target.closest('.track');
+    if (!row || row.dataset.id === dragId) return;
+    if (dragOverEl && dragOverEl !== row) dragOverEl.classList.remove('drop-above', 'drop-below');
+    dragOverEl = row;
+    const rect = row.getBoundingClientRect();
+    row.classList.add(e.clientY < rect.top + rect.height / 2 ? 'drop-above' : 'drop-below');
+  });
+  tracksEl.addEventListener('drop', e => {
+    if (!dragId || state.filtered) return;
+    e.preventDefault();
+    const row = e.target.closest('.track');
+    if (!row || row.dataset.id === dragId) return;
+    const rect = row.getBoundingClientRect();
+    const before = e.clientY < rect.top + rect.height / 2;
+    // 移动源,显示顺序固化为新顺序 → custom
+    const list = displayTracks().slice();
+    const from = list.findIndex(t => t.id === dragId);
+    if (from < 0) return;
+    const [moved] = list.splice(from, 1);
+    let to = list.findIndex(t => t.id === row.dataset.id);
+    if (to < 0) return;
+    if (!before) to += 1;
+    list.splice(to, 0, moved);
+    state.current.order = { mode: 'custom', ids: list.map(t => t.id) };
+    persistOrder();
+    rerenderRows();
+    if ($('sort-select')) $('sort-select').value = 'custom';
+  });
+})();
 
 const sentinelObserver = new IntersectionObserver(entries => {
   if (entries.some(en => en.isIntersecting) && !state.filtered) loadMore();
