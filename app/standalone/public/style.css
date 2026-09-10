@@ -707,11 +707,15 @@ body::before {
 .exp-progress { color: var(--muted); font-size: 12.5px; margin-top: 12px; min-height: 18px; }
 .exp-progress.done { color: var(--ok); }
 .exp-dest { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
-/* store track rows: # / title / size / state / actions */
-.track.store-row { grid-template-columns: 40px 1fr 90px 80px 64px; }
+/* store track rows: # / cover / title / size / state / actions */
+.track.store-row { grid-template-columns: 40px 44px 1fr 90px 70px 64px; }
+.track.store-row .name { flex-direction: column; align-items: flex-start; gap: 1px; min-width: 0; }
+.track.store-row .t-sub { color: var(--muted); font-size: 11px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track.store-row .st-cv { width: 44px; height: 44px; border-radius: 9px; object-fit: cover; background: var(--panel-2); }
 .track.store-row .st-size { text-align: right; font-variant-numeric: tabular-nums; }
 .track.store-row .st-state { color: var(--faint); }
 .track.store-row .st-state.ok { color: var(--ok); }
+.track.store-row .st-state.online { color: #a9c7e8; }
 .track.store-row .cell-cache { justify-content: flex-end; }
 .hero-cover.no-cover { opacity: 1; background: linear-gradient(135deg, var(--panel-2), var(--panel-3)); }
 
