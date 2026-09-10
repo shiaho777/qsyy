@@ -1439,6 +1439,21 @@ async function pumpCacheQueue() {
         if (st.complete) state.cacheStatus.set(id, { ...(state.cacheStatus.get(id) || {}), ready: true, isPreview: false });
       }
       decorateCacheBadges();
+      // 自动补录:已缓存(客户端缓存)但 qsyy 库里还没有的歌,批量入档(含封面)
+      // —— 浏览歌单即聚齐,无需逐首重新播放。fire-and-forget,不阻塞界面。
+      const byId = new Map((state.current?.tracks || []).map(t => [t.id, t]));
+      const todos = [];
+      for (const [id, info] of Object.entries(data.tracks || {})) {
+        if (!info?.ready || state.storeProgress.has(id)) continue;
+        const t = byId.get(id);
+        if (t) todos.push({
+          id, name: t.name || '', artist: (t.artists || []).join(' / '), album: t.album || '',
+          duration: t.duration || 0, cover: t.cover ? coverCdnUrl(t.cover, 300) : '',
+        });
+      }
+      if (todos.length) {
+        fetch('/api/store/record-batch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tracks: todos }) }).catch(() => {});
+      }
     } catch (_) {
       // leave unmarked so a later hover/page-append retries this batch
       batch.forEach(id => cacheQueued.delete(id));
