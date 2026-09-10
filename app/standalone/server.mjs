@@ -1886,8 +1886,16 @@ const serverHandler = async (request, response) => {
     if (route === 'POST /api/store/delete') {
       const input = await readBody(request);
       const name = String(input.name || '');
-      if (!setNameOk(name) || name === activeStoreName()) { sendJson(response, 400, { ok: false, error: '不能删除当前使用中的缓存库' }); return; }
-      fs.rmSync(path.join(STORES_ROOT, name), { recursive: true, force: true });
+      if (!setNameOk(name)) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
+      // 删除活动库不再拒绝:清空其下载队列,把写入库回落到 default。
+      // 前端对"播放中/活动"的库会先二次确认,这里只保证状态一致。
+      if (name === activeStoreName()) {
+        downloadQueue.length = 0;
+        fs.rmSync(path.join(STORES_ROOT, name), { recursive: true, force: true });
+        switchStore('default');
+      } else {
+        fs.rmSync(path.join(STORES_ROOT, name), { recursive: true, force: true });
+      }
       sendJson(response, 200, { ok: true });
       return;
     }
