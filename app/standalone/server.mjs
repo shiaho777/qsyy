@@ -1887,6 +1887,9 @@ const serverHandler = async (request, response) => {
       const input = await readBody(request);
       const name = String(input.name || '');
       if (!setNameOk(name)) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
+      // default 是写入库指针的系统兜底(启动时被 initStores 重建,删除活动库
+      // 后也回落到它)——删除它只会被瞬间复活,明确拒绝比假装成功诚实
+      if (name === 'default') { sendJson(response, 400, { ok: false, error: '默认库不可删除(系统兜底,删除后写入库无处指向)' }); return; }
       // 删除活动库不再拒绝:清空其下载队列,把写入库回落到 default。
       // 前端对"播放中/活动"的库会先二次确认,这里只保证状态一致。
       if (name === activeStoreName()) {
