@@ -9,6 +9,7 @@ import https from 'node:https';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { spawn, execFile, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -1065,6 +1066,167 @@ async function resolveOnlineTrack(trackId) {
   return info;
 }
 
+// ---------------------------------------------------------------- zip (export/import package format)
+// 零依赖 ZIP 读写:导出/导入歌单包 <库名>-qsyy.zip 用。写侧流式落盘(m4a store,
+// JSON deflate),读侧整包解析(method 0/8)。不支持 ZIP64(>4GB 报错)。
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i += 1) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function dosDateTime(date) {
+  const d = date || new Date();
+  const time = ((d.getHours() & 0x1F) << 11) | ((d.getMinutes() & 0x3F) << 5) | ((Math.floor(d.getSeconds() / 2)) & 0x1F);
+  const day = (((d.getFullYear() - 1980) & 0x7F) << 9) | (((d.getMonth() + 1) & 0x0F) << 5) | (d.getDate() & 0x1F);
+  return { time, day };
+}
+// entries: [{ name, data: Buffer, deflate?: boolean }] → 流式写 zip 到 outPath
+async function zipBuildStream(entries, outPath) {
+  const fd = fs.openSync(outPath, 'w');
+  const central = [];
+  let offset = 0;
+  try {
+    for (const entry of entries) {
+      const nameBuf = Buffer.from(entry.name, 'utf8');
+      if (nameBuf.length > 0xFFFF) throw new Error('zip entry name too long');
+      const raw = entry.data;
+      if (raw.length > 0xFFFFFFFF) throw new Error('单文件超过 4GB,不支持(ZIP64)');
+      const useDeflate = Boolean(entry.deflate) && raw.length > 0;
+      const data = useDeflate ? zlib.deflateRawSync(raw, { level: 6 }) : raw;
+      if (data.length > 0xFFFFFFFF) throw new Error('压缩后超过 4GB,不支持(ZIP64)');
+      const { time, day } = dosDateTime();
+      const crc = crc32(raw);
+      const local = Buffer.alloc(30);
+      local.writeUInt32LE(0x04034B50, 0);        // local file header signature
+      local.writeUInt16LE(20, 4);                  // version needed
+      local.writeUInt16LE(0x0800, 6);             // flags: UTF-8 names
+      local.writeUInt16LE(useDeflate ? 8 : 0, 8); // method
+      local.writeUInt16LE(time, 10);
+      local.writeUInt16LE(day, 12);
+      local.writeUInt32LE(crc, 14);
+      local.writeUInt32LE(data.length, 18);        // compressed size
+      local.writeUInt32LE(raw.length, 22);        // uncompressed size
+      local.writeUInt16LE(nameBuf.length, 26);
+      local.writeUInt16LE(0, 28);                  // extra length
+      fs.writeSync(fd, local);
+      fs.writeSync(fd, nameBuf);
+      fs.writeSync(fd, data);
+      central.push({ nameBuf, crc, csize: data.length, usize: raw.length, method: useDeflate ? 8 : 0, time, day, offset });
+      offset += 30 + nameBuf.length + data.length;
+    }
+    const cdStart = offset;
+    for (const c of central) {
+      const head = Buffer.alloc(46);
+      head.writeUInt32LE(0x02014B50, 0);          // central directory signature
+      head.writeUInt16LE(20, 4);                   // version made by
+      head.writeUInt16LE(20, 6);                   // version needed
+      head.writeUInt16LE(0x0800, 8);              // flags: UTF-8
+      head.writeUInt16LE(c.method, 10);
+      head.writeUInt16LE(c.time, 12);
+      head.writeUInt16LE(c.day, 14);
+      head.writeUInt32LE(c.crc, 16);
+      head.writeUInt32LE(c.csize, 20);
+      head.writeUInt32LE(c.usize, 24);
+      head.writeUInt16LE(c.nameBuf.length, 28);
+      head.writeUInt16LE(0, 30);                   // extra
+      head.writeUInt16LE(0, 32);                   // comment
+      head.writeUInt16LE(0, 34);                   // disk number
+      head.writeUInt16LE(0, 36);                   // internal attrs
+      head.writeUInt32LE(0, 38);                   // external attrs
+      head.writeUInt32LE(c.offset, 42);
+      fs.writeSync(fd, head);
+      fs.writeSync(fd, c.nameBuf);
+      offset += 46 + c.nameBuf.length;
+    }
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054B50, 0);
+    eocd.writeUInt16LE(0, 4);
+    eocd.writeUInt16LE(0, 6);
+    eocd.writeUInt16LE(central.length, 8);
+    eocd.writeUInt16LE(central.length, 10);
+    eocd.writeUInt32LE(offset - cdStart, 12);
+    eocd.writeUInt32LE(cdStart, 16);
+    eocd.writeUInt16LE(0, 20);
+    fs.writeSync(fd, eocd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+// 整包读 zip → [{ name, data: Buffer }](store/deflate)
+function zipParse(buf) {
+  const entries = [];
+  // 从尾部找 EOCD
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 0xFFFF); i -= 1) {
+    if (buf.readUInt32LE(i) === 0x06054B50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('不是有效的 ZIP 文件(缺少 EOCD)');
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  for (let n = 0; n < count; n += 1) {
+    if (buf.readUInt32LE(p) !== 0x02014B50) throw new Error('ZIP 中央目录损坏');
+    const method = buf.readUInt16LE(p + 10);
+    const csize = buf.readUInt32LE(p + 20);
+    const usize = buf.readUInt32LE(p + 24);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const localOff = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    // local header: 30 + nameLen + extraLen → data
+    if (buf.readUInt32LE(localOff) !== 0x04034B50) throw new Error('ZIP 本地头损坏');
+    const lNameLen = buf.readUInt16LE(localOff + 26);
+    const lExtraLen = buf.readUInt16LE(localOff + 28);
+    const dataStart = localOff + 30 + lNameLen + lExtraLen;
+    const comp = buf.subarray(dataStart, dataStart + csize);
+    let data;
+    if (method === 0) data = Buffer.from(comp);
+    else if (method === 8) data = zlib.inflateRawSync(comp);
+    else throw new Error(`不支持的 ZIP 压缩方法 ${method}`);
+    if (data.length !== usize) throw new Error(`ZIP 条目 ${name} 尺寸不符`);
+    entries.push({ name, data });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+// ---------------------------------------------------------------- store set structure (playlists in a library)
+// stores/<名>/set.json:{ v:1, playlists:[{ name, icon(dataURL|null), songs:[trackId…] }] }
+// songs 顺序即歌单内排序;不存在 set.json 时库视图全为「未分组」。
+const exportJobs = new Map();      // 导出任务(jobId → { status, phase, done, total, zipPath, size, … })
+function readStoreSet(name) {
+  try {
+    const p = path.join(STORES_ROOT, name, 'set.json');
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (raw?.v === 1 && Array.isArray(raw.playlists)) return raw;
+  } catch (_) {}
+  return null;
+}
+function writeStoreSet(name, set) {
+  try { fs.writeFileSync(path.join(STORES_ROOT, name, 'set.json'), JSON.stringify(set)); } catch (_) {}
+}
+// 从 set.json 的所有歌单里移除曲目 id(keep consistency on remove-track)
+function removeFromStoreSet(name, trackId) {
+  const set = readStoreSet(name);
+  if (!set) return;
+  let changed = false;
+  for (const pl of set.playlists) {
+    const before = pl.songs.length;
+    pl.songs = pl.songs.filter(id => id !== trackId);
+    if (pl.songs.length !== before) changed = true;
+  }
+  if (changed) writeStoreSet(name, set);
+}
+
 // Online playback cache: CDN streams are CENC-encrypted; downloads go into a
 // Downloads go into a persistent, resumable store; once complete we decrypt to
 // a faststart M4A and keep it — next session the track plays instantly and
@@ -1657,6 +1819,7 @@ const serverHandler = async (request, response) => {
             const st = fs.statSync(path.join(dir, f));
             const cm = f.match(/^cover\.(jpg|jpeg|png|webp)$/i);
             if (cm) { cover = cm[1].toLowerCase(); continue; } // 封面不计入缓存体积
+            if (f === 'set.json') continue;                     // 结构文件不计入
             size += st.size;
             if (f.endsWith('.m4a')) tracks += 1;
           }
@@ -1771,6 +1934,7 @@ const serverHandler = async (request, response) => {
       for (const suffix of ['m4a', 'json', 'part']) {
         try { fs.unlinkSync(path.join(dir, `${id}.${suffix}`)); } catch (_) {}
       }
+      removeFromStoreSet(otherSet || activeStoreName(), id);
       if (!otherSet) storeMeta.delete(id);
       sendJson(response, 200, { ok: true });
       return;
@@ -1780,6 +1944,129 @@ const serverHandler = async (request, response) => {
       fs.rmSync(STORE_DIR, { recursive: true, force: true });
       switchStore(activeStoreName());
       sendJson(response, 200, { ok: true });
+      return;
+    }
+    if (route === 'GET /api/store/set') {
+      // 库内歌单结构(set.json);无结构时 playlists 为空,视图全部未分组
+      const name = url.searchParams.get('set') || activeStoreName();
+      if (!setNameOk(name)) { sendJson(response, 400, { ok: false }); return; }
+      const set = readStoreSet(name);
+      sendJson(response, 200, { ok: true, set: name, playlists: set?.playlists || [] });
+      return;
+    }
+    if (route === 'POST /api/export') {
+      // 歌单包导出第一步:接收选择(库名/库图标/歌单与歌曲),后台构建 zip
+      const input = await readBody(request);
+      const libName = String(input.name || '').trim();
+      if (!setNameOk(libName)) { sendJson(response, 400, { ok: false, error: '库名称需为 1-32 位中文/字母/数字/短横线' }); return; }
+      const playlists = Array.isArray(input.playlists) ? input.playlists : [];
+      if (!playlists.length) { sendJson(response, 400, { ok: false, error: '至少选择一个歌单' }); return; }
+      const jobId = `exp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const job = { jobId, name: libName, status: 'building', phase: '准备打包', done: 0, total: 0, zipPath: '', size: 0, error: '', createdAt: Date.now() };
+      exportJobs.set(jobId, job);
+      // 后台构建,不阻塞响应
+      (async () => {
+        try {
+          const iconToBuf = dataUrl => {
+            const m = String(dataUrl || '').match(/^data:image\/(jpg|jpeg|png|webp);base64,(.+)$/is);
+            if (!m) return null;
+            return { buf: Buffer.from(m[2], 'base64'), ext: m[1] === 'jpeg' ? 'jpg' : m[1] };
+          };
+          const entries = [];
+          const structure = { playlists: [] };
+          let audioCount = 0;
+          const audioTodos = [];
+          playlists.forEach((pl, i) => {
+            const songs = (Array.isArray(pl.songs) ? pl.songs : []).map(s => ({
+              id: String(s.id || ''), name: String(s.name || ''), artist: String(s.artist || ''),
+              album: String(s.album || ''), duration: Number(s.duration) || 0,
+            })).filter(s => /^\d+$/.test(s.id));
+            const plEntry = { name: String(pl.name || `歌单 ${i + 1}`), icon: null, songs };
+            if (pl.icon) {
+              const icon = iconToBuf(pl.icon);
+              if (icon) {
+                const fname = `pl-${i}.${icon.ext}`;
+                entries.push({ name: fname, data: icon.buf });
+                plEntry.icon = fname;
+              }
+            }
+            for (const s of songs) audioTodos.push(s.id);
+            structure.playlists.push(plEntry);
+          });
+          if (input.libraryIcon) {
+            const icon = iconToBuf(input.libraryIcon);
+            if (icon) entries.push({ name: `cover.${icon.ext}`, data: icon.buf });
+          }
+          // 音频:仅 active store 已缓存曲目;未缓存的歌只进结构(导入后在线播放)
+          const uniqIds = [...new Set(audioTodos)];
+          job.total = uniqIds.length;
+          const packed = new Set();
+          for (const id of uniqIds) {
+            const m4a = path.join(STORE_DIR, `${id}.m4a`);
+            try {
+              if (fs.existsSync(m4a)) {
+                entries.push({ name: `${id}.m4a`, data: fs.readFileSync(m4a) });
+                audioCount += 1;
+                packed.add(id);
+              }
+            } catch (_) {}
+            job.done += 1;
+            job.phase = `打包音频 ${job.done}/${job.total}`;
+          }
+          for (const pl of structure.playlists) for (const s of pl.songs) s.hasAudio = packed.has(s.id);
+          entries.unshift({ name: 'qsyy.json', data: Buffer.from(JSON.stringify({ v: 1, app: 'qsyy', name: libName, createdAt: Date.now(), ...structure }, null, 1)), deflate: true });
+          job.phase = '压缩打包';
+          job.zipPath = path.join(os.tmpdir(), `qsyy-export-${jobId}.zip`);
+          await zipBuildStream(entries, job.zipPath);
+          job.size = fs.statSync(job.zipPath).size;
+          job.status = 'done';
+          job.phase = '完成';
+        } catch (error) {
+          job.status = 'error';
+          job.error = error?.message || String(error);
+          recordFault('export-build', error);
+        }
+      })();
+      // 兜底清理:1 小时后删 job 与临时 zip
+      setTimeout(() => {
+        const j = exportJobs.get(jobId);
+        if (!j) return;
+        exportJobs.delete(jobId);
+        if (j.zipPath) { try { fs.unlinkSync(j.zipPath); } catch (_) {} }
+      }, 3600 * 1000).unref?.();
+      sendJson(response, 200, { ok: true, jobId });
+      return;
+    }
+    if (route === 'GET /api/export/status') {
+      const job = exportJobs.get(url.searchParams.get('job') || '');
+      if (!job) { sendJson(response, 404, { ok: false }); return; }
+      sendJson(response, 200, { ok: true, status: job.status, phase: job.phase, done: job.done, total: job.total, size: job.size, name: job.name, error: job.error });
+      return;
+    }
+    if (route === 'GET /api/export/file') {
+      const job = exportJobs.get(url.searchParams.get('job') || '');
+      if (!job || job.status !== 'done' || !job.zipPath) { sendJson(response, 404, { ok: false, error: '导出包不存在或未完成' }); return; }
+      try {
+        const buf = fs.readFileSync(job.zipPath);
+        response.writeHead(200, {
+          'content-type': 'application/zip',
+          'content-disposition': `attachment; filename="qsyy.zip"; filename*=UTF-8''${encodeURIComponent(`${job.name}-qsyy.zip`)}`,
+          'cache-control': 'no-store',
+        }).end(buf);
+      } catch (error) { sendJson(response, 500, { ok: false, error: error.message }); }
+      return;
+    }
+    if (route === 'POST /api/export/save') {
+      // 导出到下载目录:把 zip 移到 DOWNLOAD_DIR/<库名>-qsyy.zip
+      const input = await readBody(request);
+      const job = exportJobs.get(String(input.jobId || ''));
+      if (!job || job.status !== 'done' || !job.zipPath) { sendJson(response, 404, { ok: false, error: '导出包不存在或未完成' }); return; }
+      try {
+        fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+        const target = path.join(DOWNLOAD_DIR, `${job.name}-qsyy.zip`);
+        fs.copyFileSync(job.zipPath, target);
+        sendJson(response, 200, { ok: true, path: target });
+      } catch (error) { sendJson(response, 500, { ok: false, error: error.message }); }
       return;
     }
     if (route === 'GET /api/backup') {
@@ -1823,12 +2110,15 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'POST /api/restore') {
-      // streaming tar import into a set (named after the backup file, or an
-      // existing one). mode=merge keeps existing tracks (same-id overwritten);
-      // mode=replace (default) wipes the target first. activate=1 switches to
-      // it afterwards (default: replace→activate, merge→stay). Only accepts
-      // plain <trackId>.<m4a|json|part> + cover.* entries (traversal-safe).
-      let setName = (url.searchParams.get('set') || '').replace(/\.tar$/i, '').trim();
+      // import into a set (named after the backup file, or an existing one).
+      // Accepts two package formats — auto-detected by magic bytes:
+      //   tar  (qsyy backup): <trackId>.<m4a|json|part> + cover.*
+      //   zip  (qsyy 歌单包): qsyy.json 结构 + cover.* + pl-<i>.jpg + <trackId>.m4a
+      // mode=merge keeps existing tracks (same-id overwritten); mode=replace
+      // (default) wipes the target first. activate=1 switches to it afterwards
+      // (default: replace→activate, merge→stay). Entry names are whitelisted
+      // (traversal-safe by construction).
+      let setName = (url.searchParams.get('set') || '').replace(/\.(tar|zip)$/i, '').trim();
       if (!setNameOk(setName)) setName = `导入-${new Date().toISOString().slice(5, 10).replace('-', '')}`;
       const importMode = url.searchParams.get('mode') === 'merge' ? 'merge' : 'replace';
       const activateParam = url.searchParams.get('activate');
@@ -1839,13 +2129,77 @@ const serverHandler = async (request, response) => {
       const validEntry = name => /^(\d+\.(m4a|json|part)|cover\.(jpg|jpeg|png|webp))$/i.test(name);
       let imported = 0;
       let skipped = 0;
-      let buffer = Buffer.alloc(0);
-      let mode = 'header';
-      let current = null; // { size, taken, out?, need? }
-      const padNeeded = size => (512 - (size % 512)) % 512;
+      let format = 'tar';
       try {
-        for await (const chunk of request) {
-          buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk;
+        // 现有 tar 解析本就整包驻内存,统一先缓冲再按 magic 分流
+        const chunks = [];
+        for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const body = Buffer.concat(chunks);
+        const isZip = body.length > 4 && body[0] === 0x50 && body[1] === 0x4B && body[2] === 0x03 && body[3] === 0x04;
+        format = isZip ? 'zip' : 'tar';
+        if (isZip) {
+          const entries = zipParse(body);
+          let manifest = null;
+          const plIcons = new Map();          // 'pl-0.jpg' → Buffer
+          const audioIds = new Set();
+          const removeOldCovers = () => { try { for (const f of fs.readdirSync(targetDir)) if (/^cover\./i.test(f)) fs.unlinkSync(path.join(targetDir, f)); } catch (_) {} };
+          for (const e of entries) {
+            const base = path.basename(e.name);
+            if (base === 'qsyy.json') {
+              try { manifest = JSON.parse(e.data.toString('utf8')); } catch (_) { skipped += 1; }
+            } else if (/^pl-\d+\.(jpg|jpeg|png|webp)$/i.test(base)) {
+              plIcons.set(base.toLowerCase(), e.data);
+            } else if (/^cover\.(jpg|jpeg|png|webp)$/i.test(base)) {
+              removeOldCovers();
+              fs.writeFileSync(path.join(targetDir, base.toLowerCase()), e.data);
+              imported += 1;
+            } else if (/^\d+\.m4a$/.test(base)) {
+              fs.writeFileSync(path.join(targetDir, base), e.data);
+              audioIds.add(base.replace(/\.m4a$/, ''));
+              imported += 1;
+            } else {
+              skipped += 1;
+            }
+          }
+          if (manifest?.playlists?.length) {
+            // 歌单结构:名称/图标/顺序落 set.json;merge 时追加到现有歌单
+            const iconMime = ext => ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+            const pls = manifest.playlists.map(pl => {
+              const ref = String(pl.icon || '').toLowerCase();
+              const iconEntry = ref && plIcons.has(ref)
+                ? `data:${iconMime(ref.split('.').pop())};base64,${plIcons.get(ref).toString('base64')}` : null;
+              return {
+                name: String(pl.name || '未命名歌单').slice(0, 64),
+                icon: iconEntry,
+                songs: (Array.isArray(pl.songs) ? pl.songs : []).map(s => String(s?.id || '')).filter(id => /^\d+$/.test(id)),
+              };
+            });
+            const existing = importMode === 'merge' ? readStoreSet(setName) : null;
+            writeStoreSet(setName, { v: 1, playlists: existing ? [...existing.playlists, ...pls] : pls });
+            // 每首歌写 meta json(名/歌手等);带音频的 complete=true
+            for (const pl of manifest.playlists) {
+              for (const s of (pl.songs || [])) {
+                const id = String(s?.id || '');
+                if (!/^\d+$/.test(id)) continue;
+                const metaPath = path.join(targetDir, `${id}.json`);
+                const hasAudio = audioIds.has(id);
+                let keep = false;
+                try { keep = JSON.parse(fs.readFileSync(metaPath, 'utf8'))?.complete && !hasAudio; } catch (_) {}
+                if (keep) continue; // merge:已有更完整的 meta 不降级
+                fs.writeFileSync(metaPath, JSON.stringify({
+                  trackId: id, name: String(s?.name || ''), complete: hasAudio,
+                  size: hasAudio ? fs.statSync(path.join(targetDir, `${id}.m4a`)).size : 0,
+                  downloaded: 0, preview: false, quality: '',
+                }));
+              }
+            }
+          }
+        } else {
+          // tar 分支:沿用原流式解析(喂入已缓冲的 body)
+          let buffer = body;
+          let mode = 'header';
+          let current = null; // { size, taken, out?, need? }
+          const padNeeded = size => (512 - (size % 512)) % 512;
           while (buffer.length > 0) {
             if (mode === 'header') {
               if (buffer.length < 512) break;
@@ -1893,11 +2247,11 @@ const serverHandler = async (request, response) => {
               if (current.taken >= current.need) { current = null; mode = 'header'; }
             }
           }
+          if (current?.out) current.out.end();
         }
-        if (current?.out) current.out.end();
         if (setName === activeStoreName()) { storeMeta.clear(); loadStoreMeta(); }   // 合并进活动库:刷新内存 meta
         else if (shouldActivate) switchStore(setName);                                // 替换导入默认切到该库
-        sendJson(response, 200, { ok: true, imported, skipped, set: setName, mode: importMode });
+        sendJson(response, 200, { ok: true, imported, skipped, set: setName, mode: importMode, format });
       } catch (error) {
         sendJson(response, 500, { ok: false, error: error.message });
       }

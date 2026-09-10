@@ -796,7 +796,9 @@ async function loadStores() {
     state.storeActive = r.active;
     $('stores').innerHTML = state.storeSets.map((s, i) => `
       <div class="pl-item st-item${state.storeView?.name === s.name ? ' active' : ''}" data-i="${i}">
-        <img loading="lazy" src="${storeCoverUrl(s.name)}" alt="" onerror="this.style.display='none'">
+        ${s.cover
+          ? `<img loading="lazy" src="${storeCoverUrl(s.name)}" alt="">`
+          : `<span class="st-fallback sm">${esc([...s.name][0] || '库')}</span>`}
         <div><div class="t">${esc(s.name)}</div><div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${s.active ? ' · 使用中' : ''}</div></div>
       </div>`).join('') || '<div class="store-empty">还没有缓存库 — 播放在线歌曲会自动建立</div>';
     $('stores').querySelectorAll('.st-item').forEach(el => {
@@ -831,8 +833,11 @@ async function renderStoreHero() {
   const set = (r.sets || []).find(s => s.name === name);
   if (!set) { state.storeView = null; ls.set('storeView', ''); setMainMode('playlist'); return; }
   state.storeSets = r.sets; state.storeActive = r.active;
+  const firstChar = esc([...set.name][0] || '库');
   $('hero').innerHTML = `
-    <div class="hero-cover-wrap"><img id="hero-cover" class="hero-cover" src="${storeCoverUrl(name)}" alt="" onerror="this.classList.add('no-cover')"></div>
+    <div class="hero-cover-wrap">${set.cover
+      ? `<img id="hero-cover" class="hero-cover" src="${storeCoverUrl(name)}" alt="">`
+      : `<div id="hero-cover" class="st-fallback big" title="设置封面可替换">${firstChar}</div>`}</div>
     <div class="hero-info">
       <div class="hero-kicker">缓存库${set.active ? ' · <span class="live-dot"></span>使用中' : ''}</div>
       <div class="hero-title">${esc(set.name)}</div>
@@ -882,16 +887,61 @@ async function renderStoreHero() {
 async function renderStoreTracksView() {
   const name = state.storeView?.name;
   if (!name) return;
-  const r = await (await fetch(`/api/store/tracks?set=${encodeURIComponent(name)}`)).json();
-  const list = r.tracks || [];
+  const [tr, setR] = await Promise.all([
+    (await fetch(`/api/store/tracks?set=${encodeURIComponent(name)}`)).json(),
+    (await fetch(`/api/store/set?set=${encodeURIComponent(name)}`)).json(),
+  ]);
+  const list = tr.tracks || [];
   state.storeTracks = list;
   const isActiveSet = name === state.storeActive;
   if (!list.length) {
-    $('tracks').innerHTML = '<div class="empty">这个缓存库还没有歌曲 — 播放过的在线歌曲会自动缓存到使用中的库</div>';
+    $('tracks').innerHTML = '<div class="empty">这个缓存库还没有歌曲 — 播放过的在线歌曲会自动缓存到使用中的库,或用「导入」导入歌单包</div>';
     return;
   }
+  // 库内歌单分组(set.json 的 songs 顺序即排序);不在任何歌单的进「未分组」
+  const byId = new Map(list.map(t => [t.id, t]));
+  const inGroup = new Set();
+  const pls = (setR?.playlists || []).map(pl => ({
+    name: pl.name || '未命名歌单',
+    icon: pl.icon || null,
+    items: (pl.songs || []).map(id => byId.get(id)).filter(Boolean),
+  }));
+  for (const g of pls) for (const t of g.items) inGroup.add(t.id);
+  const ungrouped = list.filter(t => !inGroup.has(t.id));
+  const collapsed = new Set(ls.get('storecol-' + name, []));
   const frag = document.createDocumentFragment();
-  list.forEach((t, i) => frag.appendChild(storeRowEl(t, i, isActiveSet)));
+  let rowIdx = 0;
+  const addGroup = (title, iconDataUrl, items) => {
+    const key = title;
+    const isCollapsed = collapsed.has(key);
+    const group = document.createElement('div');
+    group.className = 'st-group' + (isCollapsed ? ' collapsed' : '');
+    const head = document.createElement('button');
+    head.className = 'st-group-head';
+    head.innerHTML = `
+      <span class="st-caret">${isCollapsed ? '▸' : '▾'}</span>
+      ${iconDataUrl
+        ? `<img class="st-pl-icon" src="${iconDataUrl}" alt="">`
+        : `<span class="st-fallback sm">${esc([...title][0] || '歌')}</span>`}
+      <span class="st-pl-name">${esc(title)}</span>
+      <span class="st-pl-meta">${items.length} 首</span>`;
+    head.onclick = () => {
+      group.classList.toggle('collapsed');
+      const nowCollapsed = group.classList.contains('collapsed');
+      const cur = new Set(ls.get('storecol-' + name, []));
+      if (nowCollapsed) cur.add(key); else cur.delete(key);
+      ls.set('storecol-' + name, [...cur]);
+      head.querySelector('.st-caret').textContent = nowCollapsed ? '▸' : '▾';
+    };
+    const body = document.createElement('div');
+    body.className = 'st-group-body';
+    items.forEach(t => { body.appendChild(storeRowEl(t, rowIdx, isActiveSet)); rowIdx += 1; });
+    group.appendChild(head);
+    group.appendChild(body);
+    frag.appendChild(group);
+  };
+  pls.forEach(g => addGroup(g.name, g.icon, g.items));
+  if (ungrouped.length) addGroup('未分组', null, ungrouped);
   $('tracks').innerHTML = '';
   $('tracks').appendChild(frag);
 }
@@ -908,7 +958,7 @@ function storeRowEl(t, i, isActiveSet) {
     <div class="artist st-size">${(t.size / 1048576).toFixed(1)}MB</div>
     <div class="album st-state${t.complete ? ' ok' : ''}">${t.complete ? '已缓存' : '未完成'}</div>
     <div class="cell-cache"><button class="mini-btn st-rm">移除</button></div>`;
-  const play = () => { if (!playable) { if (!isActiveSet) toast('先「使用此库」再播放', 'err'); return; } playStoreTrack(i); };
+  const play = () => { if (!playable) { if (!isActiveSet) toast('先「使用此库」再播放', 'err'); return; } playStoreTrack(t); };
   el.onclick = play;
   el.querySelector('.hovp')?.addEventListener('click', e => { e.stopPropagation(); play(); });
   el.querySelector('.st-rm').addEventListener('click', async e => {
@@ -920,11 +970,223 @@ function storeRowEl(t, i, isActiveSet) {
   return el;
 }
 
-function playStoreTrack(i) {
+function playStoreTrack(track) {
   const playable = (state.storeTracks || []).filter(t => t.complete);
-  const idx = playable.findIndex(t => t.id === state.storeTracks[i].id);
+  const idx = playable.findIndex(t => t.id === track.id);
+  if (idx < 0) return;
   const objs = playable.map(t => ({ id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`, artists: [], album: '', duration: 0, cover: null, vip: false, qualities: [] }));
-  if (idx >= 0) setQueue(objs, idx);
+  setQueue(objs, idx);
+}
+
+// ---------------------------------------------------------------- export wizard (playlist package → zip)
+
+// 三步向导:① 选歌单/歌曲(复选+全选+搜索+计数) ② 库名必填+库图标(可选)
+// ③ 选目标文件夹(showDirectoryPicker)或直接进下载目录 → <库名>-qsyy.zip
+const exportWizard = {
+  tracks: new Map(),     // playlistId → tracks[](展开时懒加载全部分页)
+  icons: new Map(),      // playlistId → 封面 dataURL(导出时作为歌单图标)
+  selected: new Map(),   // playlistId → Set(trackId)
+  expanded: new Set(),
+  name: '',
+  icon: null,            // 库图标 dataURL
+  jobId: null,
+  pollTimer: null,
+};
+
+async function fetchPlaylistTracksFull(id) {
+  const all = [];
+  let cursor = '';
+  let guard = 0;
+  while (guard < 60) {
+    guard += 1;
+    const data = await api(`/api/playlist/${id}?${new URLSearchParams({ playlist_id: id, cursor, count: 100 })}`);
+    const items = (data?.media_resources || [])
+      .filter(m => m?.type === 'track' && m?.entity?.track_wrapper?.track)
+      .map(m => {
+        const t = m.entity.track_wrapper.track;
+        return { id: String(t.id), name: t.name, artists: (t.artists || []).map(a => a.name).filter(Boolean), album: t.album?.name || '', duration: Number(t.duration) || 0 };
+      });
+    all.push(...items);
+    if (!data?.has_more || !data?.next_cursor) break;
+    cursor = data.next_cursor;
+  }
+  return all;
+}
+
+const expCloseModal = () => {
+  const m = $('export-modal');
+  if (!m) return;
+  m.classList.remove('open');
+  setTimeout(() => m.classList.add('hidden'), 220);
+  if (exportWizard.pollTimer) { clearInterval(exportWizard.pollTimer); exportWizard.pollTimer = null; }
+};
+
+function openExportWizard() {
+  const w = exportWizard;
+  w.tracks.clear(); w.icons.clear(); w.selected.clear(); w.expanded.clear();
+  w.name = ''; w.icon = null; w.jobId = null;
+  $('exp-name').value = '';
+  $('exp-filename').textContent = '-qsyy.zip';
+  $('exp-icon-preview').innerHTML = '库';
+  $('exp-icon-preview').classList.remove('has-img');
+  $('exp-icon-rm').classList.add('hidden');
+  $('exp-progress').textContent = '';
+  $('exp-progress').classList.remove('done');
+  $('exp-done-hint').textContent = '';
+  if (!window.showDirectoryPicker) $('exp-pick-dir').classList.add('hidden');
+  expGotoStep(1);
+  renderExportStep1();
+  const m = $('export-modal');
+  m.classList.remove('hidden');
+  requestAnimationFrame(() => m.classList.add('open'));
+}
+
+function expGotoStep(n) {
+  exportWizard.step = n;
+  ['exp-step1', 'exp-step2', 'exp-step3'].forEach(id => $(id).classList.add('hidden'));
+  $(n === 1 ? 'exp-step1' : n === 2 ? 'exp-step2' : 'exp-step3').classList.remove('hidden');
+}
+
+async function toggleExportPlaylist(plId) {
+  const w = exportWizard;
+  if (w.expanded.has(plId)) w.expanded.delete(plId);
+  else w.expanded.add(plId);
+  renderExportStep1();
+  if (w.expanded.has(plId) && !w.tracks.has(plId)) {
+    const pl = state.playlists.find(p => p.id === plId);
+    if (!pl) return;
+    const [tracks, icon] = await Promise.all([fetchPlaylistTracksFull(plId), fetchCover(pl)]);
+    w.tracks.set(plId, tracks);
+    if (icon) w.icons.set(plId, icon);
+    if (!w.selected.has(plId)) w.selected.set(plId, new Set());
+    renderExportStep1();
+  }
+}
+
+function renderExportStep1() {
+  const w = exportWizard;
+  const q = ($('exp-search').value || '').trim().toLowerCase();
+  const list = $('exp-list');
+  list.innerHTML = state.playlists.map((pl, i) => {
+    const sel = w.selected.get(pl.id);
+    const tracks = w.tracks.get(pl.id) || [];
+    const expanded = w.expanded.has(pl.id);
+    const allChecked = tracks.length > 0 && sel?.size === tracks.length;
+    const some = sel?.size > 0 && !allChecked;
+    const match = t => !q || t.name.toLowerCase().includes(q) || t.artists.join(' ').toLowerCase().includes(q);
+    const visCount = tracks.filter(match).length;
+    const plHide = q && !pl.title.toLowerCase().includes(q) && visCount === 0;
+    const songs = tracks.map((t, j) => `
+      <label class="exp-song${match(t) ? '' : ' hidden'}" data-pl="${pl.id}" data-id="${t.id}">
+        <input type="checkbox" class="exp-song-check" ${sel?.has(t.id) ? 'checked' : ''}>
+        <span class="s-name">${esc(t.name)}</span>
+        <span class="s-artist">${esc(t.artists.join(' / '))}</span>
+      </label>`).join('');
+    return `<div class="exp-pl${expanded ? ' open' : ''}${plHide ? ' hidden' : ''}" data-id="${pl.id}">
+      <div class="exp-pl-head">
+        <button class="exp-caret" title="展开/收起">${expanded ? '▾' : '▸'}</button>
+        <input type="checkbox" class="exp-pl-check" ${allChecked ? 'checked' : ''} ${some ? 'style="opacity:.5"' : ''}>
+        <span class="exp-pl-title">${esc(pl.title)}</span>
+        <span class="exp-pl-meta">${tracks.length || pl.count} 首${w.selected.get(pl.id)?.size ? ` · 已选 ${w.selected.get(pl.id).size}` : ''}</span>
+      </div>
+      <div class="exp-songs${expanded ? '' : ' hidden'}">${expanded ? (tracks.length ? songs : '<div class="exp-loading">加载中…</div>') : ''}</div>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('.exp-caret').forEach(el => { el.onclick = () => toggleExportPlaylist(el.closest('.exp-pl').dataset.id); });
+  list.querySelectorAll('.exp-pl-check').forEach(el => {
+    el.onchange = async () => {
+      const plId = el.closest('.exp-pl').dataset.id;
+      if (!w.tracks.has(plId)) await toggleExportPlaylist(plId); // 勾选未展开的歌单:先拉全曲目
+      const tracks = w.tracks.get(plId) || [];
+      const set = w.selected.get(plId) || new Set();
+      if (el.checked) tracks.forEach(t => set.add(t.id));
+      else set.clear();
+      w.selected.set(plId, set);
+      renderExportStep1();
+    };
+  });
+  list.querySelectorAll('.exp-song-check').forEach(el => {
+    el.onchange = () => {
+      const row = el.closest('.exp-song');
+      const set = w.selected.get(row.dataset.pl) || new Set();
+      if (el.checked) set.add(row.dataset.id); else set.delete(row.dataset.id);
+      w.selected.set(row.dataset.pl, set);
+      renderExportStep1();
+    };
+  });
+  const plCount = [...w.selected.values()].filter(s => s.size > 0).length;
+  const songCount = [...w.selected.values()].reduce((n, s) => n + s.size, 0);
+  $('exp-count').textContent = `已选 ${plCount} 个歌单 · ${songCount} 首`;
+  $('exp-next').disabled = songCount === 0;
+}
+
+async function expConfirm() {
+  const w = exportWizard;
+  w.name = ($('exp-name').value || '').trim();
+  if (!w.name) return;
+  const playlists = [];
+  for (const [plId, sel] of w.selected) {
+    if (!sel.size) continue;
+    const pl = state.playlists.find(p => p.id === plId);
+    const tracks = w.tracks.get(plId) || [];
+    playlists.push({
+      name: pl?.title || '未命名歌单',
+      icon: w.icons.get(plId) || null,
+      songs: tracks.filter(t => sel.has(t.id)).map(t => ({ id: t.id, name: t.name, artist: t.artists.join(' / '), album: t.album, duration: t.duration })),
+    });
+  }
+  if (!playlists.length) return;
+  try {
+    const r = await (await fetch('/api/export', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: w.name, libraryIcon: w.icon, playlists }) })).json();
+    if (!r?.ok) { toast(r?.error || '导出失败', 'err'); return; }
+    w.jobId = r.jobId;
+    expGotoStep(3);
+    $('exp-progress').textContent = '正在构建导出包…';
+    exportWizard.pollTimer = setInterval(expPoll, 600);
+  } catch (e) { toast('导出失败:' + e.message, 'err'); }
+}
+
+async function expPoll() {
+  const w = exportWizard;
+  if (!w.jobId) return;
+  try {
+    const r = await (await fetch(`/api/export/status?job=${encodeURIComponent(w.jobId)}`)).json();
+    if (r?.status === 'error') { clearInterval(w.pollTimer); w.pollTimer = null; $('exp-progress').textContent = `导出失败:${r.error || '未知错误'}`; return; }
+    if (r?.status === 'building') { $('exp-progress').textContent = `${r.phase}…(${r.done}/${r.total})`; return; }
+    if (r?.status === 'done') {
+      clearInterval(w.pollTimer); w.pollTimer = null;
+      $('exp-progress').textContent = `导出包就绪:${(r.size / 1048576).toFixed(1)}MB`;
+      $('exp-progress').classList.add('done');
+    }
+  } catch (_) {}
+}
+
+async function expPickDir() {
+  const w = exportWizard;
+  if (!w.jobId) return;
+  try {
+    const dir = await window.showDirectoryPicker({ mode: 'readwrite' });
+    const handle = await dir.getFileHandle(`${w.name}-qsyy.zip`, { create: true });
+    const writable = await handle.createWritable();
+    const blob = await (await fetch(`/api/export/file?job=${encodeURIComponent(w.jobId)}`)).blob();
+    await writable.write(blob);
+    await writable.close();
+    $('exp-done-hint').textContent = `已导出到所选文件夹:${w.name}-qsyy.zip`;
+    toast('导出完成', 'ok');
+  } catch (e) {
+    if (e?.name === 'AbortError') return; // 用户取消目录选择
+    toast('导出失败:' + e.message, 'err');
+  }
+}
+
+async function expToDownloads() {
+  const w = exportWizard;
+  if (!w.jobId) return;
+  try {
+    const r = await storeJson('/api/export/save', { jobId: w.jobId });
+    if (r?.ok) { $('exp-done-hint').textContent = `已导出:${r.path}`; toast('已导出到下载目录', 'ok'); }
+    else toast(r?.error || '导出失败', 'err');
+  } catch (e) { toast('导出失败:' + e.message, 'err'); }
 }
 
 // ---------------------------------------------------------------- online availability (client session)
@@ -1781,6 +2043,7 @@ if ($('quality-select')) $('quality-select').onchange = e => { state.quality = e
 if ($('format-select')) $('format-select').onchange = e => { state.fmt = e.target.value; ls.set('fmt', state.fmt); toast(`默认格式:${e.target.selectedOptions[0].textContent}`, 'ok'); };
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape' && $('export-modal') && !$('export-modal').classList.contains('hidden')) { expCloseModal(); return; }
   if (e.code === 'Escape' && $('import-modal') && !$('import-modal').classList.contains('hidden')) { closeImportModal(); return; }
   if (e.code === 'Escape' && coverExpander?.classList.contains('open')) { closeCoverExpander(); return; }
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -2010,6 +2273,46 @@ setInterval(loadStats, 10 * 60 * 1000);
   if ($('im-cancel')) $('im-cancel').onclick = closeImportModal;
   const importModal = $('import-modal');
   if (importModal) importModal.addEventListener('click', e => { if (e.target === importModal) closeImportModal(); });
+
+  // ---------------------------------------------------------------- export wizard bindings
+  if ($('export-btn')) $('export-btn').onclick = openExportWizard;
+  const exportModal = $('export-modal');
+  if (exportModal) exportModal.addEventListener('click', e => { if (e.target === exportModal) expCloseModal(); });
+  if ($('exp-cancel1')) $('exp-cancel1').onclick = expCloseModal;
+  if ($('exp-close3')) $('exp-close3').onclick = expCloseModal;
+  if ($('exp-next')) $('exp-next').onclick = () => {
+    expGotoStep(2);
+    $('exp-filename').textContent = '…-qsyy.zip';
+  };
+  if ($('exp-back')) $('exp-back').onclick = () => expGotoStep(1);
+  if ($('exp-search')) $('exp-search').oninput = () => renderExportStep1();
+  if ($('exp-name')) $('exp-name').oninput = e => {
+    const v = (e.target.value || '').trim();
+    $('exp-confirm').disabled = !v;
+    $('exp-filename').textContent = `${v || '…'}-qsyy.zip`;
+  };
+  if ($('exp-confirm')) $('exp-confirm').onclick = expConfirm;
+  if ($('exp-icon-btn')) $('exp-icon-btn').onclick = () => $('export-icon-file').click();
+  if ($('exp-icon-rm')) $('exp-icon-rm').onclick = () => {
+    exportWizard.icon = null;
+    $('exp-icon-preview').innerHTML = '库';
+    $('exp-icon-preview').classList.remove('has-img');
+    $('exp-icon-rm').classList.add('hidden');
+  };
+  if ($('export-icon-file')) $('export-icon-file').onchange = async e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { toast('请选择图片文件(jpg/png/webp)', 'err'); return; }
+    const data = await new Promise(res => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(file); });
+    exportWizard.icon = data;
+    $('exp-icon-preview').innerHTML = `<img src="${data}" alt="">`;
+    $('exp-icon-preview').classList.add('has-img');
+    $('exp-icon-rm').classList.remove('hidden');
+  };
+  if ($('exp-pick-dir')) $('exp-pick-dir').onclick = expPickDir;
+  if ($('exp-to-downloads')) $('exp-to-downloads').onclick = expToDownloads;
+
   if ($('cover-file')) $('cover-file').onchange = async e => {
     const file = e.target.files?.[0];
     e.target.value = '';
