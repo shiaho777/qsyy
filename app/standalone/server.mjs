@@ -1308,6 +1308,34 @@ function listStoreDirs() {
   return out;
 }
 
+// 播放建档 / 浏览歌单自动补录共用的单首入档:合并元数据(只填空,不降级已有值),
+// 封面下载落为 stores/<写入库>/<id>.jpg。写入后同步内存 storeMeta。
+async function recordStoreTrack(item) {
+  const id = String(item?.id || '');
+  if (!/^\d+$/.test(id)) return false;
+  try { fs.mkdirSync(STORE_DIR, { recursive: true }); } catch (_) {}
+  const metaPath = path.join(STORE_DIR, `${id}.json`);
+  let meta = {};
+  try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) || {}; } catch (_) {}
+  const before = JSON.stringify(meta);
+  meta.trackId = id;
+  if (meta.complete !== true) meta.complete = false;   // 仅记录(在线态)条目显式置 false
+  if (!meta.name && item.name) meta.name = String(item.name);
+  if (!meta.artist && item.artist) meta.artist = String(item.artist);
+  if (!meta.album && item.album) meta.album = String(item.album);
+  if (!meta.duration && Number(item.duration)) meta.duration = Number(item.duration);
+  if (JSON.stringify(meta) !== before) {
+    fs.writeFileSync(metaPath, JSON.stringify(meta));
+    storeMeta.set(id, { ...(storeMeta.get(id) || {}), ...meta });
+  }
+  const coverPath = path.join(STORE_DIR, `${id}.jpg`);
+  if (item.cover && !fs.existsSync(coverPath)) {
+    const buf = await downloadImage(String(item.cover));
+    if (buf) fs.writeFileSync(coverPath, buf);
+  }
+  return true;
+}
+
 function activeStoreName() { return path.basename(STORE_DIR); }
 
 function switchStore(name) {
@@ -2009,28 +2037,23 @@ const serverHandler = async (request, response) => {
       const id = String(input.id || '');
       if (!/^\d+$/.test(id)) { sendJson(response, 400, { ok: false }); return; }
       try {
-        try { fs.mkdirSync(STORE_DIR, { recursive: true }); } catch (_) {}
-        const metaPath = path.join(STORE_DIR, `${id}.json`);
-        let meta = {};
-        try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) || {}; } catch (_) {}
-        const before = JSON.stringify(meta);
-        meta.trackId = id;
-        if (meta.complete !== true) meta.complete = false;   // 仅记录(在线态)的条目也显式置 false
-        if (!meta.name && input.name) meta.name = String(input.name);
-        if (!meta.artist && input.artist) meta.artist = String(input.artist);
-        if (!meta.album && input.album) meta.album = String(input.album);
-        if (!meta.duration && Number(input.duration)) meta.duration = Number(input.duration);
-        if (JSON.stringify(meta) !== before) {
-          fs.writeFileSync(metaPath, JSON.stringify(meta));
-          // 内存 meta 同步(不重读全目录)
-          storeMeta.set(id, { ...(storeMeta.get(id) || {}), ...meta });
-        }
-        const coverPath = path.join(STORE_DIR, `${id}.jpg`);
-        if (input.cover && !fs.existsSync(coverPath)) {
-          const buf = await downloadImage(String(input.cover));
-          if (buf) fs.writeFileSync(coverPath, buf);
-        }
+        await recordStoreTrack(input);
         sendJson(response, 200, { ok: true });
+      } catch (error) { sendJson(response, 500, { ok: false }); }
+      return;
+    }
+    if (route === 'POST /api/store/record-batch') {
+      // 自动补录:浏览歌单时发现"已缓存但库里没有"的歌批量建档(前端在
+      // cache-status 响应后触发)—— 已缓存歌曲自动聚齐进「自动缓存」,
+      // 不需要逐首重新播放。封面逐张下载,请求本身可被前端 fire-and-forget。
+      const input = await readBody(request);
+      const list = Array.isArray(input.tracks) ? input.tracks : [];
+      let recorded = 0;
+      try {
+        for (const item of list) {
+          if (await recordStoreTrack(item)) recorded += 1;
+        }
+        sendJson(response, 200, { ok: true, recorded });
       } catch (error) { sendJson(response, 500, { ok: false }); }
       return;
     }
