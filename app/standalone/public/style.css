@@ -492,7 +492,17 @@ body::before {
 .dl-open-folder .ic { width: 12px; height: 12px; vertical-align: -1.5px; margin-right: 4px; }
 
 /* ============ cache progress ring ============ */
-.cell-cache { display: flex; align-items: center; justify-content: center; }
+.cell-cache { display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.cell-cache:hover .ring { filter: brightness(1.35); }
+.cache-menu {
+  position: fixed; z-index: 75; min-width: 132px;
+  display: flex; flex-direction: column; gap: 2px; padding: 5px;
+  background: rgba(20,20,26,.96); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow-lg); backdrop-filter: blur(16px) saturate(150%); -webkit-backdrop-filter: blur(16px) saturate(150%);
+  animation: panelIn 160ms var(--spring);
+}
+.cache-menu .cm-item { text-align: left; padding: 8px 14px; border-radius: 8px; color: var(--muted); font-size: 12.5px; transition: all var(--t-fast) var(--ease); }
+.cache-menu .cm-item:hover { color: var(--text); background: var(--panel-2); }
 .ring { width: 19px; height: 19px; }
 .ring circle, .ring path { fill: none; }
 .ring-bg { stroke: var(--line); stroke-width: 2; }
