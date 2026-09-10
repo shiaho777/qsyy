@@ -27,6 +27,7 @@ const state = {
   filtered: null,         // search-filtered subset view
   queue: [],
   queueIndex: -1,
+  queueContext: '',            // 播放来源上下文 'playlist' | 'store:<名>';行高亮门控用
   shuffle: ls.get('shuffle', false),
   repeat: ls.get('repeat', 'off'),   // off | all | one
   cacheStatus: new Map(),
@@ -232,6 +233,7 @@ async function openPlaylist(pl, resume = false) {
       if (idx >= 0) {
         state.queue = list.slice();
         state.queueIndex = idx;
+        state.queueContext = 'playlist';
         startCurrent(false);
         const pos = Number(last.position) || 0;
         if (pos > 5 && audio.duration) audio.currentTime = Math.min(pos, audio.duration - 2);
@@ -1005,7 +1007,7 @@ function playStoreTrack(track) {
   const idx = playable.findIndex(t => t.id === track.id);
   if (idx < 0) return;
   const objs = playable.map(t => ({ id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`, artists: [], album: '', duration: 0, cover: null, vip: false, qualities: [] }));
-  setQueue(objs, idx);
+  setQueue(objs, idx, `store:${state.storeView?.name || ''}`);
 }
 
 // ---------------------------------------------------------------- export wizard (playlist package → zip)
@@ -1231,8 +1233,12 @@ async function refreshWebLogin() {
 
 function decoratePlayingRow() {
   const current = state.queue[state.queueIndex];
+  // 高亮仅作用于"播放来源上下文 == 当前浏览上下文":库视图播的歌不串染
+  // 歌单里同 id 的行(反之亦然)——它们只是同名曲目,不是同一次播放
+  const viewCtx = state.storeView ? `store:${state.storeView.name}` : 'playlist';
+  const sameCtx = !state.queueContext || state.queueContext === viewCtx;
   document.querySelectorAll('.track').forEach(el => {
-    el.classList.toggle('playing', Boolean(current) && el.dataset.id === current.id);
+    el.classList.toggle('playing', Boolean(current) && sameCtx && el.dataset.id === current.id);
   });
   const eq = document.querySelector('.track.playing .eq');
   if (eq) eq.classList.toggle('paused', audio.paused);
@@ -1419,9 +1425,12 @@ async function pumpCacheQueue() {
 
 // ------------------------------------------------------------------ playback
 
-function setQueue(list, index) {
+function setQueue(list, index, context) {
   state.queue = list;
   state.queueIndex = index;
+  // 播放来源上下文('playlist' | 'store:<名>'):行高亮只作用于同上下文,
+  // 否则库里播的歌会让歌单里同 id 的行也"亮着",看起来两处同时在播
+  state.queueContext = context || (state.storeView ? `store:${state.storeView.name}` : 'playlist');
   persistQueue();
   startCurrent(true);
 }
@@ -1444,6 +1453,7 @@ function restoreQueue() {
   if (!queue.length) return false;
   state.queue = queue;
   state.queueIndex = Math.min(Math.max(0, saved.index), queue.length - 1);
+  state.queueContext = 'playlist';
   return true;
 }
 
