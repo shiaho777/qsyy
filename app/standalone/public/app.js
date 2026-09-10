@@ -812,19 +812,25 @@ async function loadStores() {
     const r = await (await fetch('/api/store/sets')).json();
     state.storeSets = r.sets || [];
     state.storeActive = r.active;
-    $('stores').innerHTML = state.storeSets.map((s, i) => `
+    $('stores').innerHTML = state.storeSets.map((s, i) => {
+      const playingHere = state.queueContext === `store:${s.name}`;
+      return `
       <div class="pl-item st-item${state.storeView?.name === s.name ? ' active' : ''}" data-i="${i}">
         ${s.cover
           ? `<img loading="lazy" src="${storeCoverUrl(s.name)}" alt="">`
           : `<span class="st-fallback sm">${esc([...s.name][0] || '库')}</span>`}
-        <div><div class="t">${esc(s.name)}</div><div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${s.active ? ' · 使用中' : ''}</div></div>
-        ${s.active ? '' : `<button class="st-row-del" data-name="${esc(s.name)}" title="删除此缓存库">✕</button>`}
-      </div>`).join('') || '<div class="store-empty">还没有缓存库 — 播放在线歌曲会自动建立</div>';
+        <div><div class="t">${esc(s.name)}</div><div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${playingHere ? ' · 播放中' : ''}</div></div>
+        <button class="st-row-del" data-name="${esc(s.name)}" data-active="${s.active ? '1' : ''}" data-playing="${playingHere ? '1' : ''}" title="删除此缓存库">✕</button>
+      </div>`;
+    }).join('') || '<div class="store-empty">还没有缓存库 — 播放在线歌曲会自动建立</div>';
     $('stores').querySelectorAll('.st-row-del').forEach(btn => {
       btn.onclick = async e => {
         e.stopPropagation();
         const name = btn.dataset.name;
-        if (!confirm(`删除缓存库「${name}」?其中歌曲将全部移除。`)) return;
+        let msg = `删除缓存库「${name}」?其中歌曲将全部移除。`;
+        if (btn.dataset.playing === '1') msg = `「${name}」正在播放。${msg}`;
+        if (btn.dataset.active === '1') msg = `「${name}」是当前写入库(新在线缓存会写入它)。${msg}\n删除后写入库将切回 default。`;
+        if (!confirm(msg)) return;
         const r = await storeJson('/api/store/delete', { name });
         if (r?.ok) {
           toast(`已删除「${name}」`, 'ok');
@@ -866,16 +872,17 @@ async function renderStoreHero() {
   if (!set) { state.storeView = null; ls.set('storeView', ''); setMainMode('playlist'); return; }
   state.storeSets = r.sets; state.storeActive = r.active;
   const firstChar = esc([...set.name][0] || '库');
+  const playingHere = state.queueContext === `store:${name}`;
   $('hero').innerHTML = `
     <div class="hero-cover-wrap">${set.cover
       ? `<img id="hero-cover" class="hero-cover" src="${storeCoverUrl(name)}" alt="">`
       : `<div id="hero-cover" class="st-fallback big" title="设置封面可替换">${firstChar}</div>`}</div>
     <div class="hero-info">
-      <div class="hero-kicker">缓存库${set.active ? ' · <span class="live-dot"></span>使用中' : ''}</div>
+      <div class="hero-kicker">缓存库${playingHere ? ' · <span class="live-dot"></span>播放中' : ''}</div>
       <div class="hero-title">${esc(set.name)}</div>
-      <div class="hero-sub">${set.tracks} 首 · ${(set.size / 1048576).toFixed(1)}MB</div>
+      <div class="hero-sub">${set.tracks} 首 · ${(set.size / 1048576).toFixed(1)}MB${set.active ? ' · 写入库' : ''}</div>
       <div class="hero-actions store-hero-actions">
-        ${set.active ? '' : '<button id="st-use" class="btn primary">使用此库</button>'}
+        ${set.active ? '' : '<button id="st-use" class="btn primary">设为写入库</button>'}
         <button id="st-import" class="btn ghost">导入</button>
         <button id="st-cover" class="btn ghost">设置封面</button>
         ${set.cover ? '<button id="st-cover-rm" class="btn ghost">移除封面</button>' : ''}
@@ -909,7 +916,10 @@ async function renderStoreHero() {
     renderStoreHero(); renderStoreTracksView(); loadStores(); decorateCacheBadges();
   };
   if ($('st-del')) $('st-del').onclick = async () => {
-    if (!confirm(`删除缓存库「${name}」?其中歌曲将全部移除。`)) return;
+    let msg = `删除缓存库「${name}」?其中歌曲将全部移除。`;
+    if (playingHere) msg = `「${name}」正在播放。${msg}`;
+    if (set.active) msg = `「${name}」是当前写入库(新在线缓存会写入它)。${msg}\n删除后写入库将切回 default。`;
+    if (!confirm(msg)) return;
     const res = await storeJson('/api/store/delete', { name });
     if (res?.ok) { ls.set('storeView', ''); toast(`已删除「${name}」`, 'ok'); setTimeout(() => location.reload(), 500); }
     else toast(res?.error || '删除失败', 'err');
