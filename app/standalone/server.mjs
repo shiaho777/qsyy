@@ -1240,23 +1240,30 @@ let STORE_DIR = path.join(STORES_ROOT, 'default');
 const storeMeta = new Map();        // trackId → { size, downloaded, spade, complete }
 const setNameOk = name => /^[\w\u4e00-\u9fa5][\w\u4e00-\u9fa5 -]{0,31}$/.test(name) && !/[\/]/.test(name);
 
+const AUTO_STORE_NAME = '自动缓存';   // 在线播放自动落盘的库(原内部名 default,改名自解释)
 (function initStores() {
   try {
     fs.mkdirSync(STORES_ROOT, { recursive: true });
     const legacy = path.join(DECRYPT_DIR, 'online');
-    if (fs.existsSync(legacy) && !fs.existsSync(path.join(STORES_ROOT, 'default'))) {
-      try { fs.renameSync(legacy, path.join(STORES_ROOT, 'default')); } catch (_) {}
+    if (fs.existsSync(legacy) && !fs.existsSync(path.join(STORES_ROOT, AUTO_STORE_NAME))) {
+      try { fs.renameSync(legacy, path.join(STORES_ROOT, AUTO_STORE_NAME)); } catch (_) {}
     }
-    let active = 'default';
-    try { active = JSON.parse(fs.readFileSync(ACTIVE_STORE_FILE, 'utf8')).name || 'default'; } catch (_) {}
+    // 历史内部名 default → 自动缓存(一次性迁移;两边都存在时保留新的)
+    const oldDefault = path.join(STORES_ROOT, 'default');
+    if (fs.existsSync(oldDefault) && !fs.existsSync(path.join(STORES_ROOT, AUTO_STORE_NAME))) {
+      try { fs.renameSync(oldDefault, path.join(STORES_ROOT, AUTO_STORE_NAME)); } catch (_) {}
+    }
+    let active = AUTO_STORE_NAME;
+    try { active = JSON.parse(fs.readFileSync(ACTIVE_STORE_FILE, 'utf8')).name || AUTO_STORE_NAME; } catch (_) {}
+    if (active === 'default') active = AUTO_STORE_NAME;
     if (setNameOk(active) && fs.existsSync(path.join(STORES_ROOT, active))) {
       STORE_DIR = path.join(STORES_ROOT, active);
     } else {
-      // 指向的库已被删(default 也可能被删):落到第一个现存库;一个不剩则重建 default
+      // 指向的库已被删(允许删到零个库):落到第一个现存库;一个不剩则指向
+      // 自动缓存但不创建 —— 在线播放时 ensureOnlineCached 按需建
       const first = listStoreDirs()[0];
-      active = first || 'default';
+      active = first || AUTO_STORE_NAME;
       STORE_DIR = path.join(STORES_ROOT, active);
-      try { fs.mkdirSync(STORE_DIR, { recursive: true }); } catch (_) {}
     }
     try { fs.writeFileSync(ACTIVE_STORE_FILE, JSON.stringify({ name: path.basename(STORE_DIR) })); } catch (_) {}
   } catch (_) {}
@@ -1562,6 +1569,8 @@ function pumpDownloadQueue() {
 // Concurrent callers for the same track share one queued job.
 function ensureOnlineCached(trackId, priority = false) {
   if (storeStatus(trackId)?.complete) return Promise.resolve({ m4a: m4aPath(trackId) });
+  // 允许删到零个库:在线播放时按需重建写入库(自动缓存)
+  try { fs.mkdirSync(STORE_DIR, { recursive: true }); } catch (_) {}
   const lane = priority ? 'playback' : 'background';
   return new Promise(resolve => {
     const existing = downloadQueue.find(job => job.trackId === trackId);
@@ -1906,13 +1915,19 @@ const serverHandler = async (request, response) => {
       const input = await readBody(request);
       const name = String(input.name || '');
       if (!setNameOk(name)) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
-      // 所有库(含 default)都可删。写入库指针必须始终指向真实目录:
-      // 删的是写入库时,切到剩余的第一个库;一个不剩则重建空 default。
+      // 所有库可删,允许删到零个:删的是写入库时切到剩余第一个库;一个不剩
+      // 则指向「自动缓存」但不落盘 —— 在线播放时按需重建,平时列表干净
       const wasActive = name === activeStoreName();
       fs.rmSync(path.join(STORES_ROOT, name), { recursive: true, force: true });
       if (wasActive) {
         downloadQueue.length = 0;
-        switchStore(listStoreDirs()[0] || 'default');
+        const next = listStoreDirs()[0];
+        if (next) switchStore(next);
+        else {
+          STORE_DIR = path.join(STORES_ROOT, AUTO_STORE_NAME);
+          try { fs.writeFileSync(ACTIVE_STORE_FILE, JSON.stringify({ name: AUTO_STORE_NAME })); } catch (_) {}
+          storeMeta.clear();
+        }
       }
       sendJson(response, 200, { ok: true });
       return;
