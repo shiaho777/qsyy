@@ -580,6 +580,14 @@ body::before {
 /* sidebar: two scroll lists coexist; 我的缓存 capped so playlists keep room */
 .stores { max-height: 38%; }
 .sidebar .store-new { padding: 0 10px 6px; }
+.store-add-menu { display: flex; flex-direction: column; gap: 3px; padding: 0 10px 6px; }
+.store-add-menu .add-opt {
+  text-align: left; padding: 7px 10px; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--line-soft);
+  color: var(--muted); font-size: 12px;
+  transition: all var(--t-fast) var(--ease);
+}
+.store-add-menu .add-opt:hover { color: var(--text); background: var(--panel-2); border-color: var(--line); }
 .nav-caption .cap-btn {
   margin-left: auto; padding: 0 7px; border-radius: 7px; border: 1px solid var(--line-soft);
   color: var(--muted); font-size: 12px; line-height: 1.4; background: var(--panel);

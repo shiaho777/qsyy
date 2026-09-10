@@ -26,7 +26,11 @@
     <div id="user" class="user"></div>
     <div class="nav-caption">我的歌单 <button id="export-btn" class="cap-btn" title="导出歌单为 ZIP 包"><svg class="ic" viewBox="0 0 24 24"><path d="M12 15V4m0 0l-4 4m4-4l4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>导出</button></div>
     <nav id="playlists" class="playlists"></nav>
-    <div class="nav-caption">我的缓存 <button id="store-new-btn" class="cap-btn" title="新建缓存库">＋</button></div>
+    <div class="nav-caption">我的缓存 <button id="store-add-btn" class="cap-btn" title="添加缓存库:导入压缩包或新建空库">＋</button></div>
+    <div id="store-add-menu" class="store-add-menu hidden">
+      <button id="store-import-btn" class="add-opt">导入压缩包(zip / 备份)…</button>
+      <button id="store-empty-btn" class="add-opt">新建空库…</button>
+    </div>
     <div id="store-new-form" class="store-new hidden">
       <input id="store-new-name" type="text" placeholder="新缓存库名称…" autocomplete="off">
       <button id="store-new-ok" class="mini-btn">新建</button>
