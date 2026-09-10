@@ -1249,11 +1249,30 @@ const setNameOk = name => /^[\w\u4e00-\u9fa5][\w\u4e00-\u9fa5 -]{0,31}$/.test(na
     }
     let active = 'default';
     try { active = JSON.parse(fs.readFileSync(ACTIVE_STORE_FILE, 'utf8')).name || 'default'; } catch (_) {}
-    if (setNameOk(active) && fs.existsSync(path.join(STORES_ROOT, active))) STORE_DIR = path.join(STORES_ROOT, active);
-    else active = 'default';
+    if (setNameOk(active) && fs.existsSync(path.join(STORES_ROOT, active))) {
+      STORE_DIR = path.join(STORES_ROOT, active);
+    } else {
+      // 指向的库已被删(default 也可能被删):落到第一个现存库;一个不剩则重建 default
+      const first = listStoreDirs()[0];
+      active = first || 'default';
+      STORE_DIR = path.join(STORES_ROOT, active);
+      try { fs.mkdirSync(STORE_DIR, { recursive: true }); } catch (_) {}
+    }
     try { fs.writeFileSync(ACTIVE_STORE_FILE, JSON.stringify({ name: path.basename(STORE_DIR) })); } catch (_) {}
   } catch (_) {}
 })();
+
+// 现存缓存库目录名(排序稳定)
+function listStoreDirs() {
+  const out = [];
+  try {
+    for (const d of fs.readdirSync(STORES_ROOT)) {
+      try { if (fs.statSync(path.join(STORES_ROOT, d)).isDirectory()) out.push(d); } catch (_) {}
+    }
+  } catch (_) {}
+  out.sort();
+  return out;
+}
 
 function activeStoreName() { return path.basename(STORE_DIR); }
 
@@ -1887,17 +1906,13 @@ const serverHandler = async (request, response) => {
       const input = await readBody(request);
       const name = String(input.name || '');
       if (!setNameOk(name)) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
-      // default 是写入库指针的系统兜底(启动时被 initStores 重建,删除活动库
-      // 后也回落到它)——删除它只会被瞬间复活,明确拒绝比假装成功诚实
-      if (name === 'default') { sendJson(response, 400, { ok: false, error: '默认库不可删除(系统兜底,删除后写入库无处指向)' }); return; }
-      // 删除活动库不再拒绝:清空其下载队列,把写入库回落到 default。
-      // 前端对"播放中/活动"的库会先二次确认,这里只保证状态一致。
-      if (name === activeStoreName()) {
+      // 所有库(含 default)都可删。写入库指针必须始终指向真实目录:
+      // 删的是写入库时,切到剩余的第一个库;一个不剩则重建空 default。
+      const wasActive = name === activeStoreName();
+      fs.rmSync(path.join(STORES_ROOT, name), { recursive: true, force: true });
+      if (wasActive) {
         downloadQueue.length = 0;
-        fs.rmSync(path.join(STORES_ROOT, name), { recursive: true, force: true });
-        switchStore('default');
-      } else {
-        fs.rmSync(path.join(STORES_ROOT, name), { recursive: true, force: true });
+        switchStore(listStoreDirs()[0] || 'default');
       }
       sendJson(response, 200, { ok: true });
       return;
