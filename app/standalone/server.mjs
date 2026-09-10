@@ -741,6 +741,33 @@ function proxyImage(url, response) {
   }
 }
 
+// 下载白名单域名的图片到内存(歌曲封面落库/导出用),失败返回 null
+function downloadImage(url, maxBytes = 3 * 1024 * 1024) {
+  return new Promise(resolve => {
+    let target;
+    try {
+      target = new URL(url);
+      if (!/douyinpic\.com|bytedanceapi|snssdk/.test(target.hostname)) { resolve(null); return; }
+    } catch (_) { resolve(null); return; }
+    const req = https.get(target, { headers: { 'user-agent': 'Mozilla/5.0' }, agent: cdnAgent }, res => {
+      if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
+      const chunks = [];
+      let size = 0;
+      let done = false;
+      const finish = v => { if (!done) { done = true; resolve(v); } };
+      res.on('data', c => {
+        size += c.length;
+        if (size > maxBytes) { try { req.destroy(); } catch (_) {} finish(null); return; }
+        chunks.push(c);
+      });
+      res.on('end', () => finish(Buffer.concat(chunks)));
+      res.on('error', () => finish(null));
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(10000, () => { try { req.destroy(); } catch (_) {} resolve(null); });
+  });
+}
+
 // ---------------------------------------------------------------- ttnet client-session playback (zero login)
 
 // Resident ttnet-helper subprocess: resolves play URLs through the client's
@@ -1937,10 +1964,10 @@ const serverHandler = async (request, response) => {
       const tracks = [];
       if (wantSet === activeStoreName()) {
         for (const [id, meta] of storeMeta) {
-          const complete = meta.complete && fs.existsSync(m4aPath(id));
+          const complete = Boolean(meta.complete) && fs.existsSync(m4aPath(id));
           let size = 0;
           try { size = complete ? fs.statSync(m4aPath(id)).size : meta.downloaded; } catch (_) {}
-          tracks.push({ id, name: meta.name || '', complete, preview: Boolean(meta.preview), size, quality: meta.quality || '' });
+          tracks.push({ id, name: meta.name || '', artist: meta.artist || '', album: meta.album || '', duration: Number(meta.duration) || 0, hasCover: fs.existsSync(path.join(STORE_DIR, `${id}.jpg`)), complete, preview: Boolean(meta.preview), size, quality: meta.quality || '' });
         }
       } else {
         // browsing a non-active set: read its dir directly (storeMeta is active-only)
@@ -1955,7 +1982,7 @@ const serverHandler = async (request, response) => {
               const complete = Boolean(meta.complete) && fs.existsSync(path.join(dir, `${id}.m4a`));
               let size = 0;
               try { size = complete ? fs.statSync(path.join(dir, `${id}.m4a`)).size : (meta.downloaded || 0); } catch (_) {}
-              tracks.push({ id, name: meta.name || '', complete, preview: Boolean(meta.preview), size, quality: meta.quality || '' });
+              tracks.push({ id, name: meta.name || '', artist: meta.artist || '', album: meta.album || '', duration: Number(meta.duration) || 0, hasCover: fs.existsSync(path.join(dir, `${id}.jpg`)), complete, preview: Boolean(meta.preview), size, quality: meta.quality || '' });
             } catch (_) {}
           }
         } catch (_) {}
@@ -1974,6 +2001,49 @@ const serverHandler = async (request, response) => {
       sendJson(response, 200, { ok: true });
       return;
     }
+    if (route === 'POST /api/store/record') {
+      // 播放即建档:每首在 qsyy 播过的歌写入入库(名/歌手/专辑/时长),
+      // 封面下载落为 <id>.jpg。客户端缓存的歌也记(在线态,无本地音频),
+      // 这样「自动缓存」= 我在 qsyy 里听过的一切,且封面可离线显示/随包导出。
+      const input = await readBody(request);
+      const id = String(input.id || '');
+      if (!/^\d+$/.test(id)) { sendJson(response, 400, { ok: false }); return; }
+      try {
+        try { fs.mkdirSync(STORE_DIR, { recursive: true }); } catch (_) {}
+        const metaPath = path.join(STORE_DIR, `${id}.json`);
+        let meta = {};
+        try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) || {}; } catch (_) {}
+        const before = JSON.stringify(meta);
+        meta.trackId = id;
+        if (meta.complete !== true) meta.complete = false;   // 仅记录(在线态)的条目也显式置 false
+        if (!meta.name && input.name) meta.name = String(input.name);
+        if (!meta.artist && input.artist) meta.artist = String(input.artist);
+        if (!meta.album && input.album) meta.album = String(input.album);
+        if (!meta.duration && Number(input.duration)) meta.duration = Number(input.duration);
+        if (JSON.stringify(meta) !== before) {
+          fs.writeFileSync(metaPath, JSON.stringify(meta));
+          // 内存 meta 同步(不重读全目录)
+          storeMeta.set(id, { ...(storeMeta.get(id) || {}), ...meta });
+        }
+        const coverPath = path.join(STORE_DIR, `${id}.jpg`);
+        if (input.cover && !fs.existsSync(coverPath)) {
+          const buf = await downloadImage(String(input.cover));
+          if (buf) fs.writeFileSync(coverPath, buf);
+        }
+        sendJson(response, 200, { ok: true });
+      } catch (error) { sendJson(response, 500, { ok: false }); }
+      return;
+    }
+    if (route === 'GET /api/store/track-cover') {
+      // 库内单曲封面(stores/<set>/<id>.jpg,播放建档/导入包时落盘)
+      const name = url.searchParams.get('set') || '';
+      const id = url.searchParams.get('id') || '';
+      if (!setNameOk(name) || !/^\d+$/.test(id)) { sendJson(response, 400, { ok: false }); return; }
+      try {
+        response.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=86400' }).end(fs.readFileSync(path.join(STORES_ROOT, name, `${id}.jpg`)));
+      } catch (_) { sendJson(response, 404, { ok: false }); }
+      return;
+    }
     if (route === 'POST /api/store/remove-track') {
       const input = await readBody(request);
       const id = String(input.id || '');
@@ -1982,7 +2052,7 @@ const serverHandler = async (request, response) => {
       const otherSet = setName && setName !== activeStoreName() ? setName : null;
       if (otherSet && (!setNameOk(otherSet) || !fs.existsSync(path.join(STORES_ROOT, otherSet)))) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
       const dir = otherSet ? path.join(STORES_ROOT, otherSet) : STORE_DIR;
-      for (const suffix of ['m4a', 'json', 'part']) {
+      for (const suffix of ['m4a', 'json', 'part', 'jpg']) {
         try { fs.unlinkSync(path.join(dir, `${id}.${suffix}`)); } catch (_) {}
       }
       removeFromStoreSet(otherSet || activeStoreName(), id);
@@ -2027,10 +2097,12 @@ const serverHandler = async (request, response) => {
           const structure = { playlists: [] };
           let audioCount = 0;
           const audioTodos = [];
+          const coverTodos = [];   // { id, url } — 歌曲封面(优先本地已落盘的 <id>.jpg)
           playlists.forEach((pl, i) => {
             const songs = (Array.isArray(pl.songs) ? pl.songs : []).map(s => ({
               id: String(s.id || ''), name: String(s.name || ''), artist: String(s.artist || ''),
               album: String(s.album || ''), duration: Number(s.duration) || 0,
+              cover: String(s.cover || ''),
             })).filter(s => /^\d+$/.test(s.id));
             const plEntry = { name: String(pl.name || `歌单 ${i + 1}`), icon: null, songs };
             if (pl.icon) {
@@ -2041,7 +2113,10 @@ const serverHandler = async (request, response) => {
                 plEntry.icon = fname;
               }
             }
-            for (const s of songs) audioTodos.push(s.id);
+            for (const s of songs) {
+              audioTodos.push(s.id);
+              if (s.cover) coverTodos.push({ id: s.id, url: s.cover });
+            }
             structure.playlists.push(plEntry);
           });
           if (input.libraryIcon) {
@@ -2064,7 +2139,23 @@ const serverHandler = async (request, response) => {
             job.done += 1;
             job.phase = `打包音频 ${job.done}/${job.total}`;
           }
-          for (const pl of structure.playlists) for (const s of pl.songs) s.hasAudio = packed.has(s.id);
+          // 歌曲封面:本地已落盘的直接用(离线可靠),否则按 URL 下载
+          const covered = new Set();
+          for (const todo of coverTodos) {
+            if (covered.has(todo.id)) continue;
+            const local = path.join(STORE_DIR, `${todo.id}.jpg`);
+            let buf = null;
+            try { if (fs.existsSync(local)) buf = fs.readFileSync(local); } catch (_) {}
+            if (!buf) buf = await downloadImage(todo.url);
+            if (buf) { entries.push({ name: `${todo.id}.jpg`, data: buf }); covered.add(todo.id); }
+          }
+          for (const pl of structure.playlists) {
+            for (const s of pl.songs) {
+              delete s.cover;
+              s.hasAudio = packed.has(s.id);
+              s.hasCover = covered.has(s.id);
+            }
+          }
           entries.unshift({ name: 'qsyy.json', data: Buffer.from(JSON.stringify({ v: 1, app: 'qsyy', name: libName, createdAt: Date.now(), ...structure }, null, 1)), deflate: true });
           job.phase = '压缩打包';
           job.zipPath = path.join(os.tmpdir(), `qsyy-export-${jobId}.zip`);
@@ -2225,6 +2316,10 @@ const serverHandler = async (request, response) => {
               fs.writeFileSync(path.join(targetDir, base), e.data);
               audioIds.add(base.replace(/\.m4a$/, ''));
               imported += 1;
+            } else if (/^\d+\.jpg$/.test(base)) {
+              // 歌曲封面(播放建档/导出包携带)
+              fs.writeFileSync(path.join(targetDir, base), e.data);
+              imported += 1;
             } else {
               skipped += 1;
             }
@@ -2264,7 +2359,7 @@ const serverHandler = async (request, response) => {
           }
         } else {
           // tar 分支:沿用原流式解析(喂入已缓冲的 body)
-          const validEntry = name => /^(\d+\.(m4a|json|part)|cover\.(jpg|jpeg|png|webp))$/i.test(name);
+          const validEntry = name => /^(\d+\.(m4a|json|part|jpg)|cover\.(jpg|jpeg|png|webp))$/i.test(name);
           let buffer = body;
           let mode = 'header';
           let current = null; // { size, taken, out?, need? }
