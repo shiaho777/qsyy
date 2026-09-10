@@ -2110,23 +2110,20 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'POST /api/restore') {
-      // import into a set (named after the backup file, or an existing one).
-      // Accepts two package formats — auto-detected by magic bytes:
+      // import into a set (explicitly named via ?set=, or auto-named from the
+      // package). Accepts two package formats — auto-detected by magic bytes:
       //   tar  (qsyy backup): <trackId>.<m4a|json|part> + cover.*
       //   zip  (qsyy 歌单包): qsyy.json 结构 + cover.* + pl-<i>.jpg + <trackId>.m4a
-      // mode=merge keeps existing tracks (same-id overwritten); mode=replace
-      // (default) wipes the target first. activate=1 switches to it afterwards
-      // (default: replace→activate, merge→stay). Entry names are whitelisted
-      // (traversal-safe by construction).
-      let setName = (url.searchParams.get('set') || '').replace(/\.(tar|zip)$/i, '').trim();
-      if (!setNameOk(setName)) setName = `导入-${new Date().toISOString().slice(5, 10).replace('-', '')}`;
+      // Without an explicit ?set=, a zip's library name is taken from qsyy.json
+      // (auto -2/-3 suffix on collision) — the sidebar ＋ import flow relies on
+      // this to create a library named after the package. mode=merge keeps
+      // existing tracks; mode=replace (default) wipes the target first.
+      // activate=1 switches to it afterwards (default: replace→activate,
+      // merge→stay). Entry names are whitelisted (traversal-safe).
+      const explicitSet = (url.searchParams.get('set') || '').replace(/\.(tar|zip)$/i, '').trim();
       const importMode = url.searchParams.get('mode') === 'merge' ? 'merge' : 'replace';
       const activateParam = url.searchParams.get('activate');
       const shouldActivate = activateParam != null ? activateParam === '1' : importMode === 'replace';
-      const targetDir = path.join(STORES_ROOT, setName);
-      if (importMode !== 'merge') fs.rmSync(targetDir, { recursive: true, force: true });
-      fs.mkdirSync(targetDir, { recursive: true });
-      const validEntry = name => /^(\d+\.(m4a|json|part)|cover\.(jpg|jpeg|png|webp))$/i.test(name);
       let imported = 0;
       let skipped = 0;
       let format = 'tar';
@@ -2137,16 +2134,36 @@ const serverHandler = async (request, response) => {
         const body = Buffer.concat(chunks);
         const isZip = body.length > 4 && body[0] === 0x50 && body[1] === 0x4B && body[2] === 0x03 && body[3] === 0x04;
         format = isZip ? 'zip' : 'tar';
+        let entries = null;
+        let manifest = null;
         if (isZip) {
-          const entries = zipParse(body);
-          let manifest = null;
+          entries = zipParse(body);
+          for (const e of entries) {
+            if (path.basename(e.name) === 'qsyy.json') {
+              try { manifest = JSON.parse(e.data.toString('utf8')); } catch (_) { skipped += 1; }
+            }
+          }
+        }
+        // 目标库名:显式 ?set= 用之(替换语义,允许覆盖);否则从包取名(不覆盖已有库,自动加后缀)
+        let setName = explicitSet;
+        if (!setNameOk(setName)) {
+          const want = (manifest?.name && setNameOk(String(manifest.name).trim()) ? String(manifest.name).trim() : '')
+            || `导入-${new Date().toISOString().slice(5, 10).replace('-', '')}`;
+          setName = want;
+          let n = 2;
+          while (fs.existsSync(path.join(STORES_ROOT, setName))) setName = `${want}-${n++}`;
+        }
+        const targetDir = path.join(STORES_ROOT, setName);
+        if (importMode !== 'merge') fs.rmSync(targetDir, { recursive: true, force: true });
+        fs.mkdirSync(targetDir, { recursive: true });
+        if (isZip) {
           const plIcons = new Map();          // 'pl-0.jpg' → Buffer
           const audioIds = new Set();
           const removeOldCovers = () => { try { for (const f of fs.readdirSync(targetDir)) if (/^cover\./i.test(f)) fs.unlinkSync(path.join(targetDir, f)); } catch (_) {} };
           for (const e of entries) {
             const base = path.basename(e.name);
             if (base === 'qsyy.json') {
-              try { manifest = JSON.parse(e.data.toString('utf8')); } catch (_) { skipped += 1; }
+              continue; // 已在命名阶段解析
             } else if (/^pl-\d+\.(jpg|jpeg|png|webp)$/i.test(base)) {
               plIcons.set(base.toLowerCase(), e.data);
             } else if (/^cover\.(jpg|jpeg|png|webp)$/i.test(base)) {
@@ -2196,6 +2213,7 @@ const serverHandler = async (request, response) => {
           }
         } else {
           // tar 分支:沿用原流式解析(喂入已缓冲的 body)
+          const validEntry = name => /^(\d+\.(m4a|json|part)|cover\.(jpg|jpeg|png|webp))$/i.test(name);
           let buffer = body;
           let mode = 'header';
           let current = null; // { size, taken, out?, need? }

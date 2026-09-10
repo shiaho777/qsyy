@@ -762,6 +762,7 @@ const storeJson = (p, body) => fetch(p, { method: 'POST', headers: { 'content-ty
 
 // 导入流程:选文件 → 一个弹窗里问 合并/替换(单入口,选择出现在导入时) → 执行
 let pendingImportFile = null;
+let pendingImportTarget = null;   // 'new' = 侧栏＋导入(自动取名建新库);null = 当前库视图内导入
 function openImportModal() {
   const m = $('import-modal');
   if (!m) return;
@@ -2256,11 +2257,25 @@ setInterval(loadStats, 10 * 60 * 1000);
     openStoreView(r.active);
   };
   if ($('check-update')) $('check-update').onclick = checkUpdate;
-  // 选完文件 → 弹窗里问 合并/替换(单入口导入)
-  if ($('restore-file')) $('restore-file').onchange = e => {
+  // 选完文件 → 弹窗里问 合并/替换(单入口导入);＋ 的"导入压缩包"走自动取名建新库
+  if ($('restore-file')) $('restore-file').onchange = async e => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    if (pendingImportTarget === 'new') {
+      pendingImportTarget = null;
+      toast(`正在导入「${file.name}」(${(file.size / 1048576).toFixed(1)}MB)…`);
+      try {
+        // 不带 set:服务端从 qsyy.json 自动取名(重名加 -2/-3 后缀),导入并切换到新库
+        const r = await (await fetch('/api/restore?mode=replace&activate=1', { method: 'POST', body: file })).json();
+        if (r?.ok) {
+          toast(`已导入缓存库「${r.set}」`, 'ok');
+          ls.set('storeView', r.set);
+          setTimeout(() => location.reload(), 500);
+        } else toast('导入失败:' + (r?.error || '文件格式不正确'), 'err');
+      } catch (err) { toast('导入失败:' + err.message, 'err'); }
+      return;
+    }
     const name = state.storeView?.name;
     if (!name) { toast('先在侧栏「我的缓存」选择一个缓存库再导入', 'err'); return; }
     pendingImportFile = { file, name };
@@ -2325,10 +2340,22 @@ setInterval(loadStats, 10 * 60 * 1000);
     if (r?.ok) { toast('封面已更新', 'ok'); renderStoreHero(); loadStores(); }
     else toast(r?.error || '封面设置失败', 'err');
   };
-  if ($('store-new-btn')) $('store-new-btn').onclick = () => {
+  // 侧栏「＋」添加库:导入压缩包(自动取名)或新建空库
+  const toggleAddMenu = show => {
+    $('store-add-menu')?.classList.toggle('hidden', !show);
+    if (show) $('store-new-form')?.classList.add('hidden');
+  };
+  if ($('store-add-btn')) $('store-add-btn').onclick = () => toggleAddMenu($('store-add-menu')?.classList.contains('hidden'));
+  if ($('store-import-btn')) $('store-import-btn').onclick = () => {
+    pendingImportTarget = 'new';
+    toggleAddMenu(false);
+    $('restore-file').click();
+  };
+  if ($('store-empty-btn')) $('store-empty-btn').onclick = () => {
+    toggleAddMenu(false);
     const form = $('store-new-form');
-    form.classList.toggle('hidden');
-    if (!form.classList.contains('hidden')) $('store-new-name').focus();
+    form.classList.remove('hidden');
+    $('store-new-name').focus();
   };
   const doCreateStore = async () => {
     const name = ($('store-new-name').value || '').trim();
