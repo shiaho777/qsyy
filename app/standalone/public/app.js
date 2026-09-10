@@ -829,7 +829,7 @@ async function loadStores() {
         const name = btn.dataset.name;
         let msg = `删除缓存库「${name}」?其中歌曲将全部移除。`;
         if (btn.dataset.playing === '1') msg = `「${name}」正在播放。${msg}`;
-        if (btn.dataset.active === '1') msg = `「${name}」是当前写入库(新在线缓存会写入它)。${msg}\n删除后写入库将自动切换${state.storeSets.length > 1 ? '到剩余的库' : '(会重建一个空默认库)'}。`;
+        if (btn.dataset.active === '1') msg = `「${name}」是当前写入库(新在线缓存会写入它)。${msg}\n删除后写入库将${state.storeSets.length > 1 ? '自动切换到剩余的库' : '被清空;之后在线播放时会自动重建「自动缓存」'}。`;
         if (!confirm(msg)) return;
         const r = await storeJson('/api/store/delete', { name });
         if (r?.ok) {
@@ -918,7 +918,7 @@ async function renderStoreHero() {
   if ($('st-del')) $('st-del').onclick = async () => {
     let msg = `删除缓存库「${name}」?其中歌曲将全部移除。`;
     if (playingHere) msg = `「${name}」正在播放。${msg}`;
-    if (set.active) msg = `「${name}」是当前写入库(新在线缓存会写入它)。${msg}\n删除后写入库将自动切换${(state.storeSets?.length || 0) > 1 ? '到剩余的库' : '(会重建一个空默认库)'}。`;
+    if (set.active) msg = `「${name}」是当前写入库(新在线缓存会写入它)。${msg}\n删除后写入库将${(state.storeSets?.length || 0) > 1 ? '自动切换到剩余的库' : '被清空;之后在线播放时会自动重建「自动缓存」'}。`;
     if (!confirm(msg)) return;
     const res = await storeJson('/api/store/delete', { name });
     if (res?.ok) { ls.set('storeView', ''); toast(`已删除「${name}」`, 'ok'); setTimeout(() => location.reload(), 500); }
