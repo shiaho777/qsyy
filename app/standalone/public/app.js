@@ -814,13 +814,14 @@ async function loadStores() {
     state.storeActive = r.active;
     $('stores').innerHTML = state.storeSets.map((s, i) => {
       const playingHere = state.queueContext === `store:${s.name}`;
+      const isDefault = s.name === 'default';
       return `
       <div class="pl-item st-item${state.storeView?.name === s.name ? ' active' : ''}" data-i="${i}">
         ${s.cover
           ? `<img loading="lazy" src="${storeCoverUrl(s.name)}" alt="">`
           : `<span class="st-fallback sm">${esc([...s.name][0] || '库')}</span>`}
-        <div><div class="t">${esc(s.name)}</div><div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${playingHere ? ' · 播放中' : ''}</div></div>
-        <button class="st-row-del" data-name="${esc(s.name)}" data-active="${s.active ? '1' : ''}" data-playing="${playingHere ? '1' : ''}" title="删除此缓存库">✕</button>
+        <div><div class="t">${esc(s.name)}</div><div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${playingHere ? ' · 播放中' : ''}${isDefault ? ' · 默认' : ''}</div></div>
+        ${isDefault ? '' : `<button class="st-row-del" data-name="${esc(s.name)}" data-active="${s.active ? '1' : ''}" data-playing="${playingHere ? '1' : ''}" title="删除此缓存库">✕</button>`}
       </div>`;
     }).join('') || '<div class="store-empty">还没有缓存库 — 播放在线歌曲会自动建立</div>';
     $('stores').querySelectorAll('.st-row-del').forEach(btn => {
@@ -873,12 +874,13 @@ async function renderStoreHero() {
   state.storeSets = r.sets; state.storeActive = r.active;
   const firstChar = esc([...set.name][0] || '库');
   const playingHere = state.queueContext === `store:${name}`;
+  const isDefault = name === 'default';
   $('hero').innerHTML = `
     <div class="hero-cover-wrap">${set.cover
       ? `<img id="hero-cover" class="hero-cover" src="${storeCoverUrl(name)}" alt="">`
       : `<div id="hero-cover" class="st-fallback big" title="设置封面可替换">${firstChar}</div>`}</div>
     <div class="hero-info">
-      <div class="hero-kicker">缓存库${playingHere ? ' · <span class="live-dot"></span>播放中' : ''}</div>
+      <div class="hero-kicker">缓存库${playingHere ? ' · <span class="live-dot"></span>播放中' : ''}${isDefault ? ' · 系统默认' : ''}</div>
       <div class="hero-title">${esc(set.name)}</div>
       <div class="hero-sub">${set.tracks} 首 · ${(set.size / 1048576).toFixed(1)}MB${set.active ? ' · 写入库' : ''}</div>
       <div class="hero-actions store-hero-actions">
@@ -888,7 +890,7 @@ async function renderStoreHero() {
         ${set.cover ? '<button id="st-cover-rm" class="btn ghost">移除封面</button>' : ''}
         <button id="st-backup" class="btn ghost">备份</button>
         ${set.active ? '<button id="st-clear" class="btn ghost">清空</button>' : ''}
-        <button id="st-del" class="btn ghost st-danger">删除</button>
+        ${isDefault ? '' : '<button id="st-del" class="btn ghost st-danger">删除</button>'}
       </div>
     </div>`;
   armImg($('hero-cover'));
