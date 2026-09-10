@@ -196,7 +196,15 @@ async function resolveTrack(trackId) {
   const lyric = payload.lyric?.content
     ? { content: payload.lyric.content, cn: payload.lyric?.translations?.cn || '' }
     : null;
-  return { ok: true, ...best, effects, preview, lyric, name: payload.track?.name || '' };
+  return {
+    ok: true, ...best, effects, preview, lyric,
+    name: payload.track?.name || '',
+    // 同步客户端缓存为库时用于补全档案(歌名/歌手/专辑/时长/封面)
+    artist: (payload.track?.artists || []).map(a => a.name).filter(Boolean).join(' / '),
+    album: payload.track?.album?.name || '',
+    duration: Number(payload.track?.duration) || 0,
+    cover: payload.track?.album?.url_cover || null,
+  };
 }
 
 // ---- line protocol ----

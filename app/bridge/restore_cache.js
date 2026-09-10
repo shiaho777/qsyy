@@ -344,6 +344,36 @@ function scanSnapshot(args) {
   const lmdb = require(args['lmdb-module']);
   const env = lmdb.open({ path: args.snapshot, readOnly: true, useVersions: false });
   try {
+    // full sweep: every ready chunk in the client cache, best candidate per
+    // track (完整 kind=F 优先,同曲取最大体积)——「同步汽水音乐缓存为库」用
+    if (args['scan-all']) {
+      const byTrack = new Map();
+      for (const key of env.getKeys()) {
+        const parts = String(key).split('_');
+        if (parts.length < 3) continue;
+        const entry = parseEntry(env.get(key));
+        if (!entry?.chunkId) continue;
+        const trackId = String(entry?.info?.trackId || '');
+        if (!trackId) continue;
+        if (!byTrack.has(trackId)) byTrack.set(trackId, []);
+        byTrack.get(trackId).push({
+          kind: parts[parts.length - 2],
+          entryQuality: parts[parts.length - 1],
+          chunkId: entry.chunkId,
+          size: Number(entry.size) || 0,
+          isPreview: entry.info?.isPreview === true,
+        });
+      }
+      const result = {};
+      for (const [trackId, candidates] of byTrack) {
+        const full = candidates.filter(c => c.kind === 'F');
+        const best = (full.length ? full : candidates).sort((a, b) => b.size - a.size)[0];
+        if (best && best.size && inspectChunk(args['cache-dir'], best.chunkId, best.size).ready) {
+          result[trackId] = { ...best, ready: true };
+        }
+      }
+      return { batch: result };
+    }
     // batch mode: report readiness for many track ids at once
     if (args['track-ids']) {
       const wanted = String(args['track-ids']).split(',').filter(Boolean);
@@ -406,6 +436,7 @@ function runScanChild(args) {
       '--quality', args.quality || 'highest',
       ...('track-id' in args ? ['--track-id', args['track-id']] : []),
       ...('track-ids' in args ? ['--track-ids', args['track-ids']] : []),
+      ...('scan-all' in args ? ['--scan-all'] : []),
       ...asUrlList(args['audio-url']).flatMap(url => ['--audio-url', url]),
     ], {
       stdio: ['ignore', 'pipe', 'ignore'],
