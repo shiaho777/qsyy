@@ -148,12 +148,17 @@ function applyCoverGlow(url) {
   };
   img.src = url;
 }
-function coverUrl(info, size = 220) {
+// 封面 CDN 绝对 URL(播放建档落盘/导出打包用);coverUrl 是其代理形态
+function coverCdnUrl(info, size = 300) {
   if (!info?.uri) return '';
   const template = info.template_prefix
     ? `${info.template_prefix}-crop-center:${size}:${size}.jpg`
     : `c5_${size}x${size}.jpg`;
-  return `/api/cover?url=${encodeURIComponent((info.urls?.[0] || '') + info.uri + '~' + template)}`;
+  return (info.urls?.[0] || '') + info.uri + '~' + template;
+}
+function coverUrl(info, size = 220) {
+  const url = coverCdnUrl(info, size);
+  return url ? `/api/cover?url=${encodeURIComponent(url)}` : '';
 }
 
 // ------------------------------------------------------------------ data
@@ -994,13 +999,23 @@ function storeRowEl(t, i, isActiveSet) {
   el.dataset.id = t.id;
   el.style.setProperty('--i', String(i));
   const playable = isActiveSet && t.complete;
+  const setName = encodeURIComponent(state.storeView?.name || '');
   el.innerHTML = `
     <div class="cell-idx"><span class="num">${i + 1}</span>${playable ? `<button class="hovp" title="播放">${ICONS.playRow}</button>` : ''}</div>
-    <div class="name"><span class="t-name">${esc(t.name || `曲目 ${String(t.id).slice(-6)}`)}</span>${t.preview ? '<span class="badge preview">试听</span>' : ''}${t.quality ? `<span class="badge qual">${esc(t.quality)}</span>` : ''}</div>
+    ${t.hasCover
+      ? `<img class="st-cv" loading="lazy" src="/api/store/track-cover?set=${setName}&id=${t.id}" alt="" onerror="this.style.display='none'">`
+      : `<span class="st-fallback sm">${esc([...(t.name || '曲')][0] || '曲')}</span>`}
+    <div class="name"><span class="t-name">${esc(t.name || `曲目 ${String(t.id).slice(-6)}`)}</span>${t.preview ? '<span class="badge preview">试听</span>' : ''}${t.quality ? `<span class="badge qual">${esc(t.quality)}</span>` : ''}${t.artist ? `<span class="t-sub">${esc(t.artist)}${t.album ? ' · ' + esc(t.album) : ''}</span>` : ''}</div>
     <div class="artist st-size">${(t.size / 1048576).toFixed(1)}MB</div>
-    <div class="album st-state${t.complete ? ' ok' : ''}">${t.complete ? '已缓存' : '未完成'}</div>
+    <div class="album st-state${t.complete ? ' ok' : ' online'}">${t.complete ? '已缓存' : '在线'}</div>
     <div class="cell-cache"><button class="mini-btn st-rm">移除</button></div>`;
-  const play = () => { if (!playable) { if (!isActiveSet) toast('先「使用此库」再播放', 'err'); return; } playStoreTrack(t); };
+  const play = () => {
+    if (!playable) {
+      toast(isActiveSet ? '这首歌没有 qsyy 本地音频 — 在线/客户端缓存的歌请在歌单里播放' : '先「设为写入库」再播放', 'err');
+      return;
+    }
+    playStoreTrack(t);
+  };
   el.onclick = play;
   el.querySelector('.hovp')?.addEventListener('click', e => { e.stopPropagation(); play(); });
   el.querySelector('.st-rm').addEventListener('click', async e => {
@@ -1016,7 +1031,7 @@ function playStoreTrack(track) {
   const playable = (state.storeTracks || []).filter(t => t.complete);
   const idx = playable.findIndex(t => t.id === track.id);
   if (idx < 0) return;
-  const objs = playable.map(t => ({ id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`, artists: [], album: '', duration: 0, cover: null, vip: false, qualities: [] }));
+  const objs = playable.map(t => ({ id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`, artists: t.artist ? [t.artist] : [], album: t.album || '', duration: t.duration || 0, cover: null, vip: false, qualities: [] }));
   setQueue(objs, idx, `store:${state.storeView?.name || ''}`);
 }
 
@@ -1046,7 +1061,7 @@ async function fetchPlaylistTracksFull(id) {
       .filter(m => m?.type === 'track' && m?.entity?.track_wrapper?.track)
       .map(m => {
         const t = m.entity.track_wrapper.track;
-        return { id: String(t.id), name: t.name, artists: (t.artists || []).map(a => a.name).filter(Boolean), album: t.album?.name || '', duration: Number(t.duration) || 0 };
+        return { id: String(t.id), name: t.name, artists: (t.artists || []).map(a => a.name).filter(Boolean), album: t.album?.name || '', duration: Number(t.duration) || 0, cover: t.album?.url_cover || null };
       });
     all.push(...items);
     if (!data?.has_more || !data?.next_cursor) break;
@@ -1174,7 +1189,7 @@ async function expConfirm() {
     playlists.push({
       name: pl?.title || '未命名歌单',
       icon: w.icons.get(plId) || null,
-      songs: tracks.filter(t => sel.has(t.id)).map(t => ({ id: t.id, name: t.name, artist: t.artists.join(' / '), album: t.album, duration: t.duration })),
+      songs: tracks.filter(t => sel.has(t.id)).map(t => ({ id: t.id, name: t.name, artist: t.artists.join(' / '), album: t.album, duration: t.duration, cover: t.cover ? coverCdnUrl(t.cover, 300) : '' })),
     });
   }
   if (!playlists.length) return;
@@ -1485,6 +1500,15 @@ function startCurrent(autoplay = true) {
   if (!$('lyrics-panel').classList.contains('hidden') || ls.get('lyrics-open', false)) loadLyrics(t);
   ls.set('lastTrack', { playlistId: state.current?.id, trackId: t.id, position: 0 });
   audio.src = `/api/stream/${t.id}`;
+  // 播放即建档:任何来源(歌单/库)的播放都写入入库并落盘封面 —— 「自动缓存」
+  // 不再只记在线下载的,而是"我在 qsyy 里听过的一切"(客户端缓存过的歌记为在线态)
+  fetch('/api/store/record', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: t.id, name: t.name || '', artist: (t.artists || []).join(' / '), album: t.album || '',
+      duration: t.duration || 0, cover: t.cover ? coverCdnUrl(t.cover, 300) : '',
+    }),
+  }).catch(() => {});
   updateHeroPlayback();
   if (autoplay) {
     audio.play().catch(async err => {
