@@ -1923,6 +1923,16 @@ const serverHandler = async (request, response) => {
       sendJson(response, 200, { set: wantSet, tracks });
       return;
     }
+    if (route === 'POST /api/store/cache') {
+      // 行尾缓存环的「重加载缓存」:主动走在线通路把曲目下载进当前缓存库。
+      // 不等完成——进度经 /api/progress-stream 推给前端缓存环实时显示。
+      const input = await readBody(request);
+      const id = String(input.id || '');
+      if (!/^\d+$/.test(id)) { sendJson(response, 400, { ok: false }); return; }
+      ensureOnlineCached(id, true).catch(() => {});
+      sendJson(response, 200, { ok: true });
+      return;
+    }
     if (route === 'POST /api/store/remove-track') {
       const input = await readBody(request);
       const id = String(input.id || '');
