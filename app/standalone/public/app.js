@@ -998,7 +998,7 @@ function storeRowEl(t, i, isActiveSet) {
   el.className = 'track store-row';
   el.dataset.id = t.id;
   el.style.setProperty('--i', String(i));
-  const playable = isActiveSet && t.complete;
+  const playable = isActiveSet;   // 客户端缓存/在线的歌也能播(stream 自解析来源)
   const setName = encodeURIComponent(state.storeView?.name || '');
   el.innerHTML = `
     <div class="cell-idx"><span class="num">${i + 1}</span>${playable ? `<button class="hovp" title="播放">${ICONS.playRow}</button>` : ''}</div>
@@ -1010,10 +1010,7 @@ function storeRowEl(t, i, isActiveSet) {
     <div class="album st-state${t.complete ? ' ok' : ' online'}">${t.complete ? '已缓存' : '在线'}</div>
     <div class="cell-cache"><button class="mini-btn st-rm">移除</button></div>`;
   const play = () => {
-    if (!playable) {
-      toast(isActiveSet ? '这首歌没有 qsyy 本地音频 — 在线/客户端缓存的歌请在歌单里播放' : '先「设为写入库」再播放', 'err');
-      return;
-    }
+    if (!isActiveSet) { toast('先「设为写入库」再播放', 'err'); return; }
     playStoreTrack(t);
   };
   el.onclick = play;
@@ -1028,11 +1025,67 @@ function storeRowEl(t, i, isActiveSet) {
 }
 
 function playStoreTrack(track) {
-  const playable = (state.storeTracks || []).filter(t => t.complete);
+  // 队列含全部曲目(同步进来的客户端缓存歌经 /api/stream 可播),完整优先排前
+  const list = state.storeTracks || [];
+  const playable = [...list.filter(t => t.complete), ...list.filter(t => !t.complete)];
   const idx = playable.findIndex(t => t.id === track.id);
   if (idx < 0) return;
   const objs = playable.map(t => ({ id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`, artists: t.artist ? [t.artist] : [], album: t.album || '', duration: t.duration || 0, cover: null, vip: false, qualities: [] }));
   setQueue(objs, idx, `store:${state.storeView?.name || ''}`);
+}
+
+// 同步汽水音乐缓存为库:填名+图标(可选)→ POST /api/store/sync → 轮询进度
+const syncWizard = { icon: null, jobId: null, poll: null };
+function closeSyncModal() {
+  const m = $('sync-modal');
+  if (!m) return;
+  m.classList.remove('open');
+  setTimeout(() => m.classList.add('hidden'), 220);
+  if (syncWizard.poll) { clearInterval(syncWizard.poll); syncWizard.poll = null; }
+}
+function openSyncModal() {
+  syncWizard.icon = null; syncWizard.jobId = null;
+  $('sync-name').value = '';
+  $('sync-progress').textContent = '';
+  $('sync-progress').classList.remove('done');
+  $('sync-icon-preview').innerHTML = '库';
+  $('sync-icon-preview').classList.remove('has-img');
+  $('sync-icon-rm').classList.add('hidden');
+  $('sync-confirm').disabled = true;
+  $('sync-confirm').textContent = '开始同步';
+  $('sync-cancel').classList.remove('hidden');
+  const m = $('sync-modal');
+  m.classList.remove('hidden');
+  requestAnimationFrame(() => m.classList.add('open'));
+}
+async function startSync() {
+  const name = ($('sync-name').value || '').trim();
+  if (!name) return;
+  try {
+    const r = await (await fetch('/api/store/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, icon: syncWizard.icon }) })).json();
+    if (!r?.ok) { toast(r?.error || '同步失败', 'err'); return; }
+    syncWizard.jobId = r.jobId;
+    $('sync-confirm').disabled = true;
+    $('sync-confirm').textContent = '同步中…';
+    $('sync-cancel').classList.add('hidden');
+    $('sync-progress').textContent = '扫描客户端缓存…';
+    syncWizard.poll = setInterval(async () => {
+      try {
+        const s = await (await fetch(`/api/store/sync-status?job=${encodeURIComponent(syncWizard.jobId)}`)).json();
+        if (s?.status === 'error') { clearInterval(syncWizard.poll); syncWizard.poll = null; $('sync-progress').textContent = `同步失败:${s.error}`; return; }
+        if (s?.status === 'scanning') { $('sync-progress').textContent = '扫描客户端缓存…'; return; }
+        if (s?.status === 'enriching') { $('sync-progress').textContent = `补全档案 ${s.done}/${s.total}…`; return; }
+        if (s?.status === 'done') {
+          clearInterval(syncWizard.poll); syncWizard.poll = null;
+          $('sync-progress').textContent = s.total ? `完成:${s.total} 首` : '客户端缓存为空';
+          $('sync-progress').classList.add('done');
+          $('sync-confirm').textContent = '完成';
+          loadStores();
+          if (s.total) setTimeout(() => { closeSyncModal(); openStoreView(name); }, 900);
+        }
+      } catch (_) {}
+    }, 700);
+  } catch (e) { toast('同步失败:' + e.message, 'err'); }
 }
 
 // ---------------------------------------------------------------- export wizard (playlist package → zip)
@@ -1439,21 +1492,6 @@ async function pumpCacheQueue() {
         if (st.complete) state.cacheStatus.set(id, { ...(state.cacheStatus.get(id) || {}), ready: true, isPreview: false });
       }
       decorateCacheBadges();
-      // 自动补录:已缓存(客户端缓存)但 qsyy 库里还没有的歌,批量入档(含封面)
-      // —— 浏览歌单即聚齐,无需逐首重新播放。fire-and-forget,不阻塞界面。
-      const byId = new Map((state.current?.tracks || []).map(t => [t.id, t]));
-      const todos = [];
-      for (const [id, info] of Object.entries(data.tracks || {})) {
-        if (!info?.ready || state.storeProgress.has(id)) continue;
-        const t = byId.get(id);
-        if (t) todos.push({
-          id, name: t.name || '', artist: (t.artists || []).join(' / '), album: t.album || '',
-          duration: t.duration || 0, cover: t.cover ? coverCdnUrl(t.cover, 300) : '',
-        });
-      }
-      if (todos.length) {
-        fetch('/api/store/record-batch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ tracks: todos }) }).catch(() => {});
-      }
     } catch (_) {
       // leave unmarked so a later hover/page-append retries this batch
       batch.forEach(id => cacheQueued.delete(id));
@@ -1515,15 +1553,6 @@ function startCurrent(autoplay = true) {
   if (!$('lyrics-panel').classList.contains('hidden') || ls.get('lyrics-open', false)) loadLyrics(t);
   ls.set('lastTrack', { playlistId: state.current?.id, trackId: t.id, position: 0 });
   audio.src = `/api/stream/${t.id}`;
-  // 播放即建档:任何来源(歌单/库)的播放都写入入库并落盘封面 —— 「自动缓存」
-  // 不再只记在线下载的,而是"我在 qsyy 里听过的一切"(客户端缓存过的歌记为在线态)
-  fetch('/api/store/record', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      id: t.id, name: t.name || '', artist: (t.artists || []).join(' / '), album: t.album || '',
-      duration: t.duration || 0, cover: t.cover ? coverCdnUrl(t.cover, 300) : '',
-    }),
-  }).catch(() => {});
   updateHeroPlayback();
   if (autoplay) {
     audio.play().catch(async err => {
@@ -2193,6 +2222,7 @@ if ($('format-select')) $('format-select').onchange = e => { state.fmt = e.targe
 
 document.addEventListener('keydown', e => {
   if (e.code === 'Escape' && cacheMenuEl) { closeCacheMenu(); return; }
+  if (e.code === 'Escape' && $('sync-modal') && !$('sync-modal').classList.contains('hidden')) { closeSyncModal(); return; }
   if (e.code === 'Escape' && $('export-modal') && !$('export-modal').classList.contains('hidden')) { expCloseModal(); return; }
   if (e.code === 'Escape' && $('import-modal') && !$('import-modal').classList.contains('hidden')) { closeImportModal(); return; }
   if (e.code === 'Escape' && coverExpander?.classList.contains('open')) { closeCoverExpander(); return; }
@@ -2403,7 +2433,10 @@ setInterval(loadStats, 10 * 60 * 1000);
   if ($('fx-select')) $('fx-select').onchange = e => applyEffect(e.target.value || null);
   if ($('store-btn')) $('store-btn').onclick = async () => {
     const r = await (await fetch('/api/store/sets')).json();
-    openStoreView(r.active);
+    // 写入库可能是隐藏暂存(.transient,不在列表):落到第一个真库,没有则提示
+    const target = (r.sets || []).find(s => s.name === r.active) || (r.sets || [])[0];
+    if (target) openStoreView(target.name);
+    else toast('还没有缓存库 — 点「我的缓存」的 ＋ 同步或导入', 'err');
   };
   if ($('check-update')) $('check-update').onclick = checkUpdate;
   // 选完文件 → 弹窗里问 合并/替换(单入口导入);＋ 的"导入压缩包"走自动取名建新库
@@ -2489,12 +2522,36 @@ setInterval(loadStats, 10 * 60 * 1000);
     if (r?.ok) { toast('封面已更新', 'ok'); renderStoreHero(); loadStores(); }
     else toast(r?.error || '封面设置失败', 'err');
   };
-  // 侧栏「＋」添加库:导入压缩包(自动取名)或新建空库
+  // 侧栏「＋」添加库:同步客户端缓存 / 导入压缩包 / 新建空库
   const toggleAddMenu = show => {
     $('store-add-menu')?.classList.toggle('hidden', !show);
     if (show) $('store-new-form')?.classList.add('hidden');
   };
   if ($('store-add-btn')) $('store-add-btn').onclick = () => toggleAddMenu($('store-add-menu')?.classList.contains('hidden'));
+  if ($('store-sync-btn')) $('store-sync-btn').onclick = () => { toggleAddMenu(false); openSyncModal(); };
+  const syncModal = $('sync-modal');
+  if (syncModal) syncModal.addEventListener('click', e => { if (e.target === syncModal) closeSyncModal(); });
+  if ($('sync-cancel')) $('sync-cancel').onclick = closeSyncModal;
+  if ($('sync-name')) $('sync-name').oninput = e => { $('sync-confirm').disabled = !(e.target.value || '').trim(); };
+  if ($('sync-confirm')) $('sync-confirm').onclick = startSync;
+  if ($('sync-icon-btn')) $('sync-icon-btn').onclick = () => $('sync-icon-file').click();
+  if ($('sync-icon-rm')) $('sync-icon-rm').onclick = () => {
+    syncWizard.icon = null;
+    $('sync-icon-preview').innerHTML = '库';
+    $('sync-icon-preview').classList.remove('has-img');
+    $('sync-icon-rm').classList.add('hidden');
+  };
+  if ($('sync-icon-file')) $('sync-icon-file').onchange = async e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { toast('请选择图片文件(jpg/png/webp)', 'err'); return; }
+    const data = await new Promise(res => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(file); });
+    syncWizard.icon = data;
+    $('sync-icon-preview').innerHTML = `<img src="${data}" alt="">`;
+    $('sync-icon-preview').classList.add('has-img');
+    $('sync-icon-rm').classList.remove('hidden');
+  };
   if ($('store-import-btn')) $('store-import-btn').onclick = () => {
     pendingImportTarget = 'new';
     toggleAddMenu(false);
