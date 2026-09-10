@@ -813,7 +813,21 @@ async function loadStores() {
           ? `<img loading="lazy" src="${storeCoverUrl(s.name)}" alt="">`
           : `<span class="st-fallback sm">${esc([...s.name][0] || '库')}</span>`}
         <div><div class="t">${esc(s.name)}</div><div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${s.active ? ' · 使用中' : ''}</div></div>
+        ${s.active ? '' : `<button class="st-row-del" data-name="${esc(s.name)}" title="删除此缓存库">✕</button>`}
       </div>`).join('') || '<div class="store-empty">还没有缓存库 — 播放在线歌曲会自动建立</div>';
+    $('stores').querySelectorAll('.st-row-del').forEach(btn => {
+      btn.onclick = async e => {
+        e.stopPropagation();
+        const name = btn.dataset.name;
+        if (!confirm(`删除缓存库「${name}」?其中歌曲将全部移除。`)) return;
+        const r = await storeJson('/api/store/delete', { name });
+        if (r?.ok) {
+          toast(`已删除「${name}」`, 'ok');
+          if (state.storeView?.name === name) { ls.set('storeView', ''); setTimeout(() => location.reload(), 500); }
+          else loadStores();
+        } else toast(r?.error || '删除失败', 'err');
+      };
+    });
     $('stores').querySelectorAll('.st-item').forEach(el => {
       el.onclick = () => openStoreView(state.storeSets[Number(el.dataset.i)].name);
     });
