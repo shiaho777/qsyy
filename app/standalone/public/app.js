@@ -471,6 +471,12 @@ function rowEl(t, i) {
   el.querySelector('.hovp').onclick = e => { e.stopPropagation(); playOrPrime(t); };
   el.onclick = () => playOrPrime(t);
   el.onmouseenter = () => requestCacheStatus([t.id]);
+  // 行尾缓存环:点击弹 清理/重加载 菜单
+  const cacheCell = el.querySelector('.cell-cache');
+  if (cacheCell) {
+    cacheCell.title = '缓存操作:清理 / 重加载';
+    cacheCell.onclick = e => { e.stopPropagation(); openCacheMenu(t, cacheCell); };
+  }
   el.querySelectorAll('img').forEach(img => { img.draggable = false; }); // 别劫持行拖拽
   armImgs(el);
   return el;
@@ -1255,6 +1261,66 @@ function setCacheRing(el, p, done, busy) {
 
 // 自有缓存的实时进度:SSE 推流(250ms)+ 轮询兜底
 const busyCacheRings = new Set();   // 解析中/排队中:圈做流动扫描
+
+// ---------------------------------------------------------------- 行尾缓存环操作菜单(清理/重加载)
+// position:fixed 贴 viewport 定位 + 高 z-index:避免早前 absolute 浮层被
+// 同级行遮挡的层叠问题;点击外部/Esc 关闭。
+let cacheMenuEl = null;
+function closeCacheMenu() {
+  cacheMenuEl?.remove();
+  cacheMenuEl = null;
+  document.removeEventListener('pointerdown', onCacheMenuOutside, true);
+}
+function onCacheMenuOutside(e) {
+  if (cacheMenuEl && !cacheMenuEl.contains(e.target)) closeCacheMenu();
+}
+function openCacheMenu(track, anchor) {
+  closeCacheMenu();
+  const m = document.createElement('div');
+  m.className = 'cache-menu';
+  m.innerHTML = '<button class="cm-item">清理缓存</button><button class="cm-item">重加载缓存</button>';
+  document.body.appendChild(m);
+  const rect = anchor.getBoundingClientRect();
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  m.style.left = `${Math.max(8, Math.min(rect.right - mw, window.innerWidth - mw - 8))}px`;
+  m.style.top = `${rect.bottom + 6 + mh > window.innerHeight ? rect.top - mh - 6 : rect.bottom + 6}px`;
+  cacheMenuEl = m;
+  const [clearBtn, reloadBtn] = m.querySelectorAll('.cm-item');
+  clearBtn.onclick = () => { closeCacheMenu(); doClearTrackCache(track); };
+  reloadBtn.onclick = () => { closeCacheMenu(); doReloadTrackCache(track); };
+  setTimeout(() => document.addEventListener('pointerdown', onCacheMenuOutside, true), 0);
+}
+
+async function doClearTrackCache(track) {
+  // 只清理 qsyy 自己的增量缓存;汽水客户端的缓存只读不动
+  if (!state.storeProgress.get(track.id)?.complete) {
+    toast(state.cacheStatus.get(track.id)?.ready
+      ? '这首歌的缓存在汽水音乐客户端内,qsyy 对客户端文件只读,无法清理'
+      : '这首歌还没有缓存', 'err');
+    return;
+  }
+  await storeJson('/api/store/remove-track', { id: track.id });
+  state.storeProgress.delete(track.id);
+  state.cacheStatus.delete(track.id);
+  requestCacheStatus([track.id]);   // 重新评估:若客户端缓存仍在,环会保持
+  decorateCacheBadges();
+  toast(`已清理「${track.name}」的缓存`, 'ok');
+}
+
+async function doReloadTrackCache(track) {
+  if (state.storeProgress.get(track.id)?.complete) {
+    // 重加载 = 先清旧副本再走在线通路拉新
+    await storeJson('/api/store/remove-track', { id: track.id });
+    state.storeProgress.delete(track.id);
+  }
+  const r = await storeJson('/api/store/cache', { id: track.id });
+  if (r?.ok) {
+    busyCacheRings.add(track.id);
+    decorateCacheBadges();
+    pollProgress();                 // SSE 断线时的轮询兜底;进度本身走 progress-stream
+    toast(`正在重新缓存「${track.name}」…`);
+  } else toast('缓存任务提交失败', 'err');
+}
 let progressTimer = null;
 
 function applyProgress(all) {
@@ -2050,6 +2116,7 @@ if ($('quality-select')) $('quality-select').onchange = e => { state.quality = e
 if ($('format-select')) $('format-select').onchange = e => { state.fmt = e.target.value; ls.set('fmt', state.fmt); toast(`默认格式:${e.target.selectedOptions[0].textContent}`, 'ok'); };
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape' && cacheMenuEl) { closeCacheMenu(); return; }
   if (e.code === 'Escape' && $('export-modal') && !$('export-modal').classList.contains('hidden')) { expCloseModal(); return; }
   if (e.code === 'Escape' && $('import-modal') && !$('import-modal').classList.contains('hidden')) { closeImportModal(); return; }
   if (e.code === 'Escape' && coverExpander?.classList.contains('open')) { closeCoverExpander(); return; }
