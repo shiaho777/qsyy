@@ -365,7 +365,10 @@ function rerenderRows(extraIds) {
   $('tracks').innerHTML = '';
   $('tracks').appendChild(frag);
   cur.rendered = list.length;
-  if (extraIds?.length) requestCacheStatus(extraIds);
+  // 行 DOM 重建后缓存环/徽标状态全空:先用 state.cacheStatus 就地回填(零请求),
+  // 未查过的 id 批量补查 —— 此前只靠逐行 hover 逐首补,排序/拖拽后对号"半天才"回来
+  decorateCacheBadges();
+  requestCacheStatus(extraIds?.length ? extraIds : list.map(t => t.id));
   decoratePlayingRow();
 }
 
@@ -444,6 +447,9 @@ function rebuildRows() {
   const CHUNK = 120;
   for (let i = 0; i < list.length && i < CHUNK; i += 1) $('tracks').appendChild(rowEl(list[i], i));
   cur.rendered = Math.min(list.length, CHUNK);
+  // 同 rerenderRows:行重建即回填缓存状态,未知 id 批量补查(不再依赖逐行 hover)
+  decorateCacheBadges();
+  requestCacheStatus(list.map(t => t.id));
   decoratePlayingRow();
 }
 
@@ -955,7 +961,7 @@ function storeRowEl(t, i, isActiveSet) {
   const playable = isActiveSet && t.complete;
   el.innerHTML = `
     <div class="cell-idx"><span class="num">${i + 1}</span>${playable ? `<button class="hovp" title="播放">${ICONS.playRow}</button>` : ''}</div>
-    <div class="name"><span class="t-name">${esc(t.name || `曲目 ${String(t.id).slice(-6)}`)}</span>${t.preview ? '<span class="badge preview">试听</span>' : ''}${t.quality ? `<span class="badge cached">${esc(t.quality)}</span>` : ''}</div>
+    <div class="name"><span class="t-name">${esc(t.name || `曲目 ${String(t.id).slice(-6)}`)}</span>${t.preview ? '<span class="badge preview">试听</span>' : ''}${t.quality ? `<span class="badge qual">${esc(t.quality)}</span>` : ''}</div>
     <div class="artist st-size">${(t.size / 1048576).toFixed(1)}MB</div>
     <div class="album st-state${t.complete ? ' ok' : ''}">${t.complete ? '已缓存' : '未完成'}</div>
     <div class="cell-cache"><button class="mini-btn st-rm">移除</button></div>`;

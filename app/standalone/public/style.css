@@ -283,6 +283,7 @@ body::before {
 .badge { flex: none; display: inline-block; font-size: 9px; border-radius: 5px; padding: 1px 6px; line-height: 1.6; font-weight: 600; letter-spacing: .5px; }
 .badge.vip { color: #d9c89a; border: 1px solid rgba(217,200,154,.3); background: rgba(217,200,154,.07); }
 .badge.cached { color: #cfcfd6; border: 1px solid var(--line-strong); background: rgba(255,255,255,.05); }
+.badge.qual { color: #a9c7e8; border: 1px solid rgba(140,180,230,.28); background: rgba(140,180,230,.07); }
 .badge.preview { color: #a0a0a8; border: 1px dashed var(--line-strong); }
 .badge.hr { color: #a9c7e8; border: 1px solid rgba(140,180,230,.28); background: rgba(140,180,230,.07); }
 .badge.sp { color: #b9aee6; border: 1px solid rgba(170,155,235,.28); background: rgba(170,155,235,.07); }
