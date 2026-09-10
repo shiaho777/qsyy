@@ -434,6 +434,9 @@ function appendRows(items, startIdx) {
   items.forEach((t, i) => frag.appendChild(rowEl(t, startIdx + i)));
   $('tracks').appendChild(frag);
   state.current.rendered += items.length;
+  // 行挂上后立即用内存已知状态回填缓存环:切回看过的歌单时所有 id 都已
+  // 缓存,requestCacheStatus 会全部跳过、不发请求,若无此行环会一直空着
+  decorateCacheBadges();
   requestCacheStatus(items.map(t => t.id));
   decoratePlayingRow();
 }
