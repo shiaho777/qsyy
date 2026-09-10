@@ -1259,48 +1259,55 @@ function removeFromStoreSet(name, trackId) {
 // a faststart M4A and keep it — next session the track plays instantly and
 // shows the same 缓存 badge as client-cached songs.
 // Cache store, organized as switchable named sets under stores/:
-//   stores/<name>/{<trackId>.m4a,.json,.part}
-// imports arrive as new sets; switching swaps the active one.
+//   stores/<name>/{<trackId>.m4a,.json,.part,.jpg}
+// 库只来自用户主动操作(同步客户端缓存/导入 ZIP/新建);没有自动积累的库。
+// stores/.transient 是隐藏暂存(不入列表):加密在线歌播放需要 下载→解密→
+// m4a 的管道,产物落这里 —— 可丢弃的基础设施,不是库。
 const STORES_ROOT = path.join(DECRYPT_DIR, 'stores');
 const ACTIVE_STORE_FILE = path.join(DECRYPT_DIR, 'active-store.json');
-let STORE_DIR = path.join(STORES_ROOT, 'default');
+const TRANSIENT_STORE = '.transient';
+let STORE_DIR = path.join(STORES_ROOT, TRANSIENT_STORE);
 const storeMeta = new Map();        // trackId → { size, downloaded, spade, complete }
 const setNameOk = name => /^[\w\u4e00-\u9fa5][\w\u4e00-\u9fa5 -]{0,31}$/.test(name) && !/[\/]/.test(name);
 
-const AUTO_STORE_NAME = '自动缓存';   // 在线播放自动落盘的库(原内部名 default,改名自解释)
 (function initStores() {
   try {
     fs.mkdirSync(STORES_ROOT, { recursive: true });
     const legacy = path.join(DECRYPT_DIR, 'online');
-    if (fs.existsSync(legacy) && !fs.existsSync(path.join(STORES_ROOT, AUTO_STORE_NAME))) {
-      try { fs.renameSync(legacy, path.join(STORES_ROOT, AUTO_STORE_NAME)); } catch (_) {}
+    if (fs.existsSync(legacy) && !fs.existsSync(path.join(STORES_ROOT, TRANSIENT_STORE))) {
+      try { fs.renameSync(legacy, path.join(STORES_ROOT, TRANSIENT_STORE)); } catch (_) {}
     }
-    // 历史内部名 default → 自动缓存(一次性迁移;两边都存在时保留新的)
-    const oldDefault = path.join(STORES_ROOT, 'default');
-    if (fs.existsSync(oldDefault) && !fs.existsSync(path.join(STORES_ROOT, AUTO_STORE_NAME))) {
-      try { fs.renameSync(oldDefault, path.join(STORES_ROOT, AUTO_STORE_NAME)); } catch (_) {}
+    // 历史自动库(自动缓存/default)降级为隐藏暂存 —— 不再以库的面目存在
+    for (const old of ['自动缓存', 'default']) {
+      const dir = path.join(STORES_ROOT, old);
+      if (!fs.existsSync(dir)) continue;
+      const target = path.join(STORES_ROOT, TRANSIENT_STORE);
+      if (!fs.existsSync(target)) {
+        try { fs.renameSync(dir, target); } catch (_) {}
+      } else {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+      }
     }
-    let active = AUTO_STORE_NAME;
-    try { active = JSON.parse(fs.readFileSync(ACTIVE_STORE_FILE, 'utf8')).name || AUTO_STORE_NAME; } catch (_) {}
-    if (active === 'default') active = AUTO_STORE_NAME;
-    if (setNameOk(active) && fs.existsSync(path.join(STORES_ROOT, active))) {
+    let active = TRANSIENT_STORE;
+    try { active = JSON.parse(fs.readFileSync(ACTIVE_STORE_FILE, 'utf8')).name || TRANSIENT_STORE; } catch (_) {}
+    if (['default', '自动缓存'].includes(active)) active = TRANSIENT_STORE;
+    if (setNameOk(active) && !active.startsWith('.') && fs.existsSync(path.join(STORES_ROOT, active))) {
       STORE_DIR = path.join(STORES_ROOT, active);
     } else {
-      // 指向的库已被删(允许删到零个库):落到第一个现存库;一个不剩则指向
-      // 自动缓存但不创建 —— 在线播放时 ensureOnlineCached 按需建
-      const first = listStoreDirs()[0];
-      active = first || AUTO_STORE_NAME;
-      STORE_DIR = path.join(STORES_ROOT, active);
+      // 指向的库已被删:指向隐藏暂存(不建盘,在线播放按需建)—— 用户没
+      // 显式「设为写入库」之前,显式保存会被 /api/store/cache 拒绝
+      STORE_DIR = path.join(STORES_ROOT, TRANSIENT_STORE);
     }
     try { fs.writeFileSync(ACTIVE_STORE_FILE, JSON.stringify({ name: path.basename(STORE_DIR) })); } catch (_) {}
   } catch (_) {}
 })();
 
-// 现存缓存库目录名(排序稳定)
+// 现存缓存库目录名(排序稳定);点前缀目录是基础设施(如 .transient),不是库
 function listStoreDirs() {
   const out = [];
   try {
     for (const d of fs.readdirSync(STORES_ROOT)) {
+      if (d.startsWith('.')) continue;
       try { if (fs.statSync(path.join(STORES_ROOT, d)).isDirectory()) out.push(d); } catch (_) {}
     }
   } catch (_) {}
@@ -1308,13 +1315,13 @@ function listStoreDirs() {
   return out;
 }
 
-// 播放建档 / 浏览歌单自动补录共用的单首入档:合并元数据(只填空,不降级已有值),
-// 封面下载落为 stores/<写入库>/<id>.jpg。写入后同步内存 storeMeta。
-async function recordStoreTrack(item) {
+// 向指定库入档:合并元数据(只填空,不降级已有值),封面下载落为 <id>.jpg
+const syncJobs = new Map();         // 同步客户端缓存为库的任务进度
+async function recordStoreTrack(dir, item) {
   const id = String(item?.id || '');
   if (!/^\d+$/.test(id)) return false;
-  try { fs.mkdirSync(STORE_DIR, { recursive: true }); } catch (_) {}
-  const metaPath = path.join(STORE_DIR, `${id}.json`);
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  const metaPath = path.join(dir, `${id}.json`);
   let meta = {};
   try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) || {}; } catch (_) {}
   const before = JSON.stringify(meta);
@@ -1328,7 +1335,7 @@ async function recordStoreTrack(item) {
     fs.writeFileSync(metaPath, JSON.stringify(meta));
     storeMeta.set(id, { ...(storeMeta.get(id) || {}), ...meta });
   }
-  const coverPath = path.join(STORE_DIR, `${id}.jpg`);
+  const coverPath = path.join(dir, `${id}.jpg`);
   if (item.cover && !fs.existsSync(coverPath)) {
     const buf = await downloadImage(String(item.cover));
     if (buf) fs.writeFileSync(coverPath, buf);
@@ -1895,6 +1902,7 @@ const serverHandler = async (request, response) => {
       const sets = [];
       try {
         for (const name of fs.readdirSync(STORES_ROOT)) {
+          if (name.startsWith('.')) continue;   // .transient 等基础设施不是库
           const dir = path.join(STORES_ROOT, name);
           if (!fs.statSync(dir).isDirectory()) continue;
           let tracks = 0, size = 0, cover = null;
@@ -1979,8 +1987,9 @@ const serverHandler = async (request, response) => {
         const next = listStoreDirs()[0];
         if (next) switchStore(next);
         else {
-          STORE_DIR = path.join(STORES_ROOT, AUTO_STORE_NAME);
-          try { fs.writeFileSync(ACTIVE_STORE_FILE, JSON.stringify({ name: AUTO_STORE_NAME })); } catch (_) {}
+          // 删到零个库:写目标回落隐藏暂存(不创建,在线播放按需建)
+          STORE_DIR = path.join(STORES_ROOT, TRANSIENT_STORE);
+          try { fs.writeFileSync(ACTIVE_STORE_FILE, JSON.stringify({ name: TRANSIENT_STORE })); } catch (_) {}
           storeMeta.clear();
         }
       }
@@ -2020,41 +2029,83 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'POST /api/store/cache') {
-      // 行尾缓存环的「重加载缓存」:主动走在线通路把曲目下载进当前缓存库。
-      // 不等完成——进度经 /api/progress-stream 推给前端缓存环实时显示。
+      // 行尾缓存环的「重加载缓存」:用户主动把曲目下载进"写入库"。
+      // 写入库必须由用户显式设定(设为写入库)—— 没设定时不允许隐式落盘。
       const input = await readBody(request);
       const id = String(input.id || '');
       if (!/^\d+$/.test(id)) { sendJson(response, 400, { ok: false }); return; }
+      if (activeStoreName() === TRANSIENT_STORE) {
+        sendJson(response, 400, { ok: false, error: '先在某个缓存库里点「设为写入库」,再保存歌曲' });
+        return;
+      }
       ensureOnlineCached(id, true).catch(() => {});
       sendJson(response, 200, { ok: true });
       return;
     }
-    if (route === 'POST /api/store/record') {
-      // 播放即建档:每首在 qsyy 播过的歌写入入库(名/歌手/专辑/时长),
-      // 封面下载落为 <id>.jpg。客户端缓存的歌也记(在线态,无本地音频),
-      // 这样「自动缓存」= 我在 qsyy 里听过的一切,且封面可离线显示/随包导出。
+    if (route === 'POST /api/store/sync') {
+      // 同步汽水音乐缓存为库(一键):全量扫描客户端缓存建库,后台经 track_v2
+      // 补齐 歌名/歌手/封面(有进度可查)。库完全来自用户主动操作,无自动积累。
       const input = await readBody(request);
-      const id = String(input.id || '');
-      if (!/^\d+$/.test(id)) { sendJson(response, 400, { ok: false }); return; }
-      try {
-        await recordStoreTrack(input);
-        sendJson(response, 200, { ok: true });
-      } catch (error) { sendJson(response, 500, { ok: false }); }
+      const name = String(input.name || '').trim();
+      if (!setNameOk(name)) { sendJson(response, 400, { ok: false, error: '库名称需为 1-32 位中文/字母/数字/短横线' }); return; }
+      const targetDir = path.join(STORES_ROOT, name);
+      if (fs.existsSync(targetDir)) { sendJson(response, 400, { ok: false, error: '已存在同名缓存库' }); return; }
+      const jobId = `sync-${Date.now().toString(36)}`;
+      const job = { jobId, name, status: 'scanning', phase: '扫描客户端缓存', done: 0, total: 0, error: '' };
+      syncJobs.set(jobId, job);
+      (async () => {
+        try {
+          const scan = await runScan(['--scan-all']);
+          const batch = scan?.batch || {};
+          const ids = Object.keys(batch);
+          job.total = ids.length;
+          if (!ids.length) { job.status = 'done'; job.phase = '客户端缓存为空'; return; }
+          fs.mkdirSync(targetDir, { recursive: true });
+          if (input.icon) {
+            const m = String(input.icon).match(/^data:image\/(jpg|jpeg|png|webp);base64,(.+)$/is);
+            if (m) fs.writeFileSync(path.join(targetDir, `cover.${m[1] === 'jpeg' ? 'jpg' : m[1]}`), Buffer.from(m[2], 'base64'));
+          }
+          job.status = 'enriching';
+          for (const id of ids) {
+            // 先落基本档案(大小/试听),再经 track_v2 解析补全名/歌手/封面
+            const info = batch[id];
+            const entry = { id, name: '', size: info?.size || 0, preview: Boolean(info?.isPreview) };
+            try {
+              const resolved = await ttnetResolve(id);
+              const r = resolved?.ok ? resolved : (webSession?.cookie ? await resolveOnlineTrack(id) : null);
+              if (r?.ok) {
+                entry.name = r.name || '';
+                entry.artist = r.artist || '';
+                entry.album = r.album || '';
+                entry.duration = r.duration || 0;
+                const coverInfo = r.cover;
+                if (coverInfo?.uri) {
+                  const tmpl = coverInfo.template_prefix
+                    ? `${coverInfo.template_prefix}-crop-center:300:300.jpg` : 'c5_300x300.jpg';
+                  entry.cover = (coverInfo.urls?.[0] || '') + coverInfo.uri + '~' + tmpl;
+                }
+              }
+            } catch (_) {}
+            await recordStoreTrack(targetDir, entry);
+            job.done += 1;
+            job.phase = `补全档案 ${job.done}/${job.total}`;
+          }
+          job.status = 'done';
+          job.phase = '完成';
+        } catch (error) {
+          job.status = 'error';
+          job.error = error?.message || String(error);
+          recordFault('store-sync', error);
+        }
+      })();
+      setTimeout(() => syncJobs.delete(jobId), 3600 * 1000).unref?.();
+      sendJson(response, 200, { ok: true, jobId });
       return;
     }
-    if (route === 'POST /api/store/record-batch') {
-      // 自动补录:浏览歌单时发现"已缓存但库里没有"的歌批量建档(前端在
-      // cache-status 响应后触发)—— 已缓存歌曲自动聚齐进「自动缓存」,
-      // 不需要逐首重新播放。封面逐张下载,请求本身可被前端 fire-and-forget。
-      const input = await readBody(request);
-      const list = Array.isArray(input.tracks) ? input.tracks : [];
-      let recorded = 0;
-      try {
-        for (const item of list) {
-          if (await recordStoreTrack(item)) recorded += 1;
-        }
-        sendJson(response, 200, { ok: true, recorded });
-      } catch (error) { sendJson(response, 500, { ok: false }); }
+    if (route === 'GET /api/store/sync-status') {
+      const job = syncJobs.get(url.searchParams.get('job') || '');
+      if (!job) { sendJson(response, 404, { ok: false }); return; }
+      sendJson(response, 200, { ok: true, ...job });
       return;
     }
     if (route === 'GET /api/store/track-cover') {
