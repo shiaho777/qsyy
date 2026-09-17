@@ -103,6 +103,12 @@ jobs:
           java-version: 17
 
       - uses: android-actions/setup-android@v3
+        # default `packages: tools platform-tools` breaks: the legacy `tools`
+        # package no longer exists in the SDK repository ("Failed to find
+        # package 'tools'"). platform-tools alone is enough — gradle pulls
+        # build-tools/platforms itself per compileSdk.
+        with:
+          packages: platform-tools
 
       - name: Assemble debug APK (runnable out of the box)
         working-directory: android
