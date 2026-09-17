@@ -10,8 +10,8 @@ android {
         applicationId = "com.shiaho777.qsyy"
         minSdk = 24
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.2.0"
+        versionCode = 8
+        versionName = "1.3.0"
     }
 
     // No signing config: CI assembles a debug-signed APK (runnable out of the
