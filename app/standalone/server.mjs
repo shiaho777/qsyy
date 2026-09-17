@@ -1794,6 +1794,16 @@ const serverHandler = async (request, response) => {
     }
     if (url.pathname.startsWith('/api/stream/') && request.method === 'GET') {
       const trackId = url.pathname.split('/').pop();
+      if (!/^\d+$/.test(trackId)) { sendJson(response, 400, { ok: false }); return; }
+      // 指定库的播放不回退到客户端或在线来源。
+      const setParam = url.searchParams.get('set');
+      if (setParam !== null) {
+        if (!setNameOk(setParam) || setParam.startsWith('.')) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
+        const file = path.join(STORES_ROOT, setParam, `${trackId}.m4a`);
+        if (!fs.existsSync(file)) { sendJson(response, 404, { ok: false, error: '该库内没有这首歌曲的本地音频' }); return; }
+        serveStream(request, response, file);
+        return;
+      }
       const scan = await scanTrack(trackId);
       const candidate = scan?.candidates?.[0];
       // client-cached previews are 30s; the online path returns 60s at top
@@ -2424,7 +2434,10 @@ const serverHandler = async (request, response) => {
                 try { keep = JSON.parse(fs.readFileSync(metaPath, 'utf8'))?.complete && !hasAudio; } catch (_) {}
                 if (keep) continue; // merge:已有更完整的 meta 不降级
                 fs.writeFileSync(metaPath, JSON.stringify({
-                  trackId: id, name: String(s?.name || ''), complete: hasAudio,
+                  trackId: id, name: String(s?.name || ''),
+                  artist: String(s?.artist || ''), album: String(s?.album || ''),
+                  duration: Number(s?.duration) || 0,
+                  complete: hasAudio,
                   size: hasAudio ? fs.statSync(path.join(targetDir, `${id}.m4a`)).size : 0,
                   downloaded: 0, preview: false, quality: '',
                 }));
