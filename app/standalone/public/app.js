@@ -180,11 +180,11 @@ async function loadMe() {
       <div class="hint">${state.playlists.length ? state.playlists.length + ' 个歌单' : '已登录'}</div></div>` : '';
     armImgs($('user'));
   } catch (_) {
-    $('user').innerHTML = '<div class="hint" style="padding:4px 6px">登录态失效 — 打开一次汽水音乐后点同步</div>';
+    $('user').innerHTML = '<div class="hint" style="padding:4px 6px">未登录汽水 — 本地库功能不受影响</div>';
   }
 }
 
-async function loadPlaylists(openSaved = true, fresh = false) {
+async function loadPlaylists(openSaved = true, fresh = false, autoOpen = true) {
   const data = await api(`/api/playlists?count=500${fresh ? '&fresh=1' : ''}`);
   state.playlists = (data?.playlists || []).map(p => ({
     id: String(p.id), title: p.title || '未命名',
@@ -204,7 +204,7 @@ async function loadPlaylists(openSaved = true, fresh = false) {
   });
   armImgs($('playlists'));
   loadMe();
-  if (target) openPlaylist(target, openSaved);
+  if (target && autoOpen && (fresh || !state.storeView)) await openPlaylist(target, openSaved);
 }
 
 async function openPlaylist(pl, resume = false) {
@@ -827,7 +827,7 @@ async function loadStores() {
         <div><div class="t">${esc(s.name)}</div><div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${playingHere ? ' · 播放中' : ''}</div></div>
         <button class="st-row-del" data-name="${esc(s.name)}" data-active="${s.active ? '1' : ''}" data-playing="${playingHere ? '1' : ''}" title="删除此缓存库">✕</button>
       </div>`;
-    }).join('') || '<div class="store-empty">还没有缓存库 — 播放在线歌曲会自动建立</div>';
+    }).join('') || '<div class="store-empty">还没有缓存库 — 用上方 ＋ 导入歌单包或同步客户端缓存</div>';
     $('stores').querySelectorAll('.st-row-del').forEach(btn => {
       btn.onclick = async e => {
         e.stopPropagation();
@@ -998,10 +998,11 @@ function storeRowEl(t, i, isActiveSet) {
   el.className = 'track store-row';
   el.dataset.id = t.id;
   el.style.setProperty('--i', String(i));
-  const playable = isActiveSet;   // 客户端缓存/在线的歌也能播(stream 自解析来源)
+  // 库内任何曲目都能点播:有本地音频走库限定流(免登录),纯在线条目由
+  // /api/stream 自解析(需登录)。不再要求「先设为写入库」。
   const setName = encodeURIComponent(state.storeView?.name || '');
   el.innerHTML = `
-    <div class="cell-idx"><span class="num">${i + 1}</span>${playable ? `<button class="hovp" title="播放">${ICONS.playRow}</button>` : ''}</div>
+    <div class="cell-idx"><span class="num">${i + 1}</span><button class="hovp" title="播放">${ICONS.playRow}</button></div>
     ${t.hasCover
       ? `<img class="st-cv" loading="lazy" src="/api/store/track-cover?set=${setName}&id=${t.id}" alt="" onerror="this.style.display='none'">`
       : `<span class="st-fallback sm">${esc([...(t.name || '曲')][0] || '曲')}</span>`}
@@ -1009,10 +1010,7 @@ function storeRowEl(t, i, isActiveSet) {
     <div class="artist st-size">${(t.size / 1048576).toFixed(1)}MB</div>
     <div class="album st-state${t.complete ? ' ok' : ' online'}">${t.complete ? '已缓存' : '在线'}</div>
     <div class="cell-cache"><button class="mini-btn st-rm">移除</button></div>`;
-  const play = () => {
-    if (!isActiveSet) { toast('先「设为写入库」再播放', 'err'); return; }
-    playStoreTrack(t);
-  };
+  const play = () => playStoreTrack(t);
   el.onclick = play;
   el.querySelector('.hovp')?.addEventListener('click', e => { e.stopPropagation(); play(); });
   el.querySelector('.st-rm').addEventListener('click', async e => {
@@ -1025,13 +1023,21 @@ function storeRowEl(t, i, isActiveSet) {
 }
 
 function playStoreTrack(track) {
-  // 队列含全部曲目(同步进来的客户端缓存歌经 /api/stream 可播),完整优先排前
+  // 队列含全部曲目:本地音频走库限定流(?set=,免登录),其余条目播放时由
+  // /api/stream 尝试客户端缓存/在线解析。完整(已缓存)优先排前。
+  const setName = state.storeView?.name || '';
   const list = state.storeTracks || [];
   const playable = [...list.filter(t => t.complete), ...list.filter(t => !t.complete)];
   const idx = playable.findIndex(t => t.id === track.id);
   if (idx < 0) return;
-  const objs = playable.map(t => ({ id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`, artists: t.artist ? [t.artist] : [], album: t.album || '', duration: t.duration || 0, cover: null, vip: false, qualities: [] }));
-  setQueue(objs, idx, `store:${state.storeView?.name || ''}`);
+  const objs = playable.map(t => ({
+    id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`,
+    artists: t.artist ? [t.artist] : [], album: t.album || '',
+    duration: t.duration || 0, cover: null, vip: false, qualities: [],
+    // 库限定流地址:非空时 startCurrent 直接用它(本地 m4a,不走在线解析)
+    storeSrc: t.complete ? `/api/stream/${t.id}?set=${encodeURIComponent(setName)}` : '',
+  }));
+  setQueue(objs, idx, `store:${setName}`);
 }
 
 // 同步汽水音乐缓存为库:填名+图标(可选)→ POST /api/store/sync → 轮询进度
@@ -1552,7 +1558,8 @@ function startCurrent(autoplay = true) {
   updateMediaSession(t);
   if (!$('lyrics-panel').classList.contains('hidden') || ls.get('lyrics-open', false)) loadLyrics(t);
   ls.set('lastTrack', { playlistId: state.current?.id, trackId: t.id, position: 0 });
-  audio.src = `/api/stream/${t.id}`;
+  // 库限定流(?set=):本地 m4a 直取,免登录免在线解析
+  audio.src = t.storeSrc || `/api/stream/${t.id}`;
   updateHeroPlayback();
   if (autoplay) {
     audio.play().catch(async err => {
@@ -1563,7 +1570,11 @@ function startCurrent(autoplay = true) {
       // clicking another song swaps audio.src: the old play() promise rejects
       // with AbortError. That's a supersede, not a failure — don't fall back.
       if (err?.name === 'AbortError') return;
-      if (audio.src !== `/api/stream/${t.id}` && !audio.src.endsWith(`/api/stream/${t.id}`)) return;
+      if (state.queue[state.queueIndex] !== t) return;
+      if (t.storeSrc) {
+        toast('本地音频无法播放，请检查文件是否完整或重新导入；无需登录汽水音乐', 'err');
+        return;
+      }
       // stream failed: most often a transient (decrypt warming up, scan
       // snapshot retry). Retry once before concluding anything; only then
       // distinguish "genuinely unavailable" from "needs the client".
@@ -2321,8 +2332,9 @@ const sentinelObserver = new IntersectionObserver(entries => {
 }, { rootMargin: '500px' });
 sentinelObserver.observe($('sentinel'));
 
-// auto-sync playlists every 5 minutes
-setInterval(() => { loadPlaylists(false).catch(() => {}); }, 5 * 60 * 1000);
+// auto-sync playlists every 5 minutes (skipped while browsing a local
+// library — the refresh must not yank the user out of the store view)
+setInterval(() => { if (!state.storeView) loadPlaylists(false).catch(() => {}); }, 5 * 60 * 1000);
 
 // ------------------------------------------------------------------ boot
 
@@ -2579,11 +2591,13 @@ setInterval(loadStats, 10 * 60 * 1000);
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   try {
     // boot in parallel: /api/me + /api/stats + /api/effects don't depend on
-    // the playlist, and loadPlaylists already calls loadMe itself
+    // the playlist, and loadPlaylists already calls loadMe itself.
+    // loadPlaylists may fail without 汽水 login — that must not block the
+    // library-first path: local store import/browse/play work logged-out.
     loadStats();
     loadAppVersion();
     loadStores();
-    await loadPlaylists(true);
+    await loadPlaylists(true).catch(() => { state.me = null; });
     // reopen the cache-library view if that's where the user last was
     const lastStore = ls.get('storeView', '');
     if (lastStore) openStoreView(lastStore);
