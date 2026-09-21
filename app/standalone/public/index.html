@@ -35,6 +35,7 @@
     <div id="store-new-form" class="store-new hidden">
       <input id="store-new-name" type="text" placeholder="新缓存库名称…" autocomplete="off">
       <button id="store-new-ok" class="mini-btn">新建</button>
+      <input id="store-new-dir" type="text" placeholder="保存位置(留空 = 默认目录)" autocomplete="off">
     </div>
     <nav id="stores" class="playlists stores"></nav>
     <div class="sidebar-foot">
@@ -202,7 +203,7 @@
   <div id="sync-modal" class="modal hidden" aria-hidden="true">
     <div class="modal-card export-card">
       <div class="modal-title">同步汽水音乐缓存为库</div>
-      <div class="modal-sub">把汽水音乐客户端已缓存的歌曲一键转成一个缓存库(后台自动补齐歌名与封面)。</div>
+      <div class="modal-sub">把汽水音乐客户端已缓存的歌曲(含音频本体)导入成一个缓存库,后台自动补齐歌名与封面。</div>
       <div class="exp-icon-row">
         <span id="sync-icon-preview" class="st-fallback" title="库图标(可选)">库</span>
         <button id="sync-icon-btn" class="btn ghost">上传库图标</button>
@@ -210,6 +211,10 @@
       </div>
       <div class="exp-name-row">
         <input id="sync-name" type="text" placeholder="库名称(必填)" autocomplete="off" maxlength="32">
+      </div>
+      <div class="exp-name-row exp-dir-row">
+        <input id="sync-dir" type="text" placeholder="保存位置(留空 = 默认目录)" autocomplete="off">
+        <button id="sync-dir-btn" class="btn ghost hidden">浏览…</button>
       </div>
       <div id="sync-progress" class="exp-progress"></div>
       <div class="exp-foot">

@@ -131,11 +131,13 @@ app/
 | `GET /api/progress-stream` · `/api/progress` | 增量缓存进度(SSE 脏门控 / 轮询) |
 | `GET /api/events` | 下载任务事件流(SSE,push-on-change) |
 | `GET /api/monitor/:trackId` | 长轮询(≤120s):等用户在官方客户端播放出缓存 |
-| `GET /api/store/sets` · `/api/store/tracks` 及对应 POST | 缓存库列表 / 切换 / 创建 / 删除 / 清理 / 移除曲目 |
+| `GET /api/store/sets` · `/api/store/tracks` 及对应 POST | 缓存库列表 / 切换 / 创建 / 删除 / 清理 / 移除曲目(`create`/`sync` 接受 `dir` 自定义父目录) |
+| `POST /api/store/sync` · `GET /api/store/sync-status` | 同步客户端缓存为库:导入音频本体(明文直拷 / CENC 解密 remux)+ 后台补档案 |
+| `POST /api/pick-directory` | 系统目录选择器(仅桌面壳;浏览器端返回 400,前端退化为文本输入) |
 | `GET /api/backup` · `POST /api/restore` | tar 备份导出 / 流式导入(路径穿越安全) |
 | `GET /api/weblogin/status` · `/qr` · `/poll` · `POST /logout` | 扫码网页会话兜底通路 |
 | `GET /api/stats` | 缓存总大小(info.db 快照只读统计) |
-| `GET /api/version` | 应用版本号 + 仓库地址(侧栏 GitHub 行 / 检查更新) |
+| `GET /api/version` | 应用版本号 + 仓库地址 + pid + shell(侧栏 GitHub 行 / 检查更新 / 实例接管识别) |
 | `GET /api/latest-release` | 最新 Release 的 tag(检查更新兜底：读网页 302 跳转，不受 API 限流影响) |
 | `POST /api/open-downloads` · `/api/open-client` | 打开下载目录 / 拉起官方客户端 |
 

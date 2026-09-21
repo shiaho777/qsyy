@@ -36,6 +36,7 @@ const state = {
   volume: ls.get('volume', 0.9),
   batchActive: false,
   onlineAvailable: false,   // 客户端会话(ttnet)或网页会话任一可用
+  shell: '',                // 'electron' = 桌面壳(有系统目录选择器) | '' = 浏览器
   storeProgress: new Map(),  // trackId → { complete, progress }(自有增量缓存)
   effect: ls.get('effect', null),   // 当前音效 key(null=关)
   trackEffects: [],                // 当前曲目可用音效
@@ -1052,6 +1053,8 @@ function closeSyncModal() {
 function openSyncModal() {
   syncWizard.icon = null; syncWizard.jobId = null;
   $('sync-name').value = '';
+  $('sync-dir').value = '';
+  $('sync-dir-btn').classList.toggle('hidden', state.shell !== 'electron');
   $('sync-progress').textContent = '';
   $('sync-progress').classList.remove('done');
   $('sync-icon-preview').innerHTML = '库';
@@ -1068,7 +1071,8 @@ async function startSync() {
   const name = ($('sync-name').value || '').trim();
   if (!name) return;
   try {
-    const r = await (await fetch('/api/store/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, icon: syncWizard.icon }) })).json();
+    const dir = ($('sync-dir').value || '').trim();
+    const r = await (await fetch('/api/store/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, icon: syncWizard.icon, dir }) })).json();
     if (!r?.ok) { toast(r?.error || '同步失败', 'err'); return; }
     syncWizard.jobId = r.jobId;
     $('sync-confirm').disabled = true;
@@ -1079,11 +1083,10 @@ async function startSync() {
       try {
         const s = await (await fetch(`/api/store/sync-status?job=${encodeURIComponent(syncWizard.jobId)}`)).json();
         if (s?.status === 'error') { clearInterval(syncWizard.poll); syncWizard.poll = null; $('sync-progress').textContent = `同步失败:${s.error}`; return; }
-        if (s?.status === 'scanning') { $('sync-progress').textContent = '扫描客户端缓存…'; return; }
-        if (s?.status === 'enriching') { $('sync-progress').textContent = `补全档案 ${s.done}/${s.total}…`; return; }
+        if (s?.status === 'importing' || s?.status === 'enriching' || s?.status === 'scanning') { $('sync-progress').textContent = `${s.phase || '处理中'}…`; return; }
         if (s?.status === 'done') {
           clearInterval(syncWizard.poll); syncWizard.poll = null;
-          $('sync-progress').textContent = s.total ? `完成:${s.total} 首` : '客户端缓存为空';
+          $('sync-progress').textContent = s.total ? `完成:${s.total} 首` : (s.phase || '客户端缓存为空');
           $('sync-progress').classList.add('done');
           $('sync-confirm').textContent = '完成';
           loadStores();
@@ -2362,6 +2365,7 @@ async function loadAppVersion() {
   try {
     const v = await api('/api/version');
     if (v?.version && v.version !== 'dev') $('app-version').textContent = `v${v.version}`;
+    if (v?.shell) state.shell = v.shell;
   } catch (_) {}
 }
 
@@ -2546,6 +2550,14 @@ setInterval(loadStats, 10 * 60 * 1000);
   if ($('sync-cancel')) $('sync-cancel').onclick = closeSyncModal;
   if ($('sync-name')) $('sync-name').oninput = e => { $('sync-confirm').disabled = !(e.target.value || '').trim(); };
   if ($('sync-confirm')) $('sync-confirm').onclick = startSync;
+  // 系统目录选择器:只在桌面壳出现(standalone 返回 400,按钮本来就隐藏)
+  if ($('sync-dir-btn')) $('sync-dir-btn').onclick = async () => {
+    try {
+      const r = await (await fetch('/api/pick-directory', { method: 'POST' })).json();
+      if (r?.ok && r.path) $('sync-dir').value = r.path;
+      else if (r?.error) toast(r.error, 'err');
+    } catch (_) {}
+  };
   if ($('sync-icon-btn')) $('sync-icon-btn').onclick = () => $('sync-icon-file').click();
   if ($('sync-icon-rm')) $('sync-icon-rm').onclick = () => {
     syncWizard.icon = null;
@@ -2578,9 +2590,11 @@ setInterval(loadStats, 10 * 60 * 1000);
   const doCreateStore = async () => {
     const name = ($('store-new-name').value || '').trim();
     if (!name) return;
-    const r = await storeJson('/api/store/create', { name });
+    const dir = ($('store-new-dir').value || '').trim();
+    const r = await storeJson('/api/store/create', { name, dir });
     if (r?.ok) {
       $('store-new-name').value = '';
+      $('store-new-dir').value = '';
       $('store-new-form').classList.add('hidden');
       toast(`已新建缓存库「${name}」`, 'ok');
       loadStores(); openStoreView(name);
