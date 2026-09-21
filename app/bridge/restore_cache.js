@@ -357,11 +357,13 @@ function scanSnapshot(args) {
         if (!trackId) continue;
         if (!byTrack.has(trackId)) byTrack.set(trackId, []);
         byTrack.get(trackId).push({
+          key,
           kind: parts[parts.length - 2],
           entryQuality: parts[parts.length - 1],
           chunkId: entry.chunkId,
           size: Number(entry.size) || 0,
           isPreview: entry.info?.isPreview === true,
+          encryption: encryptionOf(entry),
         });
       }
       const result = {};
@@ -425,6 +427,92 @@ function scanSnapshot(args) {
   }
 }
 
+// Materialize every ready chunk in the client cache into outputDir as
+// <trackId>.m4a — used by 「同步汽水音乐缓存为库」. One lmdb snapshot, one
+// process, sequential writes; each track emits a JSON line so the parent can
+// stream progress. Plaintext entries are copied as-is; cenc-aes-ctr entries go
+// through decodeSpade + per-sample AES-CTR decrypt + ffmpeg faststart remux.
+// 30s preview chunks are reported but never imported (the online path serves
+// them better).
+function restoreAllSnapshot(args) {
+  const lmdb = require(args['lmdb-module']);
+  const env = lmdb.open({ path: args.snapshot, readOnly: true, useVersions: false });
+  const outputDir = args['output-dir'];
+  const ffmpeg = args.ffmpeg || 'ffmpeg';
+  const devicePath = args['device-node'];
+  const cacheDir = args['cache-dir'];
+  const { spawnSync } = require('child_process');
+  fs.mkdirSync(outputDir, { recursive: true });
+  let device = null;
+  const loadDevice = () => {
+    if (device) return device;
+    device = require(path.resolve(devicePath));
+    if (typeof device.decodeSpade !== 'function') throw new Error('device.node has no decodeSpade');
+    return device;
+  };
+  try {
+    const byTrack = new Map();
+    for (const key of env.getKeys()) {
+      const parts = String(key).split('_');
+      if (parts.length < 3) continue;
+      const entry = parseEntry(env.get(key));
+      if (!entry?.chunkId) continue;
+      const trackId = String(entry?.info?.trackId || '');
+      if (!trackId) continue;
+      if (!byTrack.has(trackId)) byTrack.set(trackId, []);
+      byTrack.get(trackId).push({
+        kind: parts[parts.length - 2],
+        entryQuality: parts[parts.length - 1],
+        chunkId: entry.chunkId,
+        size: Number(entry.size) || 0,
+        isPreview: entry.info?.isPreview === true,
+        encryption: encryptionOf(entry),
+      });
+    }
+    const rank = q => { const i = QUALITY_RANK.indexOf(q); return i < 0 ? QUALITY_RANK.length : i; };
+    const picks = [];
+    for (const [trackId, candidates] of byTrack) {
+      const full = candidates.filter(c => c.kind === 'F');
+      // 完整条目优先;同档按音质序(QUALITY_RANK),再按体积兜底
+      const best = (full.length ? full : candidates)
+        .sort((a, b) => rank(a.entryQuality) - rank(b.entryQuality) || b.size - a.size)[0];
+      if (best && best.size && inspectChunk(cacheDir, best.chunkId, best.size).ready) {
+        picks.push({ trackId, ...best });
+      }
+    }
+    emit({ type: 'summary', total: picks.length });
+    for (const pick of picks) {
+      const target = path.join(outputDir, `${pick.trackId}.m4a`);
+      if (pick.isPreview) { emit({ type: 'track', trackId: pick.trackId, ok: false, preview: true, size: pick.size, quality: pick.entryQuality }); continue; }
+      if (fs.existsSync(target)) { emit({ type: 'track', trackId: pick.trackId, ok: true, existed: true, size: fs.statSync(target).size, quality: pick.entryQuality }); continue; }
+      const source = path.join(cacheDir, `${pick.chunkId}.bin`);
+      const tmp = path.join(outputDir, `.qsyy-sync-${pick.trackId}.m4a`);
+      try {
+        if (pick.encryption?.encrypted && pick.encryption.method === 'cenc-aes-ctr') {
+          const keyHex = loadDevice().decodeSpade(pick.encryption.spade);
+          if (!/^[0-9a-f]{32}$/i.test(String(keyHex))) throw new Error('decodeSpade did not return an AES-128 key');
+          const decrypted = `${tmp}.dec`;
+          decryptMp4(source, decrypted, Buffer.from(String(keyHex), 'hex'));
+          const remux = spawnSync(ffmpeg, ['-y', '-v', 'error', '-i', decrypted, '-map', '0:a:0', '-c', 'copy', '-movflags', '+faststart', tmp], { encoding: 'utf8' });
+          if (remux.status === 0 && fs.existsSync(tmp)) fs.unlinkSync(decrypted);
+          else fs.renameSync(decrypted, tmp);
+        } else {
+          fs.copyFileSync(source, tmp);
+        }
+        fs.renameSync(tmp, target);
+        emit({ type: 'track', trackId: pick.trackId, ok: true, size: fs.statSync(target).size, quality: pick.entryQuality });
+      } catch (error) {
+        try { fs.unlinkSync(tmp); } catch (_) {}
+        try { fs.unlinkSync(`${tmp}.dec`); } catch (_) {}
+        emit({ type: 'track', trackId: pick.trackId, ok: false, error: error?.message || String(error), size: pick.size, quality: pick.entryQuality });
+      }
+    }
+    emit({ type: 'done' });
+  } finally {
+    try { env.close(); } catch (_) {}
+  }
+}
+
 function runScanChild(args) {
   return new Promise(resolve => {
     const child = spawn(process.execPath, [
@@ -482,6 +570,13 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args['scan-child']) {
     emit(scanSnapshot(args));
+    return;
+  }
+  // Bulk materialize: every ready client-cache chunk → <trackId>.m4a in
+  // output-dir, one JSON line per track for live progress.
+  if (args['restore-all']) {
+    if (!args.snapshot || !args['output-dir']) throw new Error('restore-all requires --snapshot and --output-dir');
+    restoreAllSnapshot(args);
     return;
   }
   // Decrypt a standalone encrypted MP4 (e.g. downloaded from the online CDN)

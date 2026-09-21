@@ -1325,14 +1325,14 @@ function zipParse(buf) {
 const exportJobs = new Map();      // 导出任务(jobId → { status, phase, done, total, zipPath, size, … })
 function readStoreSet(name) {
   try {
-    const p = path.join(STORES_ROOT, name, 'set.json');
+    const p = path.join(storeDir(name), 'set.json');
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
     if (raw?.v === 1 && Array.isArray(raw.playlists)) return raw;
   } catch (_) {}
   return null;
 }
 function writeStoreSet(name, set) {
-  try { fs.writeFileSync(path.join(STORES_ROOT, name, 'set.json'), JSON.stringify(set)); } catch (_) {}
+  try { fs.writeFileSync(path.join(storeDir(name), 'set.json'), JSON.stringify(set)); } catch (_) {}
 }
 // 从 set.json 的所有歌单里移除曲目 id(keep consistency on remove-track)
 function removeFromStoreSet(name, trackId) {
@@ -1363,6 +1363,63 @@ let STORE_DIR = path.join(STORES_ROOT, TRANSIENT_STORE);
 const storeMeta = new Map();        // trackId → { size, downloaded, spade, complete }
 const setNameOk = name => /^[\w\u4e00-\u9fa5][\w\u4e00-\u9fa5 -]{0,31}$/.test(name) && !/[\/]/.test(name);
 
+// Custom store locations: stores.json maps a set name → absolute dir for
+// libraries created outside STORES_ROOT. Every store path lookup MUST go
+// through storeDir() — never path.join(STORES_ROOT, name) directly.
+const STORES_INDEX_FILE = path.join(DECRYPT_DIR, 'stores.json');
+let storesIndex = null; // name → { path }
+function loadStoresIndex() {
+  if (storesIndex) return storesIndex;
+  storesIndex = new Map();
+  try {
+    const data = JSON.parse(fs.readFileSync(STORES_INDEX_FILE, 'utf8'));
+    for (const [name, info] of Object.entries(data || {})) {
+      if (setNameOk(name) && typeof info?.path === 'string' && info.path) storesIndex.set(name, { path: info.path });
+    }
+  } catch (_) {}
+  return storesIndex;
+}
+function saveStoresIndex() {
+  try {
+    fs.mkdirSync(DECRYPT_DIR, { recursive: true });
+    fs.writeFileSync(STORES_INDEX_FILE, JSON.stringify(Object.fromEntries(loadStoresIndex())));
+  } catch (_) {}
+}
+function storeDir(name) {
+  return loadStoresIndex().get(name)?.path || path.join(STORES_ROOT, name);
+}
+function storeExists(name) {
+  return setNameOk(name) && fs.existsSync(storeDir(name));
+}
+// 自定义位置:用户选的是父目录,库按名在其下建子目录。校验:可创建可写、
+// 不能落在已有库内部;指向默认 STORES_ROOT 时回落默认(不写注册表)。
+function resolveStoreParent(rawDir) {
+  const raw = String(rawDir || '').trim();
+  if (!raw) return { parent: STORES_ROOT };
+  let expanded = raw;
+  if (expanded === '~') expanded = os.homedir();
+  else if (expanded.startsWith('~/') || expanded.startsWith('~\\')) expanded = path.join(os.homedir(), expanded.slice(2));
+  if (!path.isAbsolute(expanded)) return { error: '路径无效,需为绝对路径' };
+  const parent = path.resolve(expanded);
+  // 落在 STORES_ROOT 内部(而非它本身)会让父目录被误当成一个库
+  if (parent.startsWith(path.resolve(STORES_ROOT) + path.sep)) return { error: '保存位置不能在默认库目录内部' };
+  for (const name of listStoreDirs()) {
+    const d = storeDir(name);
+    if (parent === d || parent.startsWith(d + path.sep)) return { error: '不能选在已有缓存库内部' };
+  }
+  try {
+    fs.mkdirSync(parent, { recursive: true });
+    fs.accessSync(parent, fs.constants.W_OK);
+  } catch (_) { return { error: '目录不存在或不可写' }; }
+  if (parent === path.resolve(STORES_ROOT)) return { parent: STORES_ROOT };
+  return { parent };
+}
+function registerStorePath(name, dir) {
+  if (path.resolve(dir) === path.resolve(path.join(STORES_ROOT, name))) return;
+  loadStoresIndex().set(name, { path: dir });
+  saveStoresIndex();
+}
+
 (function initStores() {
   try {
     fs.mkdirSync(STORES_ROOT, { recursive: true });
@@ -1384,8 +1441,8 @@ const setNameOk = name => /^[\w\u4e00-\u9fa5][\w\u4e00-\u9fa5 -]{0,31}$/.test(na
     let active = TRANSIENT_STORE;
     try { active = JSON.parse(fs.readFileSync(ACTIVE_STORE_FILE, 'utf8')).name || TRANSIENT_STORE; } catch (_) {}
     if (['default', '自动缓存'].includes(active)) active = TRANSIENT_STORE;
-    if (setNameOk(active) && !active.startsWith('.') && fs.existsSync(path.join(STORES_ROOT, active))) {
-      STORE_DIR = path.join(STORES_ROOT, active);
+    if (setNameOk(active) && !active.startsWith('.') && fs.existsSync(storeDir(active))) {
+      STORE_DIR = storeDir(active);
     } else {
       // 指向的库已被删:指向隐藏暂存(不建盘,在线播放按需建)—— 用户没
       // 显式「设为写入库」之前,显式保存会被 /api/store/cache 拒绝
@@ -1395,7 +1452,8 @@ const setNameOk = name => /^[\w\u4e00-\u9fa5][\w\u4e00-\u9fa5 -]{0,31}$/.test(na
   } catch (_) {}
 })();
 
-// 现存缓存库目录名(排序稳定);点前缀目录是基础设施(如 .transient),不是库
+// 现存缓存库名(排序稳定):默认目录下的库 + 注册表里的自定义位置库(并集)。
+// 点前缀目录是基础设施(如 .transient),不是库。
 function listStoreDirs() {
   const out = [];
   try {
@@ -1404,6 +1462,10 @@ function listStoreDirs() {
       try { if (fs.statSync(path.join(STORES_ROOT, d)).isDirectory()) out.push(d); } catch (_) {}
     }
   } catch (_) {}
+  for (const [name, info] of loadStoresIndex()) {
+    if (out.includes(name)) continue;
+    try { if (fs.statSync(info.path).isDirectory()) out.push(name); } catch (_) {}
+  }
   out.sort();
   return out;
 }
@@ -1419,14 +1481,19 @@ async function recordStoreTrack(dir, item) {
   try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) || {}; } catch (_) {}
   const before = JSON.stringify(meta);
   meta.trackId = id;
+  if (item.complete === true) meta.complete = true;
   if (meta.complete !== true) meta.complete = false;   // 仅记录(在线态)条目显式置 false
+  if (item.preview === true) meta.preview = true;
+  if (!meta.size && Number(item.size)) meta.size = Number(item.size);
+  if (!meta.quality && item.quality) meta.quality = String(item.quality);
   if (!meta.name && item.name) meta.name = String(item.name);
   if (!meta.artist && item.artist) meta.artist = String(item.artist);
   if (!meta.album && item.album) meta.album = String(item.album);
   if (!meta.duration && Number(item.duration)) meta.duration = Number(item.duration);
   if (JSON.stringify(meta) !== before) {
     fs.writeFileSync(metaPath, JSON.stringify(meta));
-    storeMeta.set(id, { ...(storeMeta.get(id) || {}), ...meta });
+    // storeMeta 只镜像活动库 —— 写入其他库目录时不能污染当前视图
+    if (path.resolve(dir) === path.resolve(STORE_DIR)) storeMeta.set(id, { ...(storeMeta.get(id) || {}), ...meta });
   }
   const coverPath = path.join(dir, `${id}.jpg`);
   if (item.cover && !fs.existsSync(coverPath)) {
@@ -1439,7 +1506,7 @@ async function recordStoreTrack(dir, item) {
 function activeStoreName() { return path.basename(STORE_DIR); }
 
 function switchStore(name) {
-  STORE_DIR = path.join(STORES_ROOT, name);
+  STORE_DIR = storeDir(name);
   try { fs.mkdirSync(STORE_DIR, { recursive: true }); } catch (_) {}
   try { fs.writeFileSync(ACTIVE_STORE_FILE, JSON.stringify({ name })); } catch (_) {}
   downloadQueue.length = 0;
@@ -1892,7 +1959,7 @@ const serverHandler = async (request, response) => {
       const setParam = url.searchParams.get('set');
       if (setParam !== null) {
         if (!setNameOk(setParam) || setParam.startsWith('.')) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
-        const file = path.join(STORES_ROOT, setParam, `${trackId}.m4a`);
+        const file = path.join(storeDir(setParam), `${trackId}.m4a`);
         if (!fs.existsSync(file)) { sendJson(response, 404, { ok: false, error: '该库内没有这首歌曲的本地音频' }); return; }
         serveStream(request, response, file);
         return;
@@ -2004,9 +2071,8 @@ const serverHandler = async (request, response) => {
     if (route === 'GET /api/store/sets') {
       const sets = [];
       try {
-        for (const name of fs.readdirSync(STORES_ROOT)) {
-          if (name.startsWith('.')) continue;   // .transient 等基础设施不是库
-          const dir = path.join(STORES_ROOT, name);
+        for (const name of listStoreDirs()) {
+          const dir = storeDir(name);
           if (!fs.statSync(dir).isDirectory()) continue;
           let tracks = 0, size = 0, cover = null;
           for (const f of fs.readdirSync(dir)) {
@@ -2017,7 +2083,7 @@ const serverHandler = async (request, response) => {
             size += st.size;
             if (f.endsWith('.m4a')) tracks += 1;
           }
-          sets.push({ name, tracks, size, cover, active: name === activeStoreName() });
+          sets.push({ name, tracks, size, cover, dir, active: name === activeStoreName() });
         }
       } catch (_) {}
       sets.sort((a, b) => (b.active - a.active) || a.name.localeCompare(b.name));
@@ -2028,7 +2094,7 @@ const serverHandler = async (request, response) => {
       // serve a set's cover image (stores/<name>/cover.*); 404 when absent
       const name = url.searchParams.get('set') || '';
       if (!setNameOk(name)) { sendJson(response, 400, { ok: false }); return; }
-      const dir = path.join(STORES_ROOT, name);
+      const dir = storeDir(name);
       let file = null;
       try { file = fs.readdirSync(dir).find(f => /^cover\.(jpg|jpeg|png|webp)$/i.test(f)); } catch (_) {}
       if (!file) { sendJson(response, 404, { ok: false }); return; }
@@ -2044,8 +2110,8 @@ const serverHandler = async (request, response) => {
       // set/remove a set's cover. data = base64 data URL; empty string removes.
       const input = await readBody(request);
       const name = String(input.name || '');
-      if (!setNameOk(name) || !fs.existsSync(path.join(STORES_ROOT, name))) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
-      const dir = path.join(STORES_ROOT, name);
+      if (!storeExists(name)) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
+      const dir = storeDir(name);
       const removeOld = () => { try { for (const f of fs.readdirSync(dir)) if (/^cover\./i.test(f)) fs.unlinkSync(path.join(dir, f)); } catch (_) {} };
       const data = String(input.data || '');
       if (!data) { removeOld(); sendJson(response, 200, { ok: true }); return; }
@@ -2062,7 +2128,7 @@ const serverHandler = async (request, response) => {
     if (route === 'POST /api/store/switch') {
       const input = await readBody(request);
       const name = String(input.name || '');
-      if (!setNameOk(name) || !fs.existsSync(path.join(STORES_ROOT, name))) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
+      if (!storeExists(name)) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
       switchStore(name);
       sendJson(response, 200, { ok: true, active: name });
       return;
@@ -2071,9 +2137,12 @@ const serverHandler = async (request, response) => {
       const input = await readBody(request);
       const name = String(input.name || '').trim();
       if (!setNameOk(name)) { sendJson(response, 400, { ok: false, error: '名称需为 1-32 位中文/字母/数字/短横线' }); return; }
-      const dir = path.join(STORES_ROOT, name);
-      if (fs.existsSync(dir)) { sendJson(response, 400, { ok: false, error: '已存在同名缓存库' }); return; }
+      const parent = resolveStoreParent(input.dir);
+      if (parent.error) { sendJson(response, 400, { ok: false, error: parent.error }); return; }
+      const dir = path.join(parent.parent, name);
+      if (storeExists(name) || fs.existsSync(dir)) { sendJson(response, 400, { ok: false, error: '已存在同名缓存库' }); return; }
       fs.mkdirSync(dir, { recursive: true });
+      registerStorePath(name, dir);
       sendJson(response, 200, { ok: true });
       return;
     }
@@ -2084,7 +2153,8 @@ const serverHandler = async (request, response) => {
       // 所有库可删,允许删到零个:删的是写入库时切到剩余第一个库;一个不剩
       // 则指向「自动缓存」但不落盘 —— 在线播放时按需重建,平时列表干净
       const wasActive = name === activeStoreName();
-      fs.rmSync(path.join(STORES_ROOT, name), { recursive: true, force: true });
+      fs.rmSync(storeDir(name), { recursive: true, force: true });
+      if (loadStoresIndex().delete(name)) saveStoresIndex();
       if (wasActive) {
         downloadQueue.length = 0;
         const next = listStoreDirs()[0];
@@ -2106,12 +2176,12 @@ const serverHandler = async (request, response) => {
         for (const [id, meta] of storeMeta) {
           const complete = Boolean(meta.complete) && fs.existsSync(m4aPath(id));
           let size = 0;
-          try { size = complete ? fs.statSync(m4aPath(id)).size : meta.downloaded; } catch (_) {}
+          try { size = complete ? fs.statSync(m4aPath(id)).size : (meta.downloaded || meta.size || 0); } catch (_) {}
           tracks.push({ id, name: meta.name || '', artist: meta.artist || '', album: meta.album || '', duration: Number(meta.duration) || 0, hasCover: fs.existsSync(path.join(STORE_DIR, `${id}.jpg`)), complete, preview: Boolean(meta.preview), size, quality: meta.quality || '' });
         }
       } else {
         // browsing a non-active set: read its dir directly (storeMeta is active-only)
-        const dir = path.join(STORES_ROOT, wantSet);
+        const dir = storeDir(wantSet);
         try {
           for (const f of fs.readdirSync(dir)) {
             if (!f.endsWith('.json')) continue;
@@ -2121,7 +2191,7 @@ const serverHandler = async (request, response) => {
               const id = String(meta.trackId);
               const complete = Boolean(meta.complete) && fs.existsSync(path.join(dir, `${id}.m4a`));
               let size = 0;
-              try { size = complete ? fs.statSync(path.join(dir, `${id}.m4a`)).size : (meta.downloaded || 0); } catch (_) {}
+              try { size = complete ? fs.statSync(path.join(dir, `${id}.m4a`)).size : (meta.downloaded || meta.size || 0); } catch (_) {}
               tracks.push({ id, name: meta.name || '', artist: meta.artist || '', album: meta.album || '', duration: Number(meta.duration) || 0, hasCover: fs.existsSync(path.join(dir, `${id}.jpg`)), complete, preview: Boolean(meta.preview), size, quality: meta.quality || '' });
             } catch (_) {}
           }
@@ -2146,33 +2216,97 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'POST /api/store/sync') {
-      // 同步汽水音乐缓存为库(一键):全量扫描客户端缓存建库,后台经 track_v2
-      // 补齐 歌名/歌手/封面(有进度可查)。库完全来自用户主动操作,无自动积累。
+      // 同步汽水音乐缓存为库(一键):--restore-all 子进程在一份 LMDB 快照上
+      // 把客户端缓存的音频本体落成 <id>.m4a(明文直拷,CENC 走解密+remux,
+      // 试听条目只建档),随后后台经 track_v2 补齐歌名/歌手/封面(有进度可查)。
+      // 库完全来自用户主动操作,无自动积累。
       const input = await readBody(request);
       const name = String(input.name || '').trim();
       if (!setNameOk(name)) { sendJson(response, 400, { ok: false, error: '库名称需为 1-32 位中文/字母/数字/短横线' }); return; }
-      const targetDir = path.join(STORES_ROOT, name);
-      if (fs.existsSync(targetDir)) { sendJson(response, 400, { ok: false, error: '已存在同名缓存库' }); return; }
+      const parent = resolveStoreParent(input.dir);
+      if (parent.error) { sendJson(response, 400, { ok: false, error: parent.error }); return; }
+      const targetDir = path.join(parent.parent, name);
+      if (storeExists(name) || fs.existsSync(targetDir)) { sendJson(response, 400, { ok: false, error: '已存在同名缓存库' }); return; }
       const jobId = `sync-${Date.now().toString(36)}`;
-      const job = { jobId, name, status: 'scanning', phase: '扫描客户端缓存', done: 0, total: 0, error: '' };
+      const job = { jobId, name, status: 'importing', phase: '扫描客户端缓存', done: 0, total: 0, error: '' };
       syncJobs.set(jobId, job);
       (async () => {
+        const ids = [];
         try {
-          const scan = await runScan(['--scan-all']);
-          const batch = scan?.batch || {};
-          const ids = Object.keys(batch);
-          job.total = ids.length;
-          if (!ids.length) { job.status = 'done'; job.phase = '客户端缓存为空'; return; }
           fs.mkdirSync(targetDir, { recursive: true });
+          registerStorePath(name, targetDir);
           if (input.icon) {
             const m = String(input.icon).match(/^data:image\/(jpg|jpeg|png|webp);base64,(.+)$/is);
             if (m) fs.writeFileSync(path.join(targetDir, `cover.${m[1] === 'jpeg' ? 'jpg' : m[1]}`), Buffer.from(m[2], 'base64'));
           }
+          if (!fs.existsSync(path.join(CACHE_DIR, 'entries.db'))) {
+            job.status = 'done'; job.phase = '未找到客户端缓存'; return;
+          }
+          // 任务级快照:导入可能跑几分钟,不能借用 10s TTL 的共享扫描快照
+          const snapshotPath = path.join(os.tmpdir(), `qsyy-sync-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+          try {
+            fs.copyFileSync(path.join(CACHE_DIR, 'entries.db'), snapshotPath);
+            await new Promise(resolve => {
+              const child = spawnTracked(process.execPath, [
+                RESTORE_SCRIPT, '--restore-all',
+                '--snapshot', snapshotPath,
+                '--lmdb-module', LMDB_MODULE,
+                '--cache-dir', CACHE_DIR,
+                '--output-dir', targetDir,
+                '--device-node', DEVICE_NODE,
+                '--ffmpeg', FFMPEG,
+              ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
+              let buf = '';
+              let lastLine = Date.now();
+              let finished = false;
+              const finish = () => {
+                if (finished) return;
+                finished = true;
+                clearInterval(watchdog);
+                try { child.kill(); } catch (_) {}
+                resolve();
+              };
+              // 单条曲目解密再慢也有界;全程无输出 3 分钟视为卡死,转档案阶段
+              const watchdog = setInterval(() => { if (Date.now() - lastLine > 180000) finish(); }, 5000);
+              child.stdout.on('data', d => {
+                buf += d.toString();
+                let idx;
+                while ((idx = buf.indexOf('\n')) >= 0) {
+                  const line = buf.slice(0, idx).trim();
+                  buf = buf.slice(idx + 1);
+                  if (!line) continue;
+                  lastLine = Date.now();
+                  let msg = null;
+                  try { msg = JSON.parse(line); } catch (_) {}
+                  if (!msg) continue;
+                  if (msg.type === 'summary') {
+                    job.total = msg.total || 0;
+                    job.phase = `导入音频 ${job.done}/${job.total}`;
+                  } else if (msg.type === 'track') {
+                    ids.push(msg.trackId);
+                    job.done += 1;
+                    job.phase = `导入音频 ${job.done}/${job.total}`;
+                    recordStoreTrack(targetDir, {
+                      id: msg.trackId, complete: msg.ok === true, preview: msg.preview === true,
+                      size: msg.size || 0, quality: msg.quality || '',
+                    });
+                  } else if (msg.type === 'done') finish();
+                }
+              });
+              child.on('error', finish);
+              child.on('close', finish);
+            });
+          } finally {
+            try { fs.unlinkSync(snapshotPath); } catch (_) {}
+            try { fs.unlinkSync(`${snapshotPath}-lock`); } catch (_) {}
+          }
+          if (!ids.length) { job.status = 'done'; job.phase = '客户端缓存为空'; return; }
           job.status = 'enriching';
+          job.done = 0;
+          job.total = ids.length;
           for (const id of ids) {
-            // 先落基本档案(大小/试听),再经 track_v2 解析补全名/歌手/封面
-            const info = batch[id];
-            const entry = { id, name: '', size: info?.size || 0, preview: Boolean(info?.isPreview) };
+            // 音频已落盘的条目只补文本档案;失败/试听条目建档后留在在线态
+            const entry = { id };
             try {
               const resolved = await ttnetResolve(id);
               const r = resolved?.ok ? resolved : (webSession?.cookie ? await resolveOnlineTrack(id) : null);
@@ -2205,6 +2339,20 @@ const serverHandler = async (request, response) => {
       sendJson(response, 200, { ok: true, jobId });
       return;
     }
+    if (route === 'POST /api/pick-directory') {
+      // 系统目录选择器只在桌面壳里可用(服务端与 Electron 主进程同进程);
+      // standalone/浏览器下前端退化为文本输入。
+      if (!process.versions.electron) { sendJson(response, 400, { ok: false, error: '仅桌面客户端支持系统目录选择' }); return; }
+      try {
+        const { dialog, BrowserWindow } = await import('electron');
+        const win = BrowserWindow.getAllWindows()[0];
+        const opts = { title: '选择缓存库保存位置', properties: ['openDirectory', 'createDirectory'] };
+        const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+        if (r.canceled || !r.filePaths?.[0]) { sendJson(response, 200, { ok: false, canceled: true }); return; }
+        sendJson(response, 200, { ok: true, path: r.filePaths[0] });
+      } catch (error) { sendJson(response, 500, { ok: false, error: error?.message || '目录选择失败' }); }
+      return;
+    }
     if (route === 'GET /api/store/sync-status') {
       const job = syncJobs.get(url.searchParams.get('job') || '');
       if (!job) { sendJson(response, 404, { ok: false }); return; }
@@ -2217,7 +2365,7 @@ const serverHandler = async (request, response) => {
       const id = url.searchParams.get('id') || '';
       if (!setNameOk(name) || !/^\d+$/.test(id)) { sendJson(response, 400, { ok: false }); return; }
       try {
-        response.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=86400' }).end(fs.readFileSync(path.join(STORES_ROOT, name, `${id}.jpg`)));
+        response.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=86400' }).end(fs.readFileSync(path.join(storeDir(name), `${id}.jpg`)));
       } catch (_) { sendJson(response, 404, { ok: false }); }
       return;
     }
@@ -2227,8 +2375,8 @@ const serverHandler = async (request, response) => {
       if (!/^\d+$/.test(id)) { sendJson(response, 400, { ok: false }); return; }
       const setName = String(input.set || '');
       const otherSet = setName && setName !== activeStoreName() ? setName : null;
-      if (otherSet && (!setNameOk(otherSet) || !fs.existsSync(path.join(STORES_ROOT, otherSet)))) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
-      const dir = otherSet ? path.join(STORES_ROOT, otherSet) : STORE_DIR;
+      if (otherSet && !storeExists(otherSet)) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
+      const dir = otherSet ? storeDir(otherSet) : STORE_DIR;
       for (const suffix of ['m4a', 'json', 'part', 'jpg']) {
         try { fs.unlinkSync(path.join(dir, `${id}.${suffix}`)); } catch (_) {}
       }
@@ -2393,7 +2541,7 @@ const serverHandler = async (request, response) => {
       // gzip pass) — backup.json rides along as manifest. ?set= picks the set
       // (default: active); the set's cover.* rides along automatically.
       const setName = url.searchParams.get('set') || activeStoreName();
-      const backupDir = setName === activeStoreName() ? STORE_DIR : path.join(STORES_ROOT, setName);
+      const backupDir = setName === activeStoreName() ? STORE_DIR : storeDir(setName);
       const manifestTracks = setName === activeStoreName()
         ? [...storeMeta.values()].map(m => ({ id: m.trackId, complete: Boolean(m.complete && fs.existsSync(m4aPath(m.trackId))), preview: Boolean(m.preview) }))
         : (() => {
@@ -2470,7 +2618,7 @@ const serverHandler = async (request, response) => {
             || `导入-${new Date().toISOString().slice(5, 10).replace('-', '')}`;
           setName = want;
           let n = 2;
-          while (fs.existsSync(path.join(STORES_ROOT, setName))) setName = `${want}-${n++}`;
+          while (storeExists(setName)) setName = `${want}-${n++}`;
         }
         const targetDir = path.join(STORES_ROOT, setName);
         if (importMode !== 'merge') fs.rmSync(targetDir, { recursive: true, force: true });
@@ -2728,7 +2876,7 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'GET /api/version') {
-      sendJson(response, 200, { ok: true, version: APP_VERSION, repo: APP_REPO, pid: process.pid });
+      sendJson(response, 200, { ok: true, version: APP_VERSION, repo: APP_REPO, pid: process.pid, shell: process.versions.electron ? 'electron' : 'standalone' });
       return;
     }
     if (route === 'GET /api/latest-release') {
