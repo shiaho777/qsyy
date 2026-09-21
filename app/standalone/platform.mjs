@@ -7,7 +7,7 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 
 export const PLATFORM = process.platform; // 'darwin' | 'win32' | 'linux'
 
@@ -157,6 +157,22 @@ export function openFolder(dir) {
   if (PLATFORM === 'darwin') return { cmd: 'open', args: [dir] };
   if (PLATFORM === 'win32') return { cmd: 'explorer', args: [dir] };
   return { cmd: 'xdg-open', args: [dir] };
+}
+
+// PID of the process listening on a TCP port ('' when unknown). Used by the
+// port-takeover handshake to locate a qsyy sibling that predates the instance
+// file / pid-in-/api/version conventions. Never called on foreign holders —
+// the caller verifies qsyy identity via /api/version first.
+export function findPortHolderPid(port) {
+  try {
+    if (PLATFORM === 'win32') {
+      const out = execFileSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8', timeout: 8000 });
+      const line = out.split('\n').find(l => l.includes(`:${port}`) && /LISTENING/i.test(l));
+      return Number(line?.trim().split(/\s+/).pop()) || '';
+    }
+    const out = execFileSync('lsof', ['-nP', `-tiTCP:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8', timeout: 8000 });
+    return Number(out.trim().split('\n')[0]) || '';
+  } catch (_) { return ''; }
 }
 
 // Launch the desktop client (used by the "play once to cache" fallback).

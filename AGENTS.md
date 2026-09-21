@@ -167,4 +167,13 @@ cd desktop && npm install && npm start           # 桌面壳冒烟
 - **`local.properties` 永不入库**(已 gitignore);CI 用 `ANDROID_HOME` 环境变量。
 - **Electron 只能建一个 MediaElementSource**;`server.mjs` 是带顶层副作用的模块
   (监听端口),import 即启动,不要改成懒加载后再 import 两次。
+- **端口被占曾产僵尸**:1.3.0 之前 `server.listen` 无 `'error'` 处理,EADDRINUSE
+  被 uncaughtException 吞掉 → 进程活着但不监听;桌面壳再按固定端口 `loadURL`,
+  连上残留旧实例(实机:v1.3.0 壳显示 v1.2.0,真凶是 8 天前的 standalone)。
+  现在:实例写 `~/Library/Caches/qsyy/server.json` 锁文件,EADDRINUSE 走接管
+  协议(`/api/version` 验 `repo` 认亲 → pid 只信自报或 `findPortHolderPid`
+  lsof/netstat,**不信锁文件**——stale pid 会误杀)→ 外人占位则 standalone
+  退出 / Electron 回落临时端口经 `QSYY_SERVER_URL` 发布;退出统一
+  `server.close` + 收子进程 + 删锁文件。桌面壳探针只认 `/api/version`
+  repo 匹配,不再盲信端口。
 - **微信等聊天工具的截图临时目录会被清理**,入库素材第一时间拷进 `docs/assets/`。

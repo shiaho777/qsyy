@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import {
   CLIENT_DATA, OS_CACHE_ROOT,
   findDeviceNode, findFfmpeg, cookieQueryCommand, openFolder, openClient,
+  findPortHolderPid,
 } from './platform.mjs';
 
 const require = createRequire(import.meta.url);
@@ -78,6 +79,89 @@ try {
   const legacyDir = path.join(os.homedir(), 'Library', 'Caches', 'SodaCollection');
   if (fs.existsSync(legacyDir) && !fs.existsSync(DECRYPT_DIR)) fs.renameSync(legacyDir, DECRYPT_DIR);
 } catch (_) {}
+
+// ---------------------------------------------------------------- instance lock
+// One file under the cache dir records the live instance (pid/port/version/
+// kind). A later instance uses it — together with the /api/version probe — to
+// tell "a qsyy sibling is squatting on the port" apart from a foreign process,
+// and to terminate only the former. Written on 'listening', removed on clean
+// exit; SIGKILL leaves a stale file that the next start simply overwrites.
+const INSTANCE_FILE = path.join(DECRYPT_DIR, 'server.json');
+function writeInstanceFile(port) {
+  try {
+    fs.mkdirSync(DECRYPT_DIR, { recursive: true });
+    fs.writeFileSync(INSTANCE_FILE, JSON.stringify({
+      pid: process.pid,
+      port,
+      host: HOST,
+      version: APP_VERSION,
+      kind: process.versions.electron ? 'electron' : 'standalone',
+      startedAt: Date.now(),
+    }));
+  } catch (_) {}
+}
+function readInstanceFile() {
+  try { return JSON.parse(fs.readFileSync(INSTANCE_FILE, 'utf8')); } catch (_) { return null; }
+}
+function removeInstanceFile() {
+  try {
+    // Only remove our own record — a newer instance may already hold it.
+    if (readInstanceFile()?.pid === process.pid) fs.unlinkSync(INSTANCE_FILE);
+  } catch (_) {}
+}
+
+// Ask whoever owns the port to identify itself. /api/version is an in-memory
+// route present in every released build; a matching `repo` means the holder is
+// a qsyy sibling (stale dev server, crashed-then-revived process, an older
+// packaged version). Anything else — foreign app, dead socket — is off-limits.
+function probeInstance(port) {
+  return new Promise(resolve => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/api/version', timeout: 1200 }, res => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(body);
+          resolve(json && json.repo === APP_REPO ? json : null);
+        } catch (_) { resolve(null); }
+      });
+    });
+    req.on('timeout', () => { try { req.destroy(); } catch (_) {} resolve(null); });
+    req.on('error', () => resolve(null));
+  });
+}
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
+}
+
+// Reclaim the port from a qsyy sibling: the newest instance always wins, so a
+// forgotten dev server or an older app build gets SIGTERM'd (SIGKILL as a
+// fallback) instead of squatting forever. pid sources are limited to ones
+// provably tied to this port — the live /api/version response (newer builds)
+// and the OS-level socket lookup (older builds) — because a stale instance
+// file can point at a pid that has since been recycled or moved to another
+// port; killing on that word alone is how innocent processes die.
+async function evictPortHolder(port) {
+  const info = await probeInstance(port);
+  if (!info) return false;
+  const pid = Number(info.pid) || findPortHolderPid(port);
+  if (!pid || pid === process.pid || !pidAlive(pid)) return false;
+  console.error(`[qsyy] port ${port} held by qsyy instance pid ${pid} (v${info.version || '?'}), taking over`);
+  try { process.kill(pid, 'SIGTERM'); } catch (_) { return false; }
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid) || !(await probeInstance(port))) return true;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  try { process.kill(pid, 'SIGKILL'); } catch (_) {}
+  const hardDeadline = Date.now() + 1500;
+  while (Date.now() < hardDeadline) {
+    if (!pidAlive(pid)) return true;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return false;
+}
 
 const logger = createLogger(path.join(root, '..', 'debug', 'qsyy.log'));
 const events = new DownloadEventBus({ logger });
@@ -845,9 +929,18 @@ function failAllTtnetWaiters(reason) {
 
 // Tear down the whole registry, not just ttnet-helper: scan/decrypt/
 // download children must not outlive the server as ghost processes.
-process.on('exit', killAllChildren);
-process.on('SIGTERM', () => { killAllChildren(); process.exit(0); });
-process.on('SIGINT', () => { killAllChildren(); process.exit(0); });
+// Deterministic teardown: close the listener, reap every tracked child, drop
+// our instance record. SIGKILL can't run this — the next start reclaims the
+// port through the takeover path, so nothing stays stuck.
+function shutdown(code) {
+  try { server.close(); } catch (_) {}
+  killAllChildren();
+  removeInstanceFile();
+  process.exit(code);
+}
+process.on('exit', () => { killAllChildren(); removeInstanceFile(); });
+process.on('SIGTERM', () => shutdown(0));
+process.on('SIGINT', () => shutdown(0));
 
 // ttnetBusy is a lock around the single-flight resolve; the old polling wait
 // (up to 25s) could livelock if an exception path ever skipped the reset.
@@ -2635,7 +2728,7 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'GET /api/version') {
-      sendJson(response, 200, { ok: true, version: APP_VERSION, repo: APP_REPO });
+      sendJson(response, 200, { ok: true, version: APP_VERSION, repo: APP_REPO, pid: process.pid });
       return;
     }
     if (route === 'GET /api/latest-release') {
@@ -2733,15 +2826,48 @@ const staticFiles = (() => {
 
 // (resolve/online cache sweeping merged into the 5-min janitor above)
 
-server.listen(PORT, HOST, () => {
-  console.log(`[qsyy] standalone app: http://${HOST}:${PORT}`);
+// EADDRINUSE is recoverable: a qsyy sibling holding the port is always
+// replaced by the newest starter (the desktop shell reclaims stale dev
+// servers; repeat launches take over crashed predecessors), while a foreign
+// holder is never killed — standalone exits with a clear message and the
+// Electron shell falls back to an ephemeral port published via
+// QSYY_SERVER_URL. Without an 'error' listener here the failure surfaced as
+// an uncaughtException that the crash-safety net swallowed, leaving a zombie
+// process serving nothing — and the shell happily loading whatever answered
+// on :18790.
+let takeoverAttempted = false;
+function fallbackListen() {
+  if (process.versions.electron) {
+    server.listen(0, HOST);
+    return;
+  }
+  console.error(`[qsyy] port ${PORT} is held by a non-qsyy process — set QSYY_PORT to pick another`);
+  process.exit(1);
+}
+server.on('error', error => {
+  if (error?.code !== 'EADDRINUSE') { recordFault('server-error', error); return; }
+  if (takeoverAttempted) { fallbackListen(); return; }
+  takeoverAttempted = true;
+  evictPortHolder(PORT)
+    .then(evicted => (evicted ? setTimeout(() => server.listen(PORT, HOST), 150) : fallbackListen()))
+    .catch(() => fallbackListen());
+});
+
+server.on('listening', () => {
+  const address = server.address();
+  const boundPort = typeof address === 'object' && address ? address.port : PORT;
+  process.env.QSYY_SERVER_URL = `http://127.0.0.1:${boundPort}`;
+  writeInstanceFile(boundPort);
+  console.log(`[qsyy] standalone app: http://${HOST}:${boundPort}`);
   if (HOST === '0.0.0.0' || HOST === '::') {
     for (const [name, infos] of Object.entries(os.networkInterfaces())) {
       for (const info of infos || []) {
-        if (info.family === 'IPv4' && !info.internal) console.log(`[qsyy] LAN: http://${info.address}:${PORT}  (${name})`);
+        if (info.family === 'IPv4' && !info.internal) console.log(`[qsyy] LAN: http://${info.address}:${boundPort}  (${name})`);
       }
     }
   }
   console.log(`[qsyy] cache: ${CACHE_DIR}`);
   console.log(`[qsyy] downloads: ${DOWNLOAD_DIR}`);
 });
+
+server.listen(PORT, HOST);

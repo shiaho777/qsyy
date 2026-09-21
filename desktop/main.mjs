@@ -40,6 +40,7 @@ if (!app.requestSingleInstanceLock()) {
       win.focus();
     } else {
       createWindow();
+      if (mainWindow && verifiedUrl) mainWindow.loadURL(verifiedUrl);
     }
   });
 }
@@ -47,7 +48,14 @@ if (!app.requestSingleInstanceLock()) {
 // server.mjs starts an http server at import time (top-level await style
 // module). Importing it is the boot; failures must surface as a dialog
 // instead of a silent dead window.
+// The embedded server publishes its actual bound address in QSYY_SERVER_URL
+// once listening (it may fall back to an ephemeral port when 18790 is held by
+// a foreign process). Until then we only know the intended default.
+const EXPECTED_REPO = 'https://github.com/shiaho777/qsyy';
 let serverUrl = `http://127.0.0.1:${process.env.QSYY_PORT}`;
+// Set only after the probe confirms OUR server owns the address — re-created
+// windows (activate / second-instance) load this and nothing else.
+let verifiedUrl = '';
 try {
   await import(path.join(serverDir, 'server.mjs'));
 } catch (error) {
@@ -74,8 +82,6 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadURL(serverUrl);
-
   // External links (roadmap links, GitHub) open in the system browser; the
   // app itself is the only surface allowed inside the window.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -85,22 +91,31 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-// A short retry loop: server.mjs listens synchronously during import, but on
-// slow disks the listen callback may trail the first loadURL by a beat. The
-// probe hits `/` (in-memory route, no auth/backend work) with a hard timeout
-// — the previous probe used /api/weblogin/status, which awaits the signing
-// helper (up to 4s) and made the first launch feel hung.
+// Probe + identity check: the window must only ever load OUR embedded server.
+// The old probe hit `/`, which any HTTP service answers — a stale standalone
+// (or any foreign app) squatting on 18790 used to get its UI loaded instead.
+// /api/version is in-memory (no auth/backend wait — unlike the earlier
+// /api/weblogin/status probe that blocked on the signing helper for ~4s) and
+// carries `repo`, so a foreign responder fails the check. Returns the verified
+// base URL, or null while the embedded server is still binding.
 async function serverAlive() {
   const { net } = await import('electron');
+  const target = process.env.QSYY_SERVER_URL || serverUrl;
   return new Promise(resolve => {
-    const timer = setTimeout(() => { try { request.abort(); } catch (_) {} resolve(false); }, 1500);
-    const request = net.request(`${serverUrl}/`);
+    const timer = setTimeout(() => { try { request.abort(); } catch (_) {} resolve(null); }, 1500);
+    const request = net.request(`${target}/api/version`);
+    let body = '';
     request.on('response', res => {
-      res.resume();
-      clearTimeout(timer);
-      resolve(res.statusCode === 200);
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        clearTimeout(timer);
+        try {
+          const json = JSON.parse(body);
+          resolve(json && json.repo === EXPECTED_REPO ? target : null);
+        } catch (_) { resolve(null); }
+      });
     });
-    request.on('error', () => { clearTimeout(timer); resolve(false); });
+    request.on('error', () => { clearTimeout(timer); resolve(null); });
     request.end();
   });
 }
@@ -116,18 +131,29 @@ async function boot() {
   }
   createWindow();
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (await serverAlive()) {
+    const verified = await serverAlive();
+    if (verified) {
+      serverUrl = verified;
+      verifiedUrl = verified;
       mainWindow.loadURL(serverUrl);
-      break;
+      return;
     }
     await new Promise(resolve => setTimeout(resolve, 250));
   }
+  const { dialog } = await import('electron');
+  dialog.showErrorBox('qsyy 启动失败', '内嵌服务未就绪:端口被占用且无法接管,或服务启动超时。');
+  app.exit(1);
 }
 
 app.whenReady().then(boot);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => {
   // count real windows, not just our reference: a lost reference must never
-  // let repeated Dock clicks stack extra windows
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  // let repeated Dock clicks stack extra windows. loadURL moved out of
+  // createWindow (boot only loads after the probe verifies our own server),
+  // so a re-created window must re-load the verified address itself.
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+    if (mainWindow && verifiedUrl) mainWindow.loadURL(verifiedUrl);
+  }
 });
