@@ -1486,6 +1486,7 @@ async function recordStoreTrack(dir, item) {
   if (item.preview === true) meta.preview = true;
   if (!meta.size && Number(item.size)) meta.size = Number(item.size);
   if (!meta.quality && item.quality) meta.quality = String(item.quality);
+  if (!meta.effects && item.effects?.intelligent) meta.effects = { intelligent: String(item.effects.intelligent) };
   if (!meta.name && item.name) meta.name = String(item.name);
   if (!meta.artist && item.artist) meta.artist = String(item.artist);
   if (!meta.album && item.album) meta.album = String(item.album);
@@ -2321,6 +2322,9 @@ const serverHandler = async (request, response) => {
                     ? `${coverInfo.template_prefix}-crop-center:300:300.jpg` : 'c5_300x300.jpg';
                   entry.cover = (coverInfo.urls?.[0] || '') + coverInfo.uri + '~' + tmpl;
                 }
+                // 智能音效的 configUrl 随 resolve 下发,存进档案 —— 之后
+                // /api/effects/:id 在会话失效时仍能回落到这份存档
+                if (r.effects?.intelligent) entry.effects = { intelligent: String(r.effects.intelligent) };
               }
             } catch (_) {}
             await recordStoreTrack(targetDir, entry);
@@ -2761,7 +2765,16 @@ const serverHandler = async (request, response) => {
       // the resolve result which is already cached — no extra wait here.
       const trackId = url.pathname.split('/').pop();
       const resolved = await ttnetResolve(trackId);
-      const map = resolved?.ok ? resolved.effects : null;
+      let map = resolved?.ok ? resolved.effects : null;
+      if (!map?.intelligent) {
+        // 会话失效/纯离线播放库曲目时,回落到同步阶段存档进 <id>.json 的音效
+        for (const name of listStoreDirs()) {
+          try {
+            const meta = JSON.parse(fs.readFileSync(path.join(storeDir(name), `${trackId}.json`), 'utf8'));
+            if (meta?.effects?.intelligent) { map = meta.effects; break; }
+          } catch (_) {}
+        }
+      }
       const effects = [];
       if (map?.intelligent) effects.push({ key: 'intelligent', name: '智能音效', configUrl: map.intelligent, perTrack: true });
       for (const preset of PRESET_EFFECTS) effects.push({ ...preset });

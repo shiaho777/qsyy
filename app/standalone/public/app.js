@@ -161,6 +161,11 @@ function coverUrl(info, size = 220) {
   const url = coverCdnUrl(info, size);
   return url ? `/api/cover?url=${encodeURIComponent(url)}` : '';
 }
+// 队列条目的封面地址:库曲目用已落盘的本地封面(coverLocal),歌单曲目走
+// CDN 代理。播库歌时封面/渐变/MediaSession/大图展开与歌单播放对齐。
+function trackCoverUrl(t, size = 220) {
+  return t?.coverLocal || (t?.cover ? coverUrl(t.cover, size) : '');
+}
 
 // ------------------------------------------------------------------ data
 
@@ -252,8 +257,9 @@ async function openPlaylist(pl, resume = false) {
 function renderHero() {
   const cur = state.current;
   const playing = state.queue[state.queueIndex];
+  const heroCover = trackCoverUrl(playing, 300) || (cur.cover ? coverUrl(cur.cover, 300) : '');
   $('hero').innerHTML = `
-    <div class="hero-cover-wrap"><img id="hero-cover" class="hero-cover" src="${(playing?.cover || cur.cover) ? coverUrl(playing?.cover || cur.cover, 300) : ''}" alt="" data-url="${playing?.cover || cur.cover || ''}"></div>
+    <div class="hero-cover-wrap"><img id="hero-cover" class="hero-cover" src="${heroCover}" alt="" data-url="${heroCover}"></div>
     <div class="hero-info">
       <div class="hero-kicker" id="hero-kicker">${playing ? '<span class="live-dot"></span>正在播放' : 'PLAYLIST'}</div>
       <div class="hero-title">${esc(cur.title)}</div>
@@ -279,12 +285,12 @@ function updateHeroPlayback() {
   const t = state.queue[state.queueIndex];
   const kicker = $('hero-kicker');
   if (kicker) kicker.innerHTML = t ? '<span class="live-dot"></span>正在播放' : 'PLAYLIST';
-  if (!t?.cover) return;
+  const url = trackCoverUrl(t, 300);
+  if (!url) return;
   const img = $('hero-cover');
   if (!img) return;
-  const url = coverUrl(t.cover, 300);
-  if (img.dataset.url === t.cover) return;
-  img.dataset.url = t.cover;
+  if (img.dataset.url === url) return;
+  img.dataset.url = url;
   applyCoverGlow(url);
   img.classList.remove('loaded');
   const reveal = () => requestAnimationFrame(() => { img.classList.add('loaded'); });
@@ -1034,7 +1040,10 @@ function playStoreTrack(track) {
   const objs = playable.map(t => ({
     id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`,
     artists: t.artist ? [t.artist] : [], album: t.album || '',
-    duration: t.duration || 0, cover: null, vip: false, qualities: [],
+    duration: t.duration || 0, cover: null, vip: false,
+    qualities: t.quality ? [t.quality] : [],
+    // 库内已落盘的封面(离线可用,不用走 CDN)
+    coverLocal: t.hasCover ? `/api/store/track-cover?set=${encodeURIComponent(setName)}&id=${t.id}` : '',
     // 库限定流地址:非空时 startCurrent 直接用它(本地 m4a,不走在线解析)
     storeSrc: t.complete ? `/api/stream/${t.id}?set=${encodeURIComponent(setName)}` : '',
   }));
@@ -1554,8 +1563,8 @@ function startCurrent(autoplay = true) {
   $('p-artist').textContent = t.artists.join(' / ');
   const pCover = $('p-cover');
   pCover.classList.remove('loaded');
-  pCover.src = t.cover ? coverUrl(t.cover, 140) : '';
-  applyCoverGlow(t.cover ? coverUrl(t.cover, 96) : '');
+  pCover.src = trackCoverUrl(t, 140);
+  applyCoverGlow(trackCoverUrl(t, 96));
   $('p-queue-count').textContent = state.queue.length > 0 ? `${state.queueIndex + 1}/${state.queue.length}` : '';
   renderQueuePanel();
   updateMediaSession(t);
@@ -1759,8 +1768,9 @@ if ($('p-cover')) {
   $('p-cover').addEventListener('load', () => $('p-cover').classList.add('loaded'));
   $('p-cover').addEventListener('click', () => {
     const t = state.queue[state.queueIndex];
-    if (!t?.cover) return;
-    $('ce-art').src = coverUrl(t.cover, 720);
+    const src = trackCoverUrl(t, 720);
+    if (!src) return;
+    $('ce-art').src = src;
     $('ce-title').textContent = t.name;
     $('ce-artist').textContent = t.artists.join(' / ');
     $('cover-expander').classList.add('open');
@@ -1789,7 +1799,8 @@ if ($('p-repeat')) $('p-repeat').onclick = () => {
 function updateMediaSession(t) {
   if (!('mediaSession' in navigator)) return;
   try {
-    const artwork = t.cover ? [{ src: location.origin + coverUrl(t.cover, 512), sizes: '512x512', type: 'image/jpeg' }] : [];
+    const art = trackCoverUrl(t, 512);
+    const artwork = art ? [{ src: location.origin + art, sizes: '512x512', type: 'image/jpeg' }] : [];
     navigator.mediaSession.metadata = new MediaMetadata({
       title: t.name, artist: t.artists.join(' / '), album: t.album || '', artwork,
     });
@@ -1808,7 +1819,7 @@ function renderQueuePanel() {
   $('queue-list').innerHTML = state.queue.map((t, i) => `
     <div class="q-item${i === state.queueIndex ? ' current' : ''}" data-i="${i}">
       <div class="q-idx">${i + 1}</div>
-      <img loading="lazy" src="${t.cover ? coverUrl(t.cover, 72) : ''}" alt="">
+      <img loading="lazy" src="${trackCoverUrl(t, 72)}" alt="">
       <div><div class="q-name">${esc(t.name)}</div><div class="q-artist">${esc(t.artists.join(' / '))}</div></div>
     </div>`).join('');
   document.querySelectorAll('.q-item').forEach(el => {
