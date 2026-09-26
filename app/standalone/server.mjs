@@ -648,7 +648,7 @@ async function startDownload({ trackId, title, artist, album, quality, outputFor
     album: album || '',
     lyricsEnabled: Boolean(lyricsText),
     lyricsText,
-    coverData: coverData || '',
+    coverData: coverData || storeCoverDataUrl(String(trackId)),
     outputFormat: outputFormat || 'source',
     audioUrls: [],
   }).then(result => {
@@ -1181,7 +1181,22 @@ async function resolveOnlineTrack(trackId) {
   walk(model);
   if (!candidates.length) return null;
   candidates.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-  const info = { ...candidates[0], trackId };
+  // 与 ttnet resolve 同构的返回:ok + 元数据 + audio_effects——同步建档的
+  // 回落路径(扫码会话)靠它补全 name/artist/album/duration/cover/effects;
+  // preview 判定与 ttnet 一致(码率×时长比对,识别 VIP 60s 试听)
+  const trackSeconds = (Number(track?.duration) || 0) / 1000;
+  const streamSeconds = candidates[0].bitrate ? (candidates[0].size * 8) / candidates[0].bitrate : 0;
+  const info = {
+    ...candidates[0], trackId, ok: true,
+    name: track?.name || '',
+    artist: (track?.artists || []).map(a => a.name).filter(Boolean).join(' / '),
+    album: track?.album?.name || '',
+    duration: Number(track?.duration) || 0,
+    cover: track?.album?.url_cover || null,
+    effects: result.json?.track_player?.audio_effects
+      || result.json?.data?.track_player?.audio_effects || null,
+    preview: trackSeconds > 30 && streamSeconds > 0 && streamSeconds < trackSeconds * 0.6,
+  };
   onlineCache.set(trackId, { info, at: Date.now() });
   return info;
 }
@@ -1486,7 +1501,8 @@ async function recordStoreTrack(dir, item) {
   if (item.preview === true) meta.preview = true;
   if (!meta.size && Number(item.size)) meta.size = Number(item.size);
   if (!meta.quality && item.quality) meta.quality = String(item.quality);
-  if (!meta.effects && item.effects?.intelligent) meta.effects = { intelligent: String(item.effects.intelligent) };
+  // 音效 configUrl 会被上游轮换:有新值即刷新(其余字段仍只填空不覆盖)
+  if (item.effects?.intelligent) meta.effects = { intelligent: String(item.effects.intelligent) };
   if (!meta.name && item.name) meta.name = String(item.name);
   if (!meta.artist && item.artist) meta.artist = String(item.artist);
   if (!meta.album && item.album) meta.album = String(item.album);
@@ -1519,6 +1535,73 @@ const effectConfigs = new Map();     // configUrl → parsed DSP chain (capped; 
 function cacheEffectConfig(url, config) {
   effectConfigs.set(url, config);
   if (effectConfigs.size > 24) effectConfigs.delete(effectConfigs.keys().next().value);
+}
+
+// 抓音效 DSP 配置 JSON(仅 *.qishui.com,内存去重)。effect-config 路由与
+// 库内音效本体存档共用;任何失败返回 null。
+function fetchEffectConfig(target) {
+  return new Promise(resolve => {
+    const raw = String(target || '');
+    let parsed;
+    try {
+      parsed = new URL(raw);
+      if (!/(^|\.)qishui\.com$/.test(parsed.hostname)) { resolve(null); return; }
+    } catch (_) { resolve(null); return; }
+    if (effectConfigs.has(raw)) { resolve(effectConfigs.get(raw)); return; }
+    const req = https.get(parsed, { headers: { 'user-agent': 'Mozilla/5.0' }, agent: cdnAgent, timeout: 10000 }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        try {
+          const config = JSON.parse(Buffer.concat(chunks).toString());
+          if (!config || typeof config !== 'object') { resolve(null); return; }
+          cacheEffectConfig(raw, config);
+          resolve(config);
+        } catch (_) { resolve(null); }
+      });
+    });
+    req.on('timeout', () => { try { req.destroy(); } catch (_) {} resolve(null); });
+    req.on('error', () => resolve(null));
+  });
+}
+
+// 库内音效本体存档:<id>.effect.json = { url, config }。以 <id>.json 里存档的
+// 最新 URL 为基准——URL 轮换则重抓;URL 已死但旧本体仍在,退回旧配置(过期调校
+// 总好过没有音效)。返回可内联下发的 config,或 null。
+async function ensureEffectConfigFile(dir, trackId) {
+  try {
+    let meta = null;
+    try { meta = JSON.parse(await fs.promises.readFile(path.join(dir, `${trackId}.json`), 'utf8')); } catch (_) {}
+    const configUrl = meta?.effects?.intelligent;
+    if (!configUrl) return null;
+    const fxPath = path.join(dir, `${trackId}.effect.json`);
+    try {
+      const saved = JSON.parse(await fs.promises.readFile(fxPath, 'utf8'));
+      if (saved?.url === configUrl && saved?.config) return saved.config;
+    } catch (_) {}
+    const cfg = await fetchEffectConfig(configUrl);
+    if (cfg) {
+      try { await fs.promises.writeFile(fxPath, JSON.stringify({ url: configUrl, config: cfg })); } catch (_) {}
+      return cfg;
+    }
+    try {
+      const saved = JSON.parse(await fs.promises.readFile(fxPath, 'utf8'));
+      if (saved?.config) return saved.config;
+    } catch (_) {}
+    return null;
+  } catch (_) { return null; }
+}
+
+// 下载埋封面的兜底:客户端没传 coverData 时,用任一库里已落盘的 <id>.jpg
+function storeCoverDataUrl(trackId) {
+  if (!/^\d+$/.test(trackId)) return '';
+  for (const name of listStoreDirs()) {
+    try {
+      const buf = fs.readFileSync(path.join(storeDir(name), `${trackId}.jpg`));
+      if (buf?.length) return `data:image/jpeg;base64,${buf.toString('base64')}`;
+    } catch (_) {}
+  }
+  return '';
 }
 
 // 官方音效目录(与客户端 lottieRegistry 的 effect 键一致);
@@ -2328,6 +2411,8 @@ const serverHandler = async (request, response) => {
               }
             } catch (_) {}
             await recordStoreTrack(targetDir, entry);
+            // 顺手把音效配置本体存成 <id>.effect.json —— 上游 URL 回收后仍能离线还原
+            if (entry.effects?.intelligent) await ensureEffectConfigFile(targetDir, id);
             job.done += 1;
             job.phase = `补全档案 ${job.done}/${job.total}`;
           }
@@ -2381,7 +2466,7 @@ const serverHandler = async (request, response) => {
       const otherSet = setName && setName !== activeStoreName() ? setName : null;
       if (otherSet && !storeExists(otherSet)) { sendJson(response, 400, { ok: false, error: '无效的缓存库名' }); return; }
       const dir = otherSet ? storeDir(otherSet) : STORE_DIR;
-      for (const suffix of ['m4a', 'json', 'part', 'jpg']) {
+      for (const suffix of ['m4a', 'json', 'part', 'jpg', 'effect.json']) {
         try { fs.unlinkSync(path.join(dir, `${id}.${suffix}`)); } catch (_) {}
       }
       removeFromStoreSet(otherSet || activeStoreName(), id);
@@ -2428,11 +2513,22 @@ const serverHandler = async (request, response) => {
           const audioTodos = [];
           const coverTodos = [];   // { id, url } — 歌曲封面(优先本地已落盘的 <id>.jpg)
           playlists.forEach((pl, i) => {
-            const songs = (Array.isArray(pl.songs) ? pl.songs : []).map(s => ({
-              id: String(s.id || ''), name: String(s.name || ''), artist: String(s.artist || ''),
-              album: String(s.album || ''), duration: Number(s.duration) || 0,
-              cover: String(s.cover || ''),
-            })).filter(s => /^\d+$/.test(s.id));
+            const songs = (Array.isArray(pl.songs) ? pl.songs : []).map(s => {
+              const song = {
+                id: String(s.id || ''), name: String(s.name || ''), artist: String(s.artist || ''),
+                album: String(s.album || ''), duration: Number(s.duration) || 0,
+                cover: String(s.cover || ''),
+              };
+              // 智能音效存档随包走:URL 记进清单,导入侧落回 meta(本体由
+              // ensureEffectConfigFile 在首次需要时按 URL 补抓)
+              if (/^\d+$/.test(song.id)) {
+                try {
+                  const m = JSON.parse(fs.readFileSync(path.join(STORE_DIR, `${song.id}.json`), 'utf8'));
+                  if (m?.effects?.intelligent) song.effects = { intelligent: String(m.effects.intelligent) };
+                } catch (_) {}
+              }
+              return song;
+            }).filter(s => /^\d+$/.test(s.id));
             const plEntry = { name: String(pl.name || `歌单 ${i + 1}`), icon: null, songs };
             if (pl.icon) {
               const icon = iconToBuf(pl.icon);
@@ -2685,13 +2781,15 @@ const serverHandler = async (request, response) => {
                   complete: hasAudio,
                   size: hasAudio ? fs.statSync(path.join(targetDir, `${id}.m4a`)).size : 0,
                   downloaded: 0, preview: false, quality: '',
+                  // 导出包携带的音效存档 URL 落回 meta;配置本体首次用到时懒补
+                  ...(s?.effects?.intelligent ? { effects: { intelligent: String(s.effects.intelligent).slice(0, 2048) } } : {}),
                 }));
               }
             }
           }
         } else {
           // tar 分支:沿用原流式解析(喂入已缓冲的 body)
-          const validEntry = name => /^(\d+\.(m4a|json|part|jpg)|cover\.(jpg|jpeg|png|webp))$/i.test(name);
+          const validEntry = name => /^(\d+\.(m4a|json|part|jpg|effect\.json)|cover\.(jpg|jpeg|png|webp))$/i.test(name);
           let buffer = body;
           let mode = 'header';
           let current = null; // { size, taken, out?, need? }
@@ -2764,19 +2862,34 @@ const serverHandler = async (request, response) => {
       // Audio chains in the same config format. Availability is derived from
       // the resolve result which is already cached — no extra wait here.
       const trackId = url.pathname.split('/').pop();
+      if (!/^\d+$/.test(trackId)) { sendJson(response, 400, { ok: false }); return; }
       const resolved = await ttnetResolve(trackId);
       let map = resolved?.ok ? resolved.effects : null;
-      if (!map?.intelligent) {
-        // 会话失效/纯离线播放库曲目时,回落到同步阶段存档进 <id>.json 的音效
+      let inlineConfig = null;
+      if (map?.intelligent) {
+        // 在线拿到最新配置时顺手刷新各库存档(URL 会被上游轮换)。不阻塞响应。
         for (const name of listStoreDirs()) {
-          try {
-            const meta = JSON.parse(fs.readFileSync(path.join(storeDir(name), `${trackId}.json`), 'utf8'));
-            if (meta?.effects?.intelligent) { map = meta.effects; break; }
-          } catch (_) {}
+          const dir = storeDir(name);
+          if (!fs.existsSync(path.join(dir, `${trackId}.json`))) continue;
+          recordStoreTrack(dir, { id: trackId, effects: { intelligent: String(map.intelligent) } })
+            .then(() => ensureEffectConfigFile(dir, trackId))
+            .catch(() => {});
+        }
+      } else {
+        // 会话失效/纯离线播放库曲目:回落到 <id>.json 存档的 URL;配置本体在
+        // <id>.effect.json,存在即内联下发(config 优先于 configUrl,前端不发起请求)
+        for (const name of listStoreDirs()) {
+          const dir = storeDir(name);
+          let meta = null;
+          try { meta = JSON.parse(await fs.promises.readFile(path.join(dir, `${trackId}.json`), 'utf8')); } catch (_) {}
+          if (!meta?.effects?.intelligent) continue;
+          map = meta.effects;
+          inlineConfig = await ensureEffectConfigFile(dir, trackId);
+          break;
         }
       }
       const effects = [];
-      if (map?.intelligent) effects.push({ key: 'intelligent', name: '智能音效', configUrl: map.intelligent, perTrack: true });
+      if (map?.intelligent) effects.push({ key: 'intelligent', name: '智能音效', configUrl: map.intelligent, ...(inlineConfig ? { config: inlineConfig } : {}), perTrack: true });
       for (const preset of PRESET_EFFECTS) effects.push({ ...preset });
       sendJson(response, 200, { ok: effects.length > 0, effects });
       return;
@@ -2784,23 +2897,12 @@ const serverHandler = async (request, response) => {
     if (route === 'GET /api/effect-config') {
       // fetch the DSP chain JSON for an effect (cached; qishui CDN only)
       const target = url.searchParams.get('url') || '';
-      let parsed;
       try {
-        parsed = new URL(target);
+        const parsed = new URL(target);
         if (!/(^|\.)qishui\.com$/.test(parsed.hostname)) throw new Error('bad host');
       } catch (_) { sendJson(response, 400, { ok: false }); return; }
-      if (effectConfigs.has(target)) { sendJson(response, 200, effectConfigs.get(target)); return; }
-      https.get(parsed, { headers: { 'user-agent': 'Mozilla/5.0' }, agent: cdnAgent }, res => {
-        const chunks = [];
-        res.on('data', c => chunks.push(c));
-        res.on('end', () => {
-          try {
-            const config = JSON.parse(Buffer.concat(chunks).toString());
-            cacheEffectConfig(target, config);
-            sendJson(response, 200, config);
-          } catch (_) { sendJson(response, 502, { ok: false }); }
-        });
-      }).on('error', () => sendJson(response, 502, { ok: false }));
+      const config = await fetchEffectConfig(target);
+      sendJson(response, config ? 200 : 502, config || { ok: false });
       return;
     }
     if (url.pathname.startsWith('/api/online/') && request.method === 'GET') {
