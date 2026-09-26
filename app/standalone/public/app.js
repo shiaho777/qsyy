@@ -161,6 +161,11 @@ function coverUrl(info, size = 220) {
   const url = coverCdnUrl(info, size);
   return url ? `/api/cover?url=${encodeURIComponent(url)}` : '';
 }
+// 队列条目的封面地址:库曲目用已落盘的本地封面(coverLocal),歌单曲目走
+// CDN 代理。播库歌时封面/渐变/MediaSession/大图展开与歌单播放对齐。
+function trackCoverUrl(t, size = 220) {
+  return t?.coverLocal || (t?.cover ? coverUrl(t.cover, size) : '');
+}
 
 // ------------------------------------------------------------------ data
 
@@ -233,7 +238,7 @@ async function openPlaylist(pl, resume = false) {
   await restorePlaylistOrder();
   if (resume) {
     const last = ls.get('lastTrack', null);
-    if (last && last.playlistId === pl.id) {
+    if (last && last.playlistId === pl.id && (!last.context || last.context === 'playlist')) {
       const list = displayTracks();
       const idx = list.findIndex(t => t.id === last.trackId);
       if (idx >= 0) {
@@ -252,8 +257,9 @@ async function openPlaylist(pl, resume = false) {
 function renderHero() {
   const cur = state.current;
   const playing = state.queue[state.queueIndex];
+  const heroCover = trackCoverUrl(playing, 300) || (cur.cover ? coverUrl(cur.cover, 300) : '');
   $('hero').innerHTML = `
-    <div class="hero-cover-wrap"><img id="hero-cover" class="hero-cover" src="${(playing?.cover || cur.cover) ? coverUrl(playing?.cover || cur.cover, 300) : ''}" alt="" data-url="${playing?.cover || cur.cover || ''}"></div>
+    <div class="hero-cover-wrap"><img id="hero-cover" class="hero-cover" src="${heroCover}" alt="" data-url="${heroCover}"></div>
     <div class="hero-info">
       <div class="hero-kicker" id="hero-kicker">${playing ? '<span class="live-dot"></span>正在播放' : 'PLAYLIST'}</div>
       <div class="hero-title">${esc(cur.title)}</div>
@@ -279,12 +285,21 @@ function updateHeroPlayback() {
   const t = state.queue[state.queueIndex];
   const kicker = $('hero-kicker');
   if (kicker) kicker.innerHTML = t ? '<span class="live-dot"></span>正在播放' : 'PLAYLIST';
-  if (!t?.cover) return;
-  const img = $('hero-cover');
+  const url = trackCoverUrl(t, 300);
+  if (!url) return;
+  let img = $('hero-cover');
   if (!img) return;
-  const url = coverUrl(t.cover, 300);
-  if (img.dataset.url === t.cover) return;
-  img.dataset.url = t.cover;
+  if (img.dataset.url === url) return;
+  // 库视图里 hero-cover 可能是占位字符块(库没设封面时)——换成 img 才能显示曲目封面
+  if (img.tagName !== 'IMG') {
+    const el = document.createElement('img');
+    el.id = 'hero-cover';
+    el.className = 'hero-cover';
+    el.alt = '';
+    img.replaceWith(el);
+    img = el;
+  }
+  img.dataset.url = url;
   applyCoverGlow(url);
   img.classList.remove('loaded');
   const reveal = () => requestAnimationFrame(() => { img.classList.add('loaded'); });
@@ -879,9 +894,12 @@ async function renderStoreHero() {
   state.storeSets = r.sets; state.storeActive = r.active;
   const firstChar = esc([...set.name][0] || '库');
   const playingHere = state.queueContext === `store:${name}`;
+  // 与歌单 hero 对齐:本库正在播放时优先显示当前曲目封面,否则回落库封面
+  const heroSrc = (playingHere ? trackCoverUrl(state.queue[state.queueIndex], 300) : '')
+    || (set.cover ? storeCoverUrl(name) : '');
   $('hero').innerHTML = `
-    <div class="hero-cover-wrap">${set.cover
-      ? `<img id="hero-cover" class="hero-cover" src="${storeCoverUrl(name)}" alt="">`
+    <div class="hero-cover-wrap">${heroSrc
+      ? `<img id="hero-cover" class="hero-cover" src="${heroSrc}" alt="" data-url="${heroSrc}">`
       : `<div id="hero-cover" class="st-fallback big" title="设置封面可替换">${firstChar}</div>`}</div>
     <div class="hero-info">
       <div class="hero-kicker">缓存库${playingHere ? ' · <span class="live-dot"></span>播放中' : ''}</div>
@@ -941,6 +959,15 @@ async function renderStoreTracksView() {
   ]);
   const list = tr.tracks || [];
   state.storeTracks = list;
+  // 启动恢复:持久化的播放队列属于本库时,曲目就位后重建并停在该曲(不自动播放)
+  if (!state.queue.length && ls.get('queue', null)?.context === `store:${name}` && restoreQueue()) {
+    startCurrent(false);
+    const last = ls.get('lastTrack', null);
+    const cur = state.queue[state.queueIndex];
+    const pos = last?.context === `store:${name}` && cur && last.trackId === cur.id ? Number(last.position) || 0 : 0;
+    if (pos > 5 && audio.duration) audio.currentTime = Math.min(pos, audio.duration - 2);
+    else if (pos > 5) audio.addEventListener('loadedmetadata', () => { audio.currentTime = pos; }, { once: true });
+  }
   const isActiveSet = name === state.storeActive;
   if (!list.length) {
     $('tracks').innerHTML = '<div class="empty">这个缓存库还没有歌曲 — 播放过的在线歌曲会自动缓存到使用中的库,或用「导入」导入歌单包</div>';
@@ -1023,21 +1050,28 @@ function storeRowEl(t, i, isActiveSet) {
   return el;
 }
 
-function playStoreTrack(track) {
-  // 队列含全部曲目:本地音频走库限定流(?set=,免登录),其余条目播放时由
-  // /api/stream 尝试客户端缓存/在线解析。完整(已缓存)优先排前。
-  const setName = state.storeView?.name || '';
-  const list = state.storeTracks || [];
+// 库条目 → 队列对象:完整(已缓存)优先排前;本地音频走库限定流(?set=,
+// 免登录),其余条目播放时由 /api/stream 尝试客户端缓存/在线解析。封面用库内
+// 已落盘的 <id>.jpg(离线可用,不走 CDN)。队列恢复(storeQueueObjects)共用此映射。
+function storeQueueObjects(list, setName) {
   const playable = [...list.filter(t => t.complete), ...list.filter(t => !t.complete)];
-  const idx = playable.findIndex(t => t.id === track.id);
-  if (idx < 0) return;
-  const objs = playable.map(t => ({
+  return playable.map(t => ({
     id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`,
     artists: t.artist ? [t.artist] : [], album: t.album || '',
-    duration: t.duration || 0, cover: null, vip: false, qualities: [],
+    duration: t.duration || 0, cover: null, vip: false,
+    qualities: t.quality ? [t.quality] : [],
+    // 库内已落盘的封面(离线可用,不用走 CDN)
+    coverLocal: t.hasCover ? `/api/store/track-cover?set=${encodeURIComponent(setName)}&id=${t.id}` : '',
     // 库限定流地址:非空时 startCurrent 直接用它(本地 m4a,不走在线解析)
     storeSrc: t.complete ? `/api/stream/${t.id}?set=${encodeURIComponent(setName)}` : '',
   }));
+}
+
+function playStoreTrack(track) {
+  const setName = state.storeView?.name || '';
+  const objs = storeQueueObjects(state.storeTracks || [], setName);
+  const idx = objs.findIndex(t => t.id === track.id);
+  if (idx < 0) return;
   setQueue(objs, idx, `store:${setName}`);
 }
 
@@ -1526,6 +1560,7 @@ function persistQueue() {
   try {
     ls.set('queue', {
       playlistId: state.current?.id,
+      context: state.queueContext || 'playlist',
       ids: state.queue.map(t => t.id),
       index: state.queueIndex,
     });
@@ -1534,7 +1569,21 @@ function persistQueue() {
 
 function restoreQueue() {
   const saved = ls.get('queue', null);
-  if (!saved?.ids?.length || saved.playlistId !== state.current?.id) return false;
+  if (!saved?.ids?.length) return false;
+  // 库队列:对象要从 storeTracks 重建(coverLocal/storeSrc 在 storeQueueObjects 里)。
+  // storeTracks 未就位时返回 false,由 renderStoreTracksView 就位后再调一次。
+  if (saved.context?.startsWith('store:')) {
+    const setName = saved.context.slice(6);
+    if (state.storeView?.name !== setName || !state.storeTracks?.length) return false;
+    const byId = new Map(storeQueueObjects(state.storeTracks, setName).map(t => [t.id, t]));
+    const queue = saved.ids.map(id => byId.get(id)).filter(Boolean);
+    if (!queue.length) return false;
+    state.queue = queue;
+    state.queueIndex = Math.min(Math.max(0, saved.index), queue.length - 1);
+    state.queueContext = saved.context;
+    return true;
+  }
+  if (saved.playlistId !== state.current?.id) return false;
   const byId = new Map(state.current.tracks.map(t => [t.id, t]));
   const queue = saved.ids.map(id => byId.get(id)).filter(Boolean);
   if (!queue.length) return false;
@@ -1554,13 +1603,13 @@ function startCurrent(autoplay = true) {
   $('p-artist').textContent = t.artists.join(' / ');
   const pCover = $('p-cover');
   pCover.classList.remove('loaded');
-  pCover.src = t.cover ? coverUrl(t.cover, 140) : '';
-  applyCoverGlow(t.cover ? coverUrl(t.cover, 96) : '');
+  pCover.src = trackCoverUrl(t, 140);
+  applyCoverGlow(trackCoverUrl(t, 96));
   $('p-queue-count').textContent = state.queue.length > 0 ? `${state.queueIndex + 1}/${state.queue.length}` : '';
   renderQueuePanel();
   updateMediaSession(t);
   if (!$('lyrics-panel').classList.contains('hidden') || ls.get('lyrics-open', false)) loadLyrics(t);
-  ls.set('lastTrack', { playlistId: state.current?.id, trackId: t.id, position: 0 });
+  ls.set('lastTrack', { playlistId: state.current?.id, trackId: t.id, position: 0, context: state.queueContext || 'playlist' });
   // 库限定流(?set=):本地 m4a 直取,免登录免在线解析
   audio.src = t.storeSrc || `/api/stream/${t.id}`;
   updateHeroPlayback();
@@ -1679,7 +1728,7 @@ audio.ontimeupdate = () => {
   $('p-dur').textContent = fmtTime(audio.duration * 1000);
   const track = state.queue[state.queueIndex];
   if (track && Math.floor(audio.currentTime) % 5 === 0) {
-    ls.set('lastTrack', { playlistId: state.current?.id, trackId: track.id, position: audio.currentTime });
+    ls.set('lastTrack', { playlistId: state.current?.id, trackId: track.id, position: audio.currentTime, context: state.queueContext || 'playlist' });
   }
 };
 audio.onprogress = () => {
@@ -1759,8 +1808,9 @@ if ($('p-cover')) {
   $('p-cover').addEventListener('load', () => $('p-cover').classList.add('loaded'));
   $('p-cover').addEventListener('click', () => {
     const t = state.queue[state.queueIndex];
-    if (!t?.cover) return;
-    $('ce-art').src = coverUrl(t.cover, 720);
+    const src = trackCoverUrl(t, 720);
+    if (!src) return;
+    $('ce-art').src = src;
     $('ce-title').textContent = t.name;
     $('ce-artist').textContent = t.artists.join(' / ');
     $('cover-expander').classList.add('open');
@@ -1789,7 +1839,8 @@ if ($('p-repeat')) $('p-repeat').onclick = () => {
 function updateMediaSession(t) {
   if (!('mediaSession' in navigator)) return;
   try {
-    const artwork = t.cover ? [{ src: location.origin + coverUrl(t.cover, 512), sizes: '512x512', type: 'image/jpeg' }] : [];
+    const art = trackCoverUrl(t, 512);
+    const artwork = art ? [{ src: location.origin + art, sizes: '512x512', type: 'image/jpeg' }] : [];
     navigator.mediaSession.metadata = new MediaMetadata({
       title: t.name, artist: t.artists.join(' / '), album: t.album || '', artwork,
     });
@@ -1808,8 +1859,8 @@ function renderQueuePanel() {
   $('queue-list').innerHTML = state.queue.map((t, i) => `
     <div class="q-item${i === state.queueIndex ? ' current' : ''}" data-i="${i}">
       <div class="q-idx">${i + 1}</div>
-      <img loading="lazy" src="${t.cover ? coverUrl(t.cover, 72) : ''}" alt="">
-      <div><div class="q-name">${esc(t.name)}</div><div class="q-artist">${esc(t.artists.join(' / '))}</div></div>
+      <img loading="lazy" src="${trackCoverUrl(t, 72)}" alt="">
+      <div><div class="q-name">${esc(t.name)}${t.vip ? '<span class="badge vip">VIP</span>' : ''}${qualityBadges(t.qualities)}</div><div class="q-artist">${esc(t.artists.join(' / '))}</div></div>
     </div>`).join('');
   document.querySelectorAll('.q-item').forEach(el => {
     el.onclick = () => { ensureGraph(); state.queueIndex = Number(el.dataset.i); startCurrent(); };
@@ -2114,9 +2165,10 @@ async function download(t) {
 }
 
 async function fetchCover(t) {
-  if (!t.cover) return '';
+  const src = trackCoverUrl(t, 600);
+  if (!src) return '';
   try {
-    const response = await fetch(coverUrl(t.cover, 600));
+    const response = await fetch(src);
     const blob = await response.blob();
     return await new Promise(resolve => {
       const reader = new FileReader();
@@ -2612,8 +2664,11 @@ setInterval(loadStats, 10 * 60 * 1000);
     loadAppVersion();
     loadStores();
     await loadPlaylists(true).catch(() => { state.me = null; });
-    // reopen the cache-library view if that's where the user last was
-    const lastStore = ls.get('storeView', '');
+    // reopen the cache-library view if that's where the user last was;
+    // 持久化队列属于某个库时优先回那个库(库队列要等 storeTracks 就位才能恢复)
+    const savedQueue = ls.get('queue', null);
+    const queueStore = savedQueue?.context?.startsWith('store:') ? savedQueue.context.slice(6) : '';
+    const lastStore = queueStore || ls.get('storeView', '');
     if (lastStore) openStoreView(lastStore);
     if (!restoreQueue()) {
       const saved = ls.get('lastTrack', null);
