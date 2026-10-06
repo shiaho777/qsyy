@@ -5,11 +5,12 @@
 // desktop app is a pure presentation shell — no server logic is duplicated.
 import { app, BrowserWindow, shell, Menu, nativeImage } from 'electron';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-// Repo layout: desktop/main.mjs → ../app/standalone/server.mjs. In packaged
-// apps the app/ tree ships inside the asar, same relative position.
+// Repo layout: desktop/main.mjs → ../app/standalone/server.mjs. Packaged,
+// main.mjs is inside app.asar and extraResources puts app/ beside it, so
+// ../app/standalone still resolves to a real directory.
 const serverDir = path.join(root, '..', 'app', 'standalone');
 
 // Dev-shell identity: when run from source (`npm start`), Electron otherwise
@@ -57,7 +58,9 @@ let serverUrl = `http://127.0.0.1:${process.env.QSYY_PORT}`;
 // windows (activate / second-instance) load this and nothing else.
 let verifiedUrl = '';
 try {
-  await import(path.join(serverDir, 'server.mjs'));
+  // Windows 盘符路径会被 ESM 当成 URL 协议(protocol 'd:' / 'c:')直接拒绝。
+  // file:// 在各平台都合法,打包后 server 在 asar 外的 extraResources 里。
+  await import(pathToFileURL(path.join(serverDir, 'server.mjs')).href);
 } catch (error) {
   const { dialog } = await import('electron');
   dialog.showErrorBox('qsyy 启动失败', String(error?.stack || error));
