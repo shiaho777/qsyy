@@ -7,22 +7,25 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
-export const PLATFORM = process.platform; // 'darwin' | 'win32' | 'linux'
+// QSYY_PLATFORM lets the Android shell and tests select this profile.
+// nodejs-mobile already reports process.platform as "android".
+export const PLATFORM = process.env.QSYY_PLATFORM || process.platform; // 'darwin' | 'win32' | 'linux' | 'android'
+export const isAndroid = PLATFORM === 'android';
 
-// Mobile access (Android / iOS browsers hitting this server over the LAN)
-// needs no platform-specific server logic: the UI is responsive and every
-// media response already supports Range. The notes below document where the
-// desktop client integration does / does not apply.
+// The Android APK embeds this server. It is not a browser pointed at a
+// desktop machine, and it does not have the 汽水 client: no LunaCacheV2,
+// no device.node, no mssdk/cronet. A phone browser on the LAN is a
+// different case and still talks to a desktop server.
 export const MOBILE_CLIENT_NOTES = {
   android: {
-    // The Android client stores its cache in app-private storage
-    // (Android/data/…), not readable without root — remote servers simply
-    // don't see it. Mobile browsers get playback via the online path and the
-    // LAN desktop's cache instead.
-    localCache: 'unavailable-outside-desktop',
-    onlinePlayback: 'supported',
+    // Embedded host: no 汽水 client, so there is no LunaCacheV2 to scan and
+    // no native signer. Playback is an imported library, or a plain CDN URL
+    // from the in-app web session. A phone browser pointed at a desktop
+    // server is a different deployment and is not this profile.
+    localCache: 'no-desktop-client',
+    onlinePlayback: 'web-session',
   },
   ios: {
     localCache: 'unavailable-outside-desktop',
@@ -36,6 +39,7 @@ const HOME = os.homedir();
 
 // The desktop client's install location per platform.
 export const CLIENT_ROOTS = (() => {
+  if (PLATFORM === 'android') return { app: '', name: '' };
   if (PLATFORM === 'darwin') {
     return { app: '/Applications/汽水音乐.app', name: '汽水音乐' };
   }
@@ -55,6 +59,7 @@ export const CLIENT_ROOTS = (() => {
 
 // Native signing libraries shipped with the client (ttnet-helper consumers).
 export const NATIVE_LIBS = (() => {
+  if (PLATFORM === 'android') return { metasec: '', cronet: '' };
   if (PLATFORM === 'darwin') {
     return {
       metasec: path.join(CLIENT_ROOTS.app, 'Contents', 'Frameworks', 'mssdk', 'libMetaSecML.dylib'),
@@ -75,6 +80,7 @@ export const NATIVE_LIBS = (() => {
 
 // The client's native key module (decodeSpade), used to decrypt CENC streams.
 export function findDeviceNode({ asarUnpackedDir } = {}) {
+  if (PLATFORM === 'android') return '';
   const moduleName = PLATFORM === 'win32' ? 'device.node' : 'device.node'; // same name on all platforms
   const candidates = [];
   if (asarUnpackedDir) candidates.push(path.join(asarUnpackedDir, moduleName));
@@ -88,6 +94,7 @@ export function findDeviceNode({ asarUnpackedDir } = {}) {
 
 // Cache / data roots of the desktop client.
 export const CLIENT_DATA = (() => {
+  if (PLATFORM === 'android') return { data: '', cache: '', cookies: '', cookiesKind: 'none' };
   if (PLATFORM === 'darwin') {
     const base = path.join(HOME, 'Library', 'Application Support', 'SodaMusic');
     return { data: base, cache: base, cookies: path.join(base, 'Cookies'), cookiesKind: 'sqlite-plain' };
@@ -106,7 +113,8 @@ export const CLIENT_PACKAGES = path.join(CLIENT_DATA.data, 'Packages');
 
 // ---------------------------------------------------------------- qsyy own data
 
-export const QSYY_CACHE_DIR = process.env.QSYY_CACHE_DIR || CLIENT_DATA.cache && path.join(CLIENT_DATA.cache, 'LunaCacheV2');
+export const QSYY_CACHE_DIR = process.env.QSYY_CACHE_DIR
+  || (CLIENT_DATA.cache ? path.join(CLIENT_DATA.cache, 'LunaCacheV2') : '');
 export const QSYY_COOKIES_DB = process.env.QSYY_COOKIES_DB || CLIENT_DATA.cookies;
 export const QSYY_DOWNLOAD_DIR = process.env.QSYY_DOWNLOAD_DIR
   || path.join(HOME, 'Downloads', 'qsyy');
@@ -124,6 +132,7 @@ export const OS_CACHE_ROOT = PLATFORM === 'darwin'
 // ---------------------------------------------------------------- ffmpeg
 
 export function findFfmpeg() {
+  if (PLATFORM === 'android') return '';
   const fromEnv = process.env.FFMPEG_PATH;
   const candidates = [
     fromEnv,
@@ -144,6 +153,7 @@ export function findFfmpeg() {
 // plain SQLite database (Chromium variants without OS-keychain encryption),
 // so the same sqlite3 CLI query works everywhere.
 export function cookieQueryCommand(dbPath) {
+  if (PLATFORM === 'android' || !dbPath) return null;
   return {
     cmd: 'sqlite3',
     args: [dbPath, "SELECT name || '=' || value FROM cookies WHERE host_key IN ('.qishui.com','.bytedance.com');"],
@@ -154,6 +164,7 @@ export function cookieQueryCommand(dbPath) {
 
 // Reveal a folder in the platform file manager.
 export function openFolder(dir) {
+  if (PLATFORM === 'android') return null;
   if (PLATFORM === 'darwin') return { cmd: 'open', args: [dir] };
   if (PLATFORM === 'win32') return { cmd: 'explorer', args: [dir] };
   return { cmd: 'xdg-open', args: [dir] };
@@ -164,6 +175,7 @@ export function openFolder(dir) {
 // file / pid-in-/api/version conventions. Never called on foreign holders —
 // the caller verifies qsyy identity via /api/version first.
 export function findPortHolderPid(port) {
+  if (PLATFORM === 'android') return '';
   try {
     if (PLATFORM === 'win32') {
       const out = execFileSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8', timeout: 8000 });
@@ -177,12 +189,27 @@ export function findPortHolderPid(port) {
 
 // Launch the desktop client (used by the "play once to cache" fallback).
 export function openClient() {
+  if (PLATFORM === 'android') return null;
   if (PLATFORM === 'darwin') return { cmd: 'open', args: ['-a', '汽水音乐'] };
   if (PLATFORM === 'win32') {
     const exe = CLIENT_ROOTS.app ? path.join(CLIENT_ROOTS.app, '汽水音乐.exe') : '';
     return { cmd: 'cmd', args: ['/c', 'start', '', exe || '汽水音乐:'] };
   }
   return { cmd: 'xdg-open', args: ['qishui://'] }; // deb/rpm builds register the scheme
+}
+
+// ---------------------------------------------------------------- node children
+
+// Desktop and Electron can spawn this process's executable as Node
+// (Electron needs ELECTRON_RUN_AS_NODE). nodejs-mobile cannot: its
+// process.execPath is /system/bin/app_process64, and spawning that starts
+// another app process rather than a script. Callers must skip the child.
+export function nodeChildLaunch() {
+  if (isAndroid) return null;
+  if (!process.execPath) return null;
+  const env = { ...process.env };
+  if (!env.ELECTRON_RUN_AS_NODE && process.versions?.electron) env.ELECTRON_RUN_AS_NODE = '1';
+  return { command: process.execPath, env };
 }
 
 // ---------------------------------------------------------------- helpers
@@ -196,6 +223,7 @@ export const platformSummary = {
   clientRoot: CLIENT_ROOTS.app || null,
   cacheDir: QSYY_CACHE_DIR || null,
   cookiesDb: QSYY_COOKIES_DB || null,
-  ffmpeg: findFfmpeg(),
-  deviceNode: findDeviceNode(),
+  ffmpeg: findFfmpeg() || null,
+  deviceNode: findDeviceNode() || null,
+  nodeChild: Boolean(nodeChildLaunch()),
 };

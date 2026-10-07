@@ -44,11 +44,18 @@ public class PlaybackService extends Service {
                     .setSmallIcon(android.R.drawable.ic_media_play)
                     .build();
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(1, notification,
-                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-        } else {
-            startForeground(1, notification);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(1, notification,
+                        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            } else {
+                startForeground(1, notification);
+            }
+        } catch (RuntimeException error) {
+            // Missing notification permission or a rejected foreground type
+            // must not take down the process that is hosting the server.
+            stopSelf();
+            return START_NOT_STICKY;
         }
         return START_STICKY;
     }

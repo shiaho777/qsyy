@@ -58,6 +58,19 @@ function unpackedDir(platform, installRoot) {
 }
 
 function resolvePlatformRuntime(platform, { env, home, filesystem }) {
+  // The phone has no 汽水 install, and the embedded runtime cannot load the
+  // desktop lmdb / device.node binaries. Report every native dependency
+  // missing so restore refuses before it tries to spawn a child.
+  if (platform === 'android') {
+    return {
+      script: '',
+      lmdb: '',
+      device: '',
+      ffmpeg: '',
+      cacheDir: '',
+      reason: '手机上没有汽水音乐客户端，不能读取它的缓存',
+    };
+  }
   const bridgeRoot = env.QISHUI_PLUGIN_ROOT
     || path.resolve(__dirname, '..', '..');
   const installRoot = clientInstallRoot(platform, { env, home, filesystem });

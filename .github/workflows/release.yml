@@ -108,7 +108,7 @@ jobs:
         # package 'tools'"). platform-tools alone is enough — gradle pulls
         # build-tools/platforms itself per compileSdk.
         with:
-          packages: platform-tools
+          packages: platform-tools ndk;26.1.10909125 cmake;3.22.1
 
       - name: Assemble debug APK (runnable out of the box)
         working-directory: android

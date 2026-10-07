@@ -24,6 +24,8 @@ Desktop.ini
 # --- 客户端构建 ---
 android/build/
 android/app/build/
+android/app/.cxx/
+android/app/libnode/
 android/local.properties
 android/.gradle/
 desktop/dist/
