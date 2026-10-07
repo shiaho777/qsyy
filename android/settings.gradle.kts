@@ -1,5 +1,5 @@
-// qsyy Android shell settings — Gradle module layout is minimal: a single
-// WebView activity pointing at the user's qsyy server.
+// qsyy Android shell. The activity embeds the standalone server and opens it
+// on 127.0.0.1; there is no remote address to configure.
 pluginManagement {
     repositories { google(); mavenCentral(); gradlePluginPortal() }
 }

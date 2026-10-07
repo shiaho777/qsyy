@@ -53,7 +53,7 @@ class RestoreService {
         lmdb: Boolean(runtime.lmdb),
         device: Boolean(runtime.device),
       });
-      throw new Error('local restore dependencies are missing');
+      throw new Error(runtime.reason || 'local restore dependencies are missing');
     }
 
     this.filesystem.mkdirSync(normalized.outputDir, { recursive: true });

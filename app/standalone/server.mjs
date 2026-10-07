@@ -11,12 +11,13 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { spawn, execFile, execFileSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
   CLIENT_DATA, OS_CACHE_ROOT,
   findDeviceNode, findFfmpeg, cookieQueryCommand, openFolder, openClient,
-  findPortHolderPid,
+  findPortHolderPid, nodeChildLaunch,
 } from './platform.mjs';
 
 const require = createRequire(import.meta.url);
@@ -33,7 +34,7 @@ const PORT = Number(process.env.QSYY_PORT || process.env.SODA_APP_PORT || 18790)
 const HOST = process.env.QSYY_HOST || '127.0.0.1';
 const API_BASE = 'https://api.qishui.com';
 const CACHE_DIR = process.env.QSYY_CACHE_DIR
-  || path.join(CLIENT_DATA.cache, 'LunaCacheV2');
+  || (CLIENT_DATA.cache ? path.join(CLIENT_DATA.cache, 'LunaCacheV2') : '');
 const DOWNLOAD_DIR = process.env.QSYY_DOWNLOAD_DIR || path.join(os.homedir(), 'Downloads', 'qsyy');
 const COOKIES_DB = process.env.QSYY_COOKIES_DB || CLIENT_DATA.cookies;
 // 应用版本号(侧栏 GitHub 行展示 + 检查更新比对):桌面壳由 main.mjs 经
@@ -197,6 +198,22 @@ function trackChild(child) {
 function spawnTracked(command, args, options = {}) {
   const opts = process.platform === 'win32' ? options : { ...options, detached: true };
   return trackChild(spawn(command, args, opts));
+}
+// Node scripts must run on a real Node binary. Desktop and Electron can
+// re-exec process.execPath (Electron needs ELECTRON_RUN_AS_NODE, already in
+// CHILD_NODE_ENV). nodejs-mobile cannot: execPath is app_process64.
+function spawnNodeChild(args, options = {}) {
+  const launch = nodeChildLaunch();
+  if (!launch) return null;
+  return spawnTracked(launch.command, args, { ...options, env: options.env || launch.env });
+}
+function refuseNodeChild() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {};
+  process.nextTick(() => child.emit('error', Object.assign(new Error('node child runtime unavailable'), { code: 'QSYY_NO_NODE_CHILD' })));
+  return child;
 }
 function killAllChildren() {
   for (const child of spawnedChildren) {
@@ -402,6 +419,13 @@ function runScan(extraArgs) {
   }
   const inflight = scanInflight.get(key);
   if (inflight) return inflight;
+  // No desktop client cache, or no Node executable to scan it with. An empty
+  // result is cached like a real scan so playlist polling does not retry.
+  if (!nodeChildLaunch() || !CACHE_DIR) {
+    const empty = { candidates: [], batch: {} };
+    scanCache.set(key, { at: Date.now(), value: empty });
+    return Promise.resolve(empty);
+  }
   const promise = (async () => {
     // a snapshot copied while the client writes entries.db can be unreadable
     // (LMDB aborts the open) — retry with a fresh snapshot before giving up;
@@ -412,7 +436,7 @@ function runScan(extraArgs) {
       const seq = ++scanSeq;
       try {
         const value = await new Promise(resolve => {
-          const child = spawnTracked(process.execPath, [
+          const child = spawnNodeChild([
             RESTORE_SCRIPT, '--scan-child',
             '--snapshot', snapshot.path,
             '--lmdb-module', LMDB_MODULE,
@@ -420,6 +444,7 @@ function runScan(extraArgs) {
             '--quality', 'highest',
             ...extraArgs,
           ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
+          if (!child) { resolve(null); return; }
           let output = '';
           const done = value => {
             try { child.kill(); } catch (_) {}
@@ -482,7 +507,9 @@ const scanTracks = trackIds => runScan(['--track-ids', trackIds.join(',')]);
 // Keep one warm scan child pre-forked? Not possible with the snapshot-copy
 // model; instead, pre-warm the snapshot itself at boot so the first scan
 // after launch pays only the child spawn, not the DB copy.
-acquireScanSnapshot().then(snapshot => { if (snapshot) releaseScanSnapshot(snapshot); }).catch(() => {});
+if (CACHE_DIR && nodeChildLaunch()) {
+  acquireScanSnapshot().then(snapshot => { if (snapshot) releaseScanSnapshot(snapshot); }).catch(() => {});
+}
 
 // ---------------------------------------------------------------- downloads
 
@@ -492,8 +519,9 @@ const restoreService = new RestoreService({
   logger,
   timeoutMs: 180000,
   // route its download children through the registry so they are killed on
-  // server exit instead of orphaning (its env handling stays intact)
-  spawnProcess: spawnTracked,
+  // server exit instead of orphaning. spawnNodeChild refuses on Android,
+  // where process.execPath is not a Node binary.
+  spawnProcess: (command, args, options) => spawnNodeChild(args, options) || refuseNodeChild(),
 });
 
 const downloadJobs = new Map();
@@ -730,7 +758,7 @@ function decryptForStreaming(trackId) {
     try {
       fs.mkdirSync(DECRYPT_DIR, { recursive: true });
       return await new Promise(resolve => {
-        const child = spawnTracked(process.execPath, [
+        const child = spawnNodeChild([
           RESTORE_SCRIPT,
           '--cache-dir', CACHE_DIR,
           '--output-dir', DECRYPT_DIR,
@@ -741,6 +769,7 @@ function decryptForStreaming(trackId) {
           '--wait-ms', '5000',
           '--track-id', String(trackId),
         ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
+        if (!child) { resolve(''); return; }
         let output = '';
         child.stdout.on('data', d => { output += d.toString(); });
         const timer = setTimeout(() => { try { child.kill(); } catch (_) {} resolve(''); }, 120000);
@@ -882,7 +911,8 @@ async function ttnetResolveProbe() {
 }
 
 function spawnTtnetHelper() {
-  const child = spawnTracked(process.execPath, [path.join(root, 'ttnet-helper.mjs')], { stdio: ['pipe', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
+  const child = spawnNodeChild([path.join(root, 'ttnet-helper.mjs')], { stdio: ['pipe', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
+  if (!child) return null;
   ttnetChild = child;
   child.stdout.setEncoding('utf8');
   let buffer = '';
@@ -1696,7 +1726,7 @@ function decryptStoreFile(trackId) {
   const meta = storeMeta.get(trackId) || {};
   return new Promise(resolve => {
     const target = m4aPath(trackId);
-    const child = spawnTracked(process.execPath, [
+    const child = spawnNodeChild([
       RESTORE_SCRIPT, '--decrypt-online',
       '--input', partPath(trackId),
       '--output', target,
@@ -1704,6 +1734,7 @@ function decryptStoreFile(trackId) {
       '--device-node', DEVICE_NODE,
       '--ffmpeg', FFMPEG,
     ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
+    if (!child) { resolve(''); return; }
     let output = '';
     child.stdout.on('data', d => { output += d.toString(); });
     const timer = setTimeout(() => { try { child.kill(); } catch (_) {} resolve(''); }, 120000);
@@ -2331,7 +2362,7 @@ const serverHandler = async (request, response) => {
           try {
             fs.copyFileSync(path.join(CACHE_DIR, 'entries.db'), snapshotPath);
             await new Promise(resolve => {
-              const child = spawnTracked(process.execPath, [
+              const child = spawnNodeChild([
                 RESTORE_SCRIPT, '--restore-all',
                 '--snapshot', snapshotPath,
                 '--lmdb-module', LMDB_MODULE,
@@ -2340,6 +2371,7 @@ const serverHandler = async (request, response) => {
                 '--device-node', DEVICE_NODE,
                 '--ffmpeg', FFMPEG,
               ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
+              if (!child) { resolve(); return; }
               let buf = '';
               let lastLine = Date.now();
               let finished = false;

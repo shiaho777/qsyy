@@ -1337,7 +1337,15 @@ async function expToDownloads() {
   if (!w.jobId) return;
   try {
     const r = await storeJson('/api/export/save', { jobId: w.jobId });
-    if (r?.ok) { $('exp-done-hint').textContent = `已导出:${r.path}`; toast('已导出到下载目录', 'ok'); }
+    if (r?.ok) {
+      let where = `已导出:${r.path}`;
+      if (window.QsyyAndroid?.publishDownload) {
+        const err = String(window.QsyyAndroid.publishDownload(r.path) || '');
+        where = err ? `导出文件已生成，放进系统下载目录失败:${err}` : '已导出到系统下载目录';
+        toast(err ? where : '已导出到下载目录', err ? 'err' : 'ok');
+      } else toast('已导出到下载目录', 'ok');
+      $('exp-done-hint').textContent = where;
+    }
     else toast(r?.error || '导出失败', 'err');
   } catch (e) { toast('导出失败:' + e.message, 'err'); }
 }
@@ -2216,7 +2224,10 @@ async function pollDownloads() {
     const openBtn = document.querySelector('.dl-open-folder');
     if (openBtn && !openBtn.dataset.bound) {
       openBtn.dataset.bound = '1';
-      openBtn.onclick = () => fetch('/api/open-downloads', { method: 'POST' }).catch(() => {});
+      openBtn.onclick = () => {
+        if (window.QsyyAndroid?.openDownloads) { window.QsyyAndroid.openDownloads(); return; }
+        fetch('/api/open-downloads', { method: 'POST' }).catch(() => {});
+      };
     }
   } catch (_) {}
 }
