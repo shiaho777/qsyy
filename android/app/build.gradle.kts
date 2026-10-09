@@ -58,7 +58,7 @@ android {
         applicationId = "com.shiaho777.qsyy"
         minSdk = 24
         targetSdk = 35
-        versionCode = 9
+        versionCode = 10
         versionName = "1.3.1"
         externalNativeBuild {
             cmake {
