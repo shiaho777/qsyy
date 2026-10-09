@@ -88,8 +88,16 @@ body.booting #app { opacity: 0; }
 .brand .b-tag { font-size: 10px; color: var(--faint); letter-spacing: 1.5px; margin-top: 1px; }
 .user { display: flex; align-items: center; gap: 10px; margin: 14px 12px 8px; padding: 9px 10px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line-soft); -webkit-app-region: drag; }
 .user img { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; background: var(--panel-2); box-shadow: 0 0 0 1px var(--line); -webkit-app-region: no-drag; }
+.user .user-copy { flex: 1; min-width: 0; }
 .user .name { font-weight: 650; font-size: 12.5px; }
 .user .hint { font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+.user .user-btn {
+  flex: none; -webkit-app-region: no-drag;
+  padding: 5px 9px; border-radius: 8px; border: 1px solid var(--line-soft);
+  background: var(--panel-2); color: var(--text); font-size: 11.5px;
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.user .user-btn:hover { background: var(--panel-3); border-color: var(--line-strong); }
 .nav-caption { padding: 12px 20px 6px; font-size: 10px; letter-spacing: 2.5px; color: var(--faint); font-weight: 600; }
 .playlists { flex: 1; overflow-y: auto; padding: 0 10px 8px; }
 .pl-item {
@@ -562,8 +570,12 @@ body::before {
 .online-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); margin-bottom: 12px; }
 .online-status .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #e8e8ee; box-shadow: 0 0 8px rgba(255,255,255,.5); flex: none; }
 .online-status.off { color: var(--muted); }
-.qr-section { display: flex; flex-direction: column; align-items: center; }
-.qr-modal .mini-btn { margin-top: 10px; }
+.qr-section { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 16px; }
+.qr-section img {
+  width: 196px; height: 196px; border-radius: 12px; background: #fff;
+  object-fit: contain; box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.qr-section #qr-status { margin-top: 0; text-align: center; }
 
 /* ============ cover expander(点封面看大图)============ */
 .cover-expander {

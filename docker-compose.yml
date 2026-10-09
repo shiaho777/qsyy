@@ -1,0 +1,15 @@
+services:
+  qsyy:
+    image: ghcr.io/shiaho777/qsyy:latest
+    build: .
+    ports:
+      - "18790:18790"
+    volumes:
+      - qsyy-data:/data
+    environment:
+      QSYY_HOST: "0.0.0.0"
+      QSYY_PORT: "18790"
+    restart: unless-stopped
+
+volumes:
+  qsyy-data:

@@ -70,8 +70,10 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
    | macOS | `qsyy-X.Y.Z-arm64.dmg` + zip(arm64/x64) | `macos-14` |
    | Windows | `qsyy-setup-X.Y.Z.exe`(NSIS) | 维护者本机(见踩坑记录) |
    | Android | `qsyy-X.Y.Z.apk`(debug 签名,开箱即装) | `ubuntu-latest` |
-   四个 job(changelog / desktop-mac / desktop-win / android)汇入 `publish`,
-   由它建 Release 并附产物;Notes 来自 changelog job 的输出。
+   | 容器 | `ghcr.io/shiaho777/qsyy:vX.Y.Z`(扫码在线播放) | 维护者本机构建推送 |
+   三个 job(changelog / desktop-mac / android)汇入 `publish`,
+   由它建 Release 并附产物;Notes 来自 changelog job 的输出。Docker 镜像
+   与 Windows 安装器一样由维护者本机 `docker build && docker push`。
 5. **发布失败**:看 Actions 里红掉的矩阵 job 日志,修完重新打 tag
    (删旧 tag 重打:`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`)。
    不手工上传产物——可复现性优先。
@@ -134,6 +136,7 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
 - 服务端承诺:macOS / Windows。移动端承诺:Android(浏览器 / PWA / 壳)。
   文档与徽章不得再引入 Linux / iOS。
 - `platform.mjs` 里保留的 Linux 分支是死代码但无害;删除与否不影响承诺。
+- Docker 镜像是扫码在线播放容器,不是 Linux 桌面承诺;容器里没有汽水客户端。
 
 ### 构建与验证(改动后至少跑这些)
 
@@ -177,3 +180,6 @@ cd desktop && npm install && npm start           # 桌面壳冒烟
   `server.close` + 收子进程 + 删锁文件。桌面壳探针只认 `/api/version`
   repo 匹配,不再盲信端口。
 - **微信等聊天工具的截图临时目录会被清理**,入库素材第一时间拷进 `docs/assets/`。
+- **Docker 会话必须落在数据卷**:`web-session.json` 在 OS 缓存目录
+  (`DECRYPT_DIR`,Linux 下随 `HOME`/`XDG_CACHE_HOME`),不要写回镜像内的
+  `app/standalone/`。无卷容器一重建就丢登录。

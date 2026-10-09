@@ -1,0 +1,16 @@
+.git
+.github
+android
+docs
+scripts
+**/.DS_Store
+**/*.log
+**/node_modules
+app/standalone/web-session.json
+app/standalone/device.json
+app/debug
+desktop/dist
+desktop/node_modules
+desktop/assets
+desktop/main.mjs
+*.md

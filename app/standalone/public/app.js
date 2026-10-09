@@ -175,19 +175,47 @@ async function api(path, options) {
   return response.json();
 }
 
+function bindUserActions() {
+  if ($('web-login')) $('web-login').onclick = e => { e.preventDefault(); openQrModal(); };
+  if ($('web-logout')) $('web-logout').onclick = async e => {
+    e.preventDefault();
+    try { await fetch('/api/weblogin/logout', { method: 'POST' }); } catch (_) {}
+    state.onlineAvailable = false;
+    toast('已退出网页登录');
+    await loadMe();
+  };
+}
+
 async function loadMe() {
+  let info = null;
   try {
     const me = await api('/api/me');
     state.me = me;
-    const info = me?.my_info;
-    $('user').innerHTML = info ? `
-      <img src="${coverUrl(info.larger_avatar_url || info.avatar_url, 80)}" alt="">
-      <div><div class="name">${esc(info.nickname || '')}</div>
-      <div class="hint">${state.playlists.length ? state.playlists.length + ' 个歌单' : '已登录'}</div></div>` : '';
-    armImgs($('user'));
+    info = me?.my_info || null;
   } catch (_) {
-    $('user').innerHTML = '<div class="hint" style="padding:4px 6px">未登录汽水 — 本地库功能不受影响</div>';
+    state.me = null;
   }
+  await refreshWebLogin();
+  const box = $('user');
+  if (!box) return;
+  if (info) {
+    box.innerHTML = `
+      <img src="${coverUrl(info.larger_avatar_url || info.avatar_url, 80)}" alt="">
+      <div class="user-copy"><div class="name">${esc(info.nickname || '')}</div>
+      <div class="hint">${state.playlists.length ? state.playlists.length + ' 个歌单' : '已登录'}</div></div>`;
+    armImgs(box);
+  } else if (state.onlineAvailable) {
+    box.innerHTML = `
+      <div class="user-copy"><div class="name">已登录</div>
+      <div class="hint">网页会话 · 可在线播放</div></div>
+      <button id="web-logout" class="user-btn" type="button">退出</button>`;
+  } else {
+    box.innerHTML = `
+      <div class="user-copy"><div class="name">未登录汽水</div>
+      <div class="hint">本地库仍可播放</div></div>
+      <button id="web-login" class="user-btn" type="button">扫码登录</button>`;
+  }
+  bindUserActions();
 }
 
 async function loadPlaylists(openSaved = true, fresh = false, autoOpen = true) {
@@ -1360,6 +1388,67 @@ async function refreshWebLogin() {
   updateFootHint();
 }
 
+function qrImageSrc(qrcode, url) {
+  const raw = String(qrcode || '').trim();
+  if (raw.startsWith('data:')) return raw;
+  if (/^https?:\/\//.test(raw)) return raw;
+  if (raw) return `data:image/png;base64,${raw.replace(/\s/g, '')}`;
+  return String(url || '');
+}
+
+let qrPoll = null;
+let qrToken = '';
+function stopQrPoll() {
+  if (qrPoll) { clearInterval(qrPoll); qrPoll = null; }
+}
+function closeQrModal() {
+  stopQrPoll();
+  const m = $('qr-modal');
+  if (!m) return;
+  m.classList.remove('open');
+  setTimeout(() => m.classList.add('hidden'), 220);
+}
+async function pollQr() {
+  if (!qrToken) return;
+  try {
+    const r = await (await fetch(`/api/weblogin/poll?token=${encodeURIComponent(qrToken)}`)).json();
+    if (r?.message && $('qr-status')) $('qr-status').textContent = r.message;
+    if (r?.status === 'success') {
+      stopQrPoll();
+      toast('登录成功', 'ok');
+      closeQrModal();
+      await loadMe();
+      await loadPlaylists(true, true).catch(() => {});
+    } else if (r?.status === 'expired') {
+      stopQrPoll();
+    }
+  } catch (_) {}
+}
+async function startQr() {
+  stopQrPoll();
+  qrToken = '';
+  if ($('qr-status')) $('qr-status').textContent = '正在获取二维码…';
+  if ($('qr-image')) { $('qr-image').hidden = true; $('qr-image').removeAttribute('src'); }
+  try {
+    const r = await (await fetch('/api/weblogin/qr')).json();
+    if (!r?.ok) { if ($('qr-status')) $('qr-status').textContent = r?.error || '二维码获取失败'; return; }
+    qrToken = r.token || '';
+    const src = qrImageSrc(r.qrcode, r.url);
+    if (src && $('qr-image')) { $('qr-image').src = src; $('qr-image').hidden = false; }
+    if ($('qr-status')) $('qr-status').textContent = '打开汽水音乐,扫一扫';
+    if (qrToken) { qrPoll = setInterval(pollQr, 1500); pollQr(); }
+  } catch (err) {
+    if ($('qr-status')) $('qr-status').textContent = err.message || '二维码获取失败';
+  }
+}
+function openQrModal() {
+  const m = $('qr-modal');
+  if (!m) return;
+  m.classList.remove('hidden');
+  requestAnimationFrame(() => m.classList.add('open'));
+  startQr();
+}
+
 function decoratePlayingRow() {
   const current = state.queue[state.queueIndex];
   // 高亮仅作用于"播放来源上下文 == 当前浏览上下文":库视图播的歌不串染
@@ -2302,6 +2391,7 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Escape' && $('sync-modal') && !$('sync-modal').classList.contains('hidden')) { closeSyncModal(); return; }
   if (e.code === 'Escape' && $('export-modal') && !$('export-modal').classList.contains('hidden')) { expCloseModal(); return; }
   if (e.code === 'Escape' && $('import-modal') && !$('import-modal').classList.contains('hidden')) { closeImportModal(); return; }
+  if (e.code === 'Escape' && $('qr-modal') && !$('qr-modal').classList.contains('hidden')) { closeQrModal(); return; }
   if (e.code === 'Escape' && coverExpander?.classList.contains('open')) { closeCoverExpander(); return; }
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   // mobile browsers have no hardware keyboard; skip path is harmless
@@ -2549,6 +2639,10 @@ setInterval(loadStats, 10 * 60 * 1000);
   if ($('im-cancel')) $('im-cancel').onclick = closeImportModal;
   const importModal = $('import-modal');
   if (importModal) importModal.addEventListener('click', e => { if (e.target === importModal) closeImportModal(); });
+  const qrModal = $('qr-modal');
+  if (qrModal) qrModal.addEventListener('click', e => { if (e.target === qrModal) closeQrModal(); });
+  if ($('qr-close')) $('qr-close').onclick = closeQrModal;
+  if ($('qr-refresh')) $('qr-refresh').onclick = startQr;
 
   // ---------------------------------------------------------------- export wizard bindings
   if ($('export-btn')) $('export-btn').onclick = openExportWizard;
@@ -2674,7 +2768,7 @@ setInterval(loadStats, 10 * 60 * 1000);
     loadStats();
     loadAppVersion();
     loadStores();
-    await loadPlaylists(true).catch(() => { state.me = null; });
+    await loadPlaylists(true).catch(async () => { state.me = null; await loadMe(); });
     // reopen the cache-library view if that's where the user last was;
     // 持久化队列属于某个库时优先回那个库(库队列要等 storeTracks 就位才能恢复)
     const savedQueue = ls.get('queue', null);
