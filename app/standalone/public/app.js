@@ -202,7 +202,7 @@ async function loadMe() {
     box.innerHTML = `
       <img src="${coverUrl(info.larger_avatar_url || info.avatar_url, 80)}" alt="">
       <div class="user-copy"><div class="name">${esc(info.nickname || '')}</div>
-      <div class="hint">已登录</div></div>`;
+      <div class="hint">${state.playlists.length ? state.playlists.length + ' 个歌单' : '已登录'}</div></div>`;
     armImgs(box);
   } else if (state.onlineAvailable) {
     box.innerHTML = `
@@ -255,6 +255,7 @@ async function openPlaylist(pl, resume = false) {
     id: pl.id, title: pl.title, cover: pl.cover, count: pl.count,
     tracks: [], cursor: '', hasMore: true, loading: false, rendered: 0,
   };
+  setSearchPlaceholder();
   state.filtered = null;
   $('search').value = '';
   renderHero();
@@ -356,7 +357,7 @@ function updateHeroSub() {
   if (!el || !cur) return;
   if (cur.kind === 'store') {
     const mb = Number(cur.storeMeta?.size) || cur.tracks.reduce((n, t) => n + (Number(t.size) || 0), 0);
-    el.textContent = `${cur.tracks.length} 首${mb ? ` · ${(mb / 1048576).toFixed(1)}MB` : ''}${cur.storeMeta?.active ? ' · 默认' : ''}`;
+    el.textContent = `${cur.tracks.length} 首${mb ? ` · ${(mb / 1048576).toFixed(1)}MB` : ''}${cur.storeMeta?.active ? ' · 写入' : ''}`;
     return;
   }
   const cachedCount = cur.tracks.filter(t => state.cacheStatus.get(t.id)?.ready).length;
@@ -878,30 +879,10 @@ async function runImport(mode) {
   } catch (err) { toast('导入失败:' + err.message, 'err'); }
 }
 
-async function ensureDefaultStore(preferred) {
-  const r = await fetch('/api/store/sets').then(x => x.json()).catch(() => null);
-  let sets = r?.sets || [];
-  const known = name => sets.some(s => s.name === name);
-  const mark = async name => {
-    if (sets.some(s => s.active)) return;
-    await storeJson('/api/store/switch', { name });
-  };
-  if (preferred && known(preferred)) {
-    await mark(preferred);
-    return preferred;
-  }
-  const active = sets.find(s => s.active);
-  if (active) return active.name;
-  if (!sets.length) {
-    const created = await storeJson('/api/store/create', { name: '默认缓存' });
-    if (created?.ok || String(created?.error || '').includes('已存在')) {
-      await storeJson('/api/store/switch', { name: '默认缓存' });
-      return '默认缓存';
-    }
-    return '';
-  }
-  await storeJson('/api/store/switch', { name: sets[0].name });
-  return sets[0].name;
+function setSearchPlaceholder() {
+  const input = $('search');
+  if (!input) return;
+  input.placeholder = state.current?.kind === 'store' ? '在当前缓存内搜索…' : '在当前歌单内搜索…';
 }
 
 async function loadStores() {
@@ -917,7 +898,7 @@ async function loadStores() {
           ? `<img loading="lazy" src="${storeCoverUrl(s.name)}" alt="">`
           : `<span class="st-fallback sm">${esc([...s.name][0] || '库')}</span>`}
         <div class="st-main">
-          <div class="t"><span class="nm">${esc(s.name)}</span>${s.active ? '<span class="st-pill">默认</span>' : ''}</div>
+          <div class="t"><span class="nm">${esc(s.name)}</span>${s.active ? '<span class="st-pill" title="新的在线缓存写进这个库">写入</span>' : ''}</div>
           <div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${playingHere ? ' · 播放中' : ''}</div>
         </div>
         <button class="st-more" type="button" data-i="${i}" aria-label="「${esc(s.name)}」的操作" title="库操作">⋯</button>
@@ -989,7 +970,7 @@ function openLibraryMenu(anchor, set) {
   const m = document.createElement('div');
   m.className = 'cache-menu';
   const items = [];
-  if (!picked.active) items.push(['use', '设为默认']);
+  if (!picked.active) items.push(['use', '设为写入库']);
   items.push(['import', '导入到此库'], ['cover', '设置封面']);
   if (picked.cover) items.push(['uncover', '移除封面']);
   items.push(['backup', '备份']);
@@ -1008,7 +989,14 @@ function openLibraryMenu(anchor, set) {
     closeCacheMenu();
     if (key === 'use') {
       const res = await storeJson('/api/store/switch', { name });
-      if (res?.ok) { ls.set('storeView', name); toast(`「${name}」已标为默认`, 'ok'); setTimeout(() => location.reload(), 500); }
+      if (res?.ok) {
+        toast(`「${name}」已设为写入库`, 'ok');
+        loadStores();
+        if (state.current?.kind === 'store') {
+          state.current.storeMeta = { ...state.current.storeMeta, active: state.current.storeName === name };
+          updateHeroSub();
+        }
+      }
       else toast(res?.error || '切换失败', 'err');
     } else if (key === 'import') { libraryActionName = name; pendingImportTarget = null; $('restore-file').click(); }
     else if (key === 'cover') { libraryActionName = name; $('cover-file').click(); }
@@ -1038,7 +1026,7 @@ function openLibraryMenu(anchor, set) {
       const playingHere = state.queueContext === `store:${name}`;
       let msg = `删除缓存库「${name}」?其中歌曲将全部移除。`;
       if (playingHere) msg = `「${name}」正在播放。${msg}`;
-      if (picked.active) msg = `「${name}」是默认缓存(新的在线缓存会写进它)。${msg}\n删除后默认缓存将${(state.storeSets?.length || 0) > 1 ? '改到剩下的库' : '需要重新建立'}。`;
+      if (picked.active) msg = `「${name}」是写入库(新的在线缓存会写进它)。${msg}\n删除后写入将${(state.storeSets?.length || 0) > 1 ? '改到剩下的库' : '先不落盘,下次在线播放再按需建立'}。`;
       if (!confirm(msg)) return;
       const res = await storeJson('/api/store/delete', { name });
       if (res?.ok) { ls.set('storeView', ''); toast(`已删除「${name}」`, 'ok'); setTimeout(() => location.reload(), 500); }
@@ -1098,10 +1086,11 @@ async function openStoreView(name) {
     order: null,
     storeMeta: set,
   };
+  setSearchPlaceholder();
   renderHero();
   updateHeroSub();
   if (!tracks.length) {
-    $('tracks').innerHTML = '<div class="empty">这个缓存还没有歌曲。在线播放会写进默认缓存,也可以用「导入」加入歌单包</div>';
+    $('tracks').innerHTML = '<div class="empty">这个缓存还没有歌曲。在线播放会写进当前写入库,也可以用「导入」加入歌单包</div>';
     $('sentinel').textContent = '';
     if ($('sort-select')) $('sort-select').value = 'default';
     return;
@@ -1568,7 +1557,7 @@ async function doClearTrackCache(track) {
     state.storeTracks = state.current.tracks;
     if (state.current.order?.ids) state.current.order.ids = state.current.order.ids.filter(x => String(x) !== id);
     if (!state.current.tracks.length) {
-      $('tracks').innerHTML = '<div class="empty">这个缓存还没有歌曲。在线播放会写进默认缓存,也可以用「导入」加入歌单包</div>';
+      $('tracks').innerHTML = '<div class="empty">这个缓存还没有歌曲。在线播放会写进当前写入库,也可以用「导入」加入歌单包</div>';
       $('sentinel').textContent = '';
     } else rerenderRows();
     updateHeroSub();
@@ -2517,9 +2506,6 @@ const sentinelObserver = new IntersectionObserver(entries => {
 }, { rootMargin: '500px' });
 sentinelObserver.observe($('sentinel'));
 
-// auto-sync playlists every 5 minutes (skipped while browsing a local
-// library — the refresh must not yank the user out of the store view)
-
 // ------------------------------------------------------------------ boot
 
 let footCacheText = '';
@@ -2819,11 +2805,16 @@ setInterval(loadStats, 10 * 60 * 1000);
     loadStats();
     loadAppVersion();
     loadMe().catch(() => {});
-    const savedQueue = ls.get('queue', null);
-    const queueStore = savedQueue?.context?.startsWith('store:') ? savedQueue.context.slice(6) : '';
-    const lastStore = queueStore || ls.get('storeView', '');
-    const openName = await ensureDefaultStore(lastStore);
-    if (openName) await openStoreView(openName);
+    // 首页是汽水歌单,成员来自歌单接口。缓存库是同一套界面的另一种打开方式,
+    // 不在启动时新建,也不用磁盘文件代替歌单。
+    try { await loadPlaylists(true); } catch (_) {}
+    if (!state.current) {
+      const r = await fetch('/api/store/sets').then(x => x.json()).catch(() => null);
+      const sets = r?.sets || [];
+      const preferred = ls.get('storeView', '');
+      const pick = sets.find(s => s.name === preferred) || sets.find(s => s.active) || sets[0];
+      if (pick) await openStoreView(pick.name);
+    }
     if (!restoreQueue()) {
       const saved = ls.get('lastTrack', null);
       // queue restore happens after playlist loads in openPlaylist resume path
@@ -2832,6 +2823,6 @@ setInterval(loadStats, 10 * 60 * 1000);
       startCurrent(false);
     }
   } catch (e) {
-    $('tracks').innerHTML = `<div class="empty">${ICONS.warn}<br>加载失败:${esc(e.message)}<br>试试从侧栏打开一个缓存库</div>`;
+    $('tracks').innerHTML = `<div class="empty">${ICONS.warn}<br>加载失败:${esc(e.message)}<br>试试从侧栏打开一个歌单或缓存库</div>`;
   }
 })();
