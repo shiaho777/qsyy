@@ -267,15 +267,22 @@ const COMMON_QUERY = (() => {
 })();
 
 let cookieCache = { value: '', at: 0 };
+let webSession = null;
 function sessionCookies(callback) {
+  const fallback = () => callback(cookieCache.value || webSession?.cookie || '');
   if (cookieCache.value && Date.now() - cookieCache.at < 120000) {
     callback(cookieCache.value);
     return;
   }
-  const { cmd, args } = cookieQueryCommand(COOKIES_DB);
-  execFile(cmd, args, { encoding: 'utf8', timeout: 5000 }, (error, stdout) => {
-    if (!error) cookieCache = { value: stdout.trim().split('\n').filter(Boolean).join('; '), at: Date.now() };
-    callback(cookieCache.value);
+  const query = cookieQueryCommand(COOKIES_DB);
+  if (!query?.cmd || !COOKIES_DB || !fs.existsSync(COOKIES_DB)) {
+    fallback();
+    return;
+  }
+  execFile(query.cmd, query.args, { encoding: 'utf8', timeout: 5000 }, (error, stdout) => {
+    const text = !error ? stdout.trim().split('\n').filter(Boolean).join('; ') : '';
+    if (text) cookieCache = { value: text, at: Date.now() };
+    callback(text || webSession?.cookie || '');
   });
 }
 
@@ -1041,10 +1048,19 @@ async function ttnetResolve(trackId) {
 // that endpoint only answers a *web* session, obtained via passport QR login.
 // We create the QR, the user scans it once with the mobile app, and we keep
 // the resulting cookies here. Fully standalone — the client is never touched.
-const WEB_SESSION_FILE = path.join(root, 'web-session.json');
+// Persist next to incremental stores so Docker / Electron extraResources
+// rebuilds do not wipe the session (legacy path was app/standalone/).
+const WEB_SESSION_FILE = path.join(DECRYPT_DIR, 'web-session.json');
+const LEGACY_WEB_SESSION_FILE = path.join(root, 'web-session.json');
 const PASSPORT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) SodaMusic/3.1.0 Chrome/136.0.7103.59 Electron/36.4.0-rs.22.release.main.1 TTElectron/36.4.0-rs.22.release.main.1 Safari/537.36';
 
-let webSession = null;
+try { fs.mkdirSync(DECRYPT_DIR, { recursive: true }); } catch (_) {}
+if (!fs.existsSync(WEB_SESSION_FILE) && fs.existsSync(LEGACY_WEB_SESSION_FILE)) {
+  try { fs.renameSync(LEGACY_WEB_SESSION_FILE, WEB_SESSION_FILE); }
+  catch (_) {
+    try { fs.copyFileSync(LEGACY_WEB_SESSION_FILE, WEB_SESSION_FILE); } catch (_) {}
+  }
+}
 try { webSession = JSON.parse(fs.readFileSync(WEB_SESSION_FILE, 'utf8')); } catch (_) {}
 
 function saveWebSession(cookieMap) {
@@ -1053,6 +1069,7 @@ function saveWebSession(cookieMap) {
   for (const name of keep) if (cookieMap[name]) filtered[name] = cookieMap[name];
   if (!filtered.sessionid) return false;
   webSession = { cookie: Object.entries(filtered).map(([k, v]) => `${k}=${v}`).join('; '), savedAt: Date.now() };
+  try { fs.mkdirSync(DECRYPT_DIR, { recursive: true }); } catch (_) {}
   fs.writeFileSync(WEB_SESSION_FILE, JSON.stringify(webSession, null, 2));
   onlineCache.clear();
   return true;

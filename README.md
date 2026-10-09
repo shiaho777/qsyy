@@ -85,6 +85,20 @@ npm run standalone                 # → http://127.0.0.1:18790
 
 打开浏览器访问 `http://127.0.0.1:18790`,登录态会自动从本机客户端读取,无需任何配置。
 
+**Docker**(扫码在线播放;容器里没有汽水客户端,不能直读本地缓存):
+
+```bash
+docker compose up --build
+# → http://127.0.0.1:18790
+```
+
+侧栏点「扫码登录」,用汽水音乐 App 扫一次。会话和增量缓存写在数据卷里。导入歌单包后,库里的本地音频不登录也能播。镜像定义见 [Dockerfile](./Dockerfile) 与 [docker-compose.yml](./docker-compose.yml)。发版后维护者可推 GHCR:
+
+```bash
+docker build -t ghcr.io/shiaho777/qsyy:vX.Y.Z -t ghcr.io/shiaho777/qsyy:latest .
+docker push ghcr.io/shiaho777/qsyy --all-tags
+```
+
 **环境要求**
 
 | 依赖 | 说明 |

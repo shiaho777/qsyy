@@ -72,6 +72,15 @@ QSYY_HOST=0.0.0.0 npm run standalone
 平台差异说明:APK 内嵌服务不扫描汽水缓存。连到桌面端的手机浏览器仍然由
 桌面端提供缓存直读和在线签名。
 
+## 容器(Docker)
+
+镜像跑同一份 standalone 服务,`QSYY_HOST=0.0.0.0`。容器里没有汽水客户端,
+因此没有 LunaCache 直读和 mssdk/cronet;侧栏扫码拿到网页会话后走在线播放,
+也可以导入歌单包播本地音频。数据卷挂 `/data`(网页会话、增量库、下载目录)。
+这是部署方式,不是 Linux 桌面承诺。定义见仓库根目录 [Dockerfile](../Dockerfile)
+与 [docker-compose.yml](../docker-compose.yml)。发版后维护者本机
+`docker build && docker push ghcr.io/shiaho777/qsyy`。
+
 ## 目录结构
 
 ```
@@ -96,10 +105,12 @@ app/
 - 会话凭据:读取已登录客户端的 Cookies(明文 SQLite `Cookies` 库)
   + 设备参数(deviceid/installid,可在 `device.json` 覆盖)。
   客户端登录态每 2 分钟自动重读,Cookies 过期后打开一次客户端即可刷新。
+  客户端 Cookie 库不存在时(Android / Docker / 未安装客户端)回落扫码网页会话。
 - API 形态:`https://api.qishui.com/luna/pc/*`(GET `/me`、`/me/playlist`、
   `/playlist/detail` 等),幂等 GET 带 30/60/90 秒短缓存,`fresh=1` 强制直连。
 - 兜底:签名库缺失时走扫码网页会话(`/api/weblogin/*`,passport 接口,
-  会话存 `web-session.json`,不入库、已在 `.gitignore` 排除)。
+  会话存 OS 缓存目录下的 `web-session.json`(与增量库同目录),旧路径
+  `app/standalone/web-session.json` 启动时迁过去;不入库)。
 
 ## 播放通路
 

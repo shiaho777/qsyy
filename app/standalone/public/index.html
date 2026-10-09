@@ -239,6 +239,21 @@
     </div>
   </div>
 
+  <div id="qr-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-title">扫码登录汽水</div>
+      <div class="modal-sub">用汽水音乐 App 扫这个码。登录后没缓存的歌也能在线播。</div>
+      <div class="qr-section">
+        <img id="qr-image" alt="登录二维码" hidden>
+        <div id="qr-status" class="modal-sub"></div>
+        <button id="qr-refresh" class="mini-btn" type="button">换一张码</button>
+      </div>
+      <div class="modal-actions">
+        <button id="qr-close" class="btn ghost" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <div id="cover-expander" class="cover-expander" aria-hidden="true">
     <img id="ce-art" class="ce-art" alt="">
     <div class="ce-meta"><div id="ce-title" class="ce-title"></div><div id="ce-artist" class="ce-artist"></div></div>
