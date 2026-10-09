@@ -202,7 +202,7 @@ async function loadMe() {
     box.innerHTML = `
       <img src="${coverUrl(info.larger_avatar_url || info.avatar_url, 80)}" alt="">
       <div class="user-copy"><div class="name">${esc(info.nickname || '')}</div>
-      <div class="hint">${state.playlists.length ? state.playlists.length + ' 个歌单' : '已登录'}</div></div>`;
+      <div class="hint">已登录</div></div>`;
     armImgs(box);
   } else if (state.onlineAvailable) {
     box.innerHTML = `
@@ -219,6 +219,7 @@ async function loadMe() {
 }
 
 async function loadPlaylists(openSaved = true, fresh = false, autoOpen = true) {
+  if (!$('playlists')) return;
   const data = await api(`/api/playlists?count=500${fresh ? '&fresh=1' : ''}`);
   state.playlists = (data?.playlists || []).map(p => ({
     id: String(p.id), title: p.title || '未命名',
@@ -284,36 +285,49 @@ async function openPlaylist(pl, resume = false) {
 
 function renderHero() {
   const cur = state.current;
+  if (!cur) return;
   const playing = state.queue[state.queueIndex];
-  const heroCover = trackCoverUrl(playing, 300) || (cur.cover ? coverUrl(cur.cover, 300) : '');
+  const sameCtx = !playing || !state.queueContext || state.queueContext === (cur.kind === 'store' ? `store:${cur.storeName}` : 'playlist');
+  const heroCover = (sameCtx ? trackCoverUrl(playing, 300) : '') || (cur.cover ? coverUrl(cur.cover, 300) : '') || cur.coverUrl || '';
+  const kicker = playing && sameCtx && !audio.paused ? '<span class="live-dot"></span>正在播放' : (cur.kind === 'store' ? '缓存库' : 'PLAYLIST');
   $('hero').innerHTML = `
     <div class="hero-cover-wrap"><img id="hero-cover" class="hero-cover" src="${heroCover}" alt="" data-url="${heroCover}"></div>
     <div class="hero-info">
-      <div class="hero-kicker" id="hero-kicker">${playing ? '<span class="live-dot"></span>正在播放' : 'PLAYLIST'}</div>
+      <div class="hero-kicker" id="hero-kicker">${kicker}</div>
       <div class="hero-title">${esc(cur.title)}</div>
       <div class="hero-sub" id="hero-sub">${cur.count} 首 · 加载中…</div>
       <div class="hero-actions">
         <button id="play-all" class="btn primary">▶ 播放全部</button>
         <button id="shuffle-play" class="btn ghost">⤨ 随机播放</button>
+        ${cur.kind === 'store' ? '<button id="lib-menu" class="btn ghost">管理</button>' : ''}
       </div>
     </div>`;
   armImg($('hero-cover'));
-  if ($('play-all')) $('play-all').onclick = () => { setQueue(visibleTracks().slice(), 0); };
-  if ($('shuffle-play')) $('shuffle-play').onclick = () => {
+  const playList = () => {
     const list = visibleTracks().slice();
+    if (!list.length) { toast('还没有歌曲', 'err'); return null; }
+    return list;
+  };
+  if ($('play-all')) $('play-all').onclick = () => { const list = playList(); if (list) setQueue(list, 0); };
+  if ($('shuffle-play')) $('shuffle-play').onclick = () => {
+    const list = playList();
+    if (!list) return;
     for (let i = list.length - 1; i > 0; i -= 1) { const j = Math.floor(Math.random() * (i + 1)); [list[i], list[j]] = [list[j], list[i]]; }
     setQueue(list, 0);
     state.shuffle = true; ls.set('shuffle', true); updateModeButtons();
   };
+  if ($('lib-menu')) $('lib-menu').onclick = e => openLibraryMenu(e.currentTarget);
 }
 
 // The hero artwork follows the currently playing track (crossfade on change),
 // falling back to the playlist cover when idle.
 function updateHeroPlayback() {
   const t = state.queue[state.queueIndex];
+  const cur = state.current;
+  const sameCtx = !t || !state.queueContext || state.queueContext === (cur?.kind === 'store' ? `store:${cur.storeName}` : 'playlist');
   const kicker = $('hero-kicker');
-  if (kicker) kicker.innerHTML = t ? '<span class="live-dot"></span>正在播放' : 'PLAYLIST';
-  const url = trackCoverUrl(t, 300);
+  if (kicker) kicker.innerHTML = t && sameCtx && !audio.paused ? '<span class="live-dot"></span>正在播放' : (cur?.kind === 'store' ? '缓存库' : 'PLAYLIST');
+  const url = sameCtx ? trackCoverUrl(t, 300) : '';
   if (!url) return;
   let img = $('hero-cover');
   if (!img) return;
@@ -340,6 +354,11 @@ function updateHeroSub() {
   const cur = state.current;
   const el = $('hero-sub');
   if (!el || !cur) return;
+  if (cur.kind === 'store') {
+    const mb = Number(cur.storeMeta?.size) || cur.tracks.reduce((n, t) => n + (Number(t.size) || 0), 0);
+    el.textContent = `${cur.tracks.length} 首${mb ? ` · ${(mb / 1048576).toFixed(1)}MB` : ''}${cur.storeMeta?.active ? ' · 默认' : ''}`;
+    return;
+  }
   const cachedCount = cur.tracks.filter(t => state.cacheStatus.get(t.id)?.ready).length;
   el.textContent = `${cur.count} 首 · 已加载 ${cur.tracks.length}${cur.hasMore ? '+' : ''} · 本地缓存 ${cachedCount}`;
 }
@@ -516,7 +535,7 @@ function rowEl(t, i) {
   const qualityTags = qualityBadges(t.qualities);
   el.innerHTML = `
     <div class="cell-idx"><span class="num">${i + 1}</span><button class="hovp" title="播放">${ICONS.playRow}</button><div class="eq"><i></i><i></i><i></i></div></div>
-    <img class="cover" loading="lazy" src="${t.cover ? coverUrl(t.cover, 96) : ''}" alt="">
+    <img class="cover" loading="lazy" src="${trackCoverUrl(t, 96)}" alt="">
     <div class="name"><span class="t-name">${esc(t.name)}</span>${t.vip ? '<span class="badge vip">VIP</span>' : ''}${qualityTags}<span class="badge cached" style="display:none">缓存</span><span class="badge preview" style="display:none">试听</span></div>
     <div class="artist">${esc(t.artists.join(' / '))}</div>
     <div class="album">${esc(t.album)}</div>
@@ -531,6 +550,8 @@ function rowEl(t, i) {
     cacheCell.title = '缓存操作:清理 / 重加载';
     cacheCell.onclick = e => { e.stopPropagation(); openCacheMenu(t, cacheCell); };
   }
+  if (t.storeSrc) el.dataset.local = 'full';
+  else if (t.preview) el.dataset.local = 'preview';
   el.querySelectorAll('img').forEach(img => { img.draggable = false; }); // 别劫持行拖拽
   armImgs(el);
   return el;
@@ -553,8 +574,9 @@ function playOrPrime(t) {
   const info = state.cacheStatus.get(t.id);
   const list = visibleTracks().slice();
   const idx = list.findIndex(x => x.id === t.id);
-  if (info?.ready || state.onlineAvailable) {
-    if (!info?.ready) {
+  if (idx < 0) return;
+  if (t.storeSrc || info?.ready || state.onlineAvailable) {
+    if (!t.storeSrc && !info?.ready) {
       toast(`「${t.name}」在线播放准备中(约几秒)…`);
       busyCacheRings.add(t.id);
       decorateCacheBadges();
@@ -851,9 +873,35 @@ async function runImport(mode) {
     const r = await (await fetch(`/api/restore?set=${encodeURIComponent(job.name)}&mode=${mode}&activate=0`, { method: 'POST', body: job.file })).json();
     if (r?.ok) {
       toast(`导入完成:${r.imported} 个文件${r.skipped ? `,跳过 ${r.skipped}` : ''}`, 'ok');
-      renderStoreHero(); renderStoreTracksView(); loadStores(); decorateCacheBadges();
+      openStoreView(job.name); loadStores();
     } else toast('导入失败:' + (r?.error || '文件格式不正确'), 'err');
   } catch (err) { toast('导入失败:' + err.message, 'err'); }
+}
+
+async function ensureDefaultStore(preferred) {
+  const r = await fetch('/api/store/sets').then(x => x.json()).catch(() => null);
+  let sets = r?.sets || [];
+  const known = name => sets.some(s => s.name === name);
+  const mark = async name => {
+    if (sets.some(s => s.active)) return;
+    await storeJson('/api/store/switch', { name });
+  };
+  if (preferred && known(preferred)) {
+    await mark(preferred);
+    return preferred;
+  }
+  const active = sets.find(s => s.active);
+  if (active) return active.name;
+  if (!sets.length) {
+    const created = await storeJson('/api/store/create', { name: '默认缓存' });
+    if (created?.ok || String(created?.error || '').includes('已存在')) {
+      await storeJson('/api/store/switch', { name: '默认缓存' });
+      return '默认缓存';
+    }
+    return '';
+  }
+  await storeJson('/api/store/switch', { name: sets[0].name });
+  return sets[0].name;
 }
 
 async function loadStores() {
@@ -868,24 +916,17 @@ async function loadStores() {
         ${s.cover
           ? `<img loading="lazy" src="${storeCoverUrl(s.name)}" alt="">`
           : `<span class="st-fallback sm">${esc([...s.name][0] || '库')}</span>`}
-        <div><div class="t">${esc(s.name)}</div><div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${playingHere ? ' · 播放中' : ''}</div></div>
-        <button class="st-row-del" data-name="${esc(s.name)}" data-active="${s.active ? '1' : ''}" data-playing="${playingHere ? '1' : ''}" title="删除此缓存库">✕</button>
+        <div class="st-main">
+          <div class="t"><span class="nm">${esc(s.name)}</span>${s.active ? '<span class="st-pill">默认</span>' : ''}</div>
+          <div class="c">${s.tracks} 首 · ${(s.size / 1048576).toFixed(1)}MB${playingHere ? ' · 播放中' : ''}</div>
+        </div>
+        <button class="st-more" type="button" data-i="${i}" aria-label="「${esc(s.name)}」的操作" title="库操作">⋯</button>
       </div>`;
-    }).join('') || '<div class="store-empty">还没有缓存库 — 用上方 ＋ 导入歌单包或同步客户端缓存</div>';
-    $('stores').querySelectorAll('.st-row-del').forEach(btn => {
-      btn.onclick = async e => {
+    }).join('') || '<div class="store-empty">还没有缓存库。点右上角 ＋ 新建、导入或同步。</div>';
+    $('stores').querySelectorAll('.st-more').forEach(btn => {
+      btn.onclick = e => {
         e.stopPropagation();
-        const name = btn.dataset.name;
-        let msg = `删除缓存库「${name}」?其中歌曲将全部移除。`;
-        if (btn.dataset.playing === '1') msg = `「${name}」正在播放。${msg}`;
-        if (btn.dataset.active === '1') msg = `「${name}」是当前写入库(新在线缓存会写入它)。${msg}\n删除后写入库将${state.storeSets.length > 1 ? '自动切换到剩余的库' : '被清空;之后在线播放时会自动重建「自动缓存」'}。`;
-        if (!confirm(msg)) return;
-        const r = await storeJson('/api/store/delete', { name });
-        if (r?.ok) {
-          toast(`已删除「${name}」`, 'ok');
-          if (state.storeView?.name === name) { ls.set('storeView', ''); setTimeout(() => location.reload(), 500); }
-          else loadStores();
-        } else toast(r?.error || '删除失败', 'err');
+        openLibraryMenu(btn, state.storeSets[Number(btn.dataset.i)]);
       };
     });
     $('stores').querySelectorAll('.st-item').forEach(el => {
@@ -895,213 +936,185 @@ async function loadStores() {
   } catch (_) {}
 }
 
-function setMainMode(mode) {
-  const store = mode === 'store';
-  document.querySelector('.toolbar').classList.toggle('hidden', store);
-  $('list-head').classList.toggle('hidden', store);
-  $('sentinel').classList.toggle('hidden', store);
-  if (store) { state.filtered = null; $('search').value = ''; }
+function setMainMode() {
+  document.querySelector('.toolbar')?.classList.remove('hidden');
+  $('list-head')?.classList.remove('hidden');
+  $('sentinel')?.classList.remove('hidden');
 }
 
-function openStoreView(name) {
+function songId(song) {
+  if (song && typeof song === 'object') return String(song.id || '');
+  return String(song || '');
+}
+
+function flattenStoreTracks(list, playlists) {
+  const byId = new Map((list || []).map(t => [String(t.id), t]));
+  const seen = new Set();
+  const ordered = [];
+  for (const pl of playlists || []) {
+    for (const song of pl.songs || []) {
+      const raw = byId.get(songId(song));
+      if (raw && !seen.has(String(raw.id))) { seen.add(String(raw.id)); ordered.push(raw); }
+    }
+  }
+  for (const t of list || []) if (!seen.has(String(t.id))) ordered.push(t);
+  return ordered;
+}
+
+function storeTrackAsPlaylist(t, setName) {
+  const set = encodeURIComponent(setName);
+  return {
+    id: String(t.id),
+    name: t.name || `曲目 ${String(t.id).slice(-6)}`,
+    artists: t.artist ? String(t.artist).split(' / ').filter(Boolean) : [],
+    album: t.album || '',
+    duration: Number(t.duration) || 0,
+    cover: null,
+    vip: false,
+    qualities: t.quality ? [t.quality] : [],
+    lyric: false,
+    preview: Boolean(t.preview),
+    coverLocal: t.hasCover ? `/api/store/track-cover?set=${set}&id=${t.id}` : '',
+    storeSrc: t.complete ? `/api/stream/${t.id}?set=${set}` : '',
+  };
+}
+
+let libraryActionName = '';
+
+function openLibraryMenu(anchor, set) {
+  const picked = set?.name ? set : (state.current?.kind === 'store' ? { name: state.current.storeName, ...(state.current.storeMeta || {}) } : null);
+  if (!picked?.name) return;
+  const name = picked.name;
+  closeCacheMenu();
+  const m = document.createElement('div');
+  m.className = 'cache-menu';
+  const items = [];
+  if (!picked.active) items.push(['use', '设为默认']);
+  items.push(['import', '导入到此库'], ['cover', '设置封面']);
+  if (picked.cover) items.push(['uncover', '移除封面']);
+  items.push(['backup', '备份']);
+  if (picked.active) items.push(['clear', '清空歌曲']);
+  items.push(['del', '删除']);
+  m.innerHTML = items.map(([k, label]) => `<button class="cm-item" data-k="${k}">${label}</button>`).join('');
+  document.body.appendChild(m);
+  const rect = anchor.getBoundingClientRect();
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  m.style.left = `${Math.max(8, Math.min(rect.right - mw, window.innerWidth - mw - 8))}px`;
+  m.style.top = `${rect.bottom + 6 + mh > window.innerHeight ? rect.top - mh - 6 : rect.bottom + 6}px`;
+  cacheMenuEl = m;
+  m.onclick = async e => {
+    const key = e.target?.dataset?.k;
+    if (!key) return;
+    closeCacheMenu();
+    if (key === 'use') {
+      const res = await storeJson('/api/store/switch', { name });
+      if (res?.ok) { ls.set('storeView', name); toast(`「${name}」已标为默认`, 'ok'); setTimeout(() => location.reload(), 500); }
+      else toast(res?.error || '切换失败', 'err');
+    } else if (key === 'import') { libraryActionName = name; pendingImportTarget = null; $('restore-file').click(); }
+    else if (key === 'cover') { libraryActionName = name; $('cover-file').click(); }
+    else if (key === 'uncover') {
+      const res = await storeJson('/api/store/cover', { name, data: '' });
+      if (res?.ok) {
+        toast('封面已移除', 'ok');
+        if (state.current?.storeName === name) {
+          state.current.coverUrl = '';
+          state.current.storeMeta = { ...state.current.storeMeta, cover: '' };
+          renderHero(); updateHeroSub();
+        }
+        loadStores();
+      }
+    } else if (key === 'backup') {
+      toast('正在打包该缓存库(浏览器开始下载)…');
+      const a = document.createElement('a');
+      a.href = `/api/backup?set=${encodeURIComponent(name)}`; a.download = '';
+      document.body.appendChild(a); a.click(); a.remove();
+    } else if (key === 'clear') {
+      if (!confirm(`清空缓存库「${name}」的全部歌曲?`)) return;
+      await fetch('/api/store/clear', { method: 'POST' });
+      state.storeProgress.clear();
+      toast('已清空', 'ok');
+      openStoreView(name);
+    } else if (key === 'del') {
+      const playingHere = state.queueContext === `store:${name}`;
+      let msg = `删除缓存库「${name}」?其中歌曲将全部移除。`;
+      if (playingHere) msg = `「${name}」正在播放。${msg}`;
+      if (picked.active) msg = `「${name}」是默认缓存(新的在线缓存会写进它)。${msg}\n删除后默认缓存将${(state.storeSets?.length || 0) > 1 ? '改到剩下的库' : '需要重新建立'}。`;
+      if (!confirm(msg)) return;
+      const res = await storeJson('/api/store/delete', { name });
+      if (res?.ok) { ls.set('storeView', ''); toast(`已删除「${name}」`, 'ok'); setTimeout(() => location.reload(), 500); }
+      else toast(res?.error || '删除失败', 'err');
+    }
+  };
+  setTimeout(() => document.addEventListener('pointerdown', onCacheMenuOutside, true), 0);
+}
+
+async function openStoreView(name) {
   state.storeView = { name };
   ls.set('storeView', name);
-  setMainMode('store');
-  $('tracks').innerHTML = '';
-  renderStoreHero();
-  renderStoreTracksView();
+  document.querySelectorAll('#playlists .pl-item').forEach(el => el.classList.remove('active'));
+  setMainMode();
+  state.filtered = null;
+  if ($('search')) $('search').value = '';
+  document.querySelector('.main').scrollTop = 0;
+  showSkeleton();
   loadStores();
-}
-
-async function renderStoreHero() {
-  const name = state.storeView?.name;
-  if (!name) return;
-  const r = await (await fetch('/api/store/sets')).json();
-  const set = (r.sets || []).find(s => s.name === name);
-  if (!set) { state.storeView = null; ls.set('storeView', ''); setMainMode('playlist'); return; }
-  state.storeSets = r.sets; state.storeActive = r.active;
-  const firstChar = esc([...set.name][0] || '库');
-  const playingHere = state.queueContext === `store:${name}`;
-  // 与歌单 hero 对齐:本库正在播放时优先显示当前曲目封面,否则回落库封面
-  const heroSrc = (playingHere ? trackCoverUrl(state.queue[state.queueIndex], 300) : '')
-    || (set.cover ? storeCoverUrl(name) : '');
-  $('hero').innerHTML = `
-    <div class="hero-cover-wrap">${heroSrc
-      ? `<img id="hero-cover" class="hero-cover" src="${heroSrc}" alt="" data-url="${heroSrc}">`
-      : `<div id="hero-cover" class="st-fallback big" title="设置封面可替换">${firstChar}</div>`}</div>
-    <div class="hero-info">
-      <div class="hero-kicker">缓存库${playingHere ? ' · <span class="live-dot"></span>播放中' : ''}</div>
-      <div class="hero-title">${esc(set.name)}</div>
-      <div class="hero-sub">${set.tracks} 首 · ${(set.size / 1048576).toFixed(1)}MB${set.active ? ' · 写入库' : ''}</div>
-      <div class="hero-actions store-hero-actions">
-        ${set.active ? '' : '<button id="st-use" class="btn primary">设为写入库</button>'}
-        <button id="st-import" class="btn ghost">导入</button>
-        <button id="st-cover" class="btn ghost">设置封面</button>
-        ${set.cover ? '<button id="st-cover-rm" class="btn ghost">移除封面</button>' : ''}
-        <button id="st-backup" class="btn ghost">备份</button>
-        ${set.active ? '<button id="st-clear" class="btn ghost">清空</button>' : ''}
-        <button id="st-del" class="btn ghost st-danger">删除</button>
-      </div>
-    </div>`;
-  armImg($('hero-cover'));
-  if ($('st-use')) $('st-use').onclick = async () => {
-    const res = await storeJson('/api/store/switch', { name });
-    if (res?.ok) { ls.set('storeView', name); toast(`已切换到缓存库「${name}」`, 'ok'); setTimeout(() => location.reload(), 500); }
-    else toast(res?.error || '切换失败', 'err');
-  };
-  if ($('st-import')) $('st-import').onclick = () => $('restore-file').click();
-  if ($('st-cover')) $('st-cover').onclick = () => $('cover-file').click();
-  if ($('st-cover-rm')) $('st-cover-rm').onclick = async () => {
-    const res = await storeJson('/api/store/cover', { name, data: '' });
-    if (res?.ok) { toast('封面已移除', 'ok'); renderStoreHero(); loadStores(); }
-  };
-  if ($('st-backup')) $('st-backup').onclick = () => {
-    toast('正在打包该缓存库(浏览器开始下载)…');
-    const a = document.createElement('a');
-    a.href = `/api/backup?set=${encodeURIComponent(name)}`; a.download = '';
-    document.body.appendChild(a); a.click(); a.remove();
-  };
-  if ($('st-clear')) $('st-clear').onclick = async () => {
-    if (!confirm(`清空缓存库「${name}」的全部歌曲?`)) return;
-    await fetch('/api/store/clear', { method: 'POST' });
-    state.storeProgress.clear(); toast('已清空', 'ok');
-    renderStoreHero(); renderStoreTracksView(); loadStores(); decorateCacheBadges();
-  };
-  if ($('st-del')) $('st-del').onclick = async () => {
-    let msg = `删除缓存库「${name}」?其中歌曲将全部移除。`;
-    if (playingHere) msg = `「${name}」正在播放。${msg}`;
-    if (set.active) msg = `「${name}」是当前写入库(新在线缓存会写入它)。${msg}\n删除后写入库将${(state.storeSets?.length || 0) > 1 ? '自动切换到剩余的库' : '被清空;之后在线播放时会自动重建「自动缓存」'}。`;
-    if (!confirm(msg)) return;
-    const res = await storeJson('/api/store/delete', { name });
-    if (res?.ok) { ls.set('storeView', ''); toast(`已删除「${name}」`, 'ok'); setTimeout(() => location.reload(), 500); }
-    else toast(res?.error || '删除失败', 'err');
-  };
-}
-
-async function renderStoreTracksView() {
-  const name = state.storeView?.name;
-  if (!name) return;
-  const [tr, setR] = await Promise.all([
-    (await fetch(`/api/store/tracks?set=${encodeURIComponent(name)}`)).json(),
-    (await fetch(`/api/store/set?set=${encodeURIComponent(name)}`)).json(),
-  ]);
-  const list = tr.tracks || [];
-  state.storeTracks = list;
-  // 启动恢复:持久化的播放队列属于本库时,曲目就位后重建并停在该曲(不自动播放)
-  if (!state.queue.length && ls.get('queue', null)?.context === `store:${name}` && restoreQueue()) {
-    startCurrent(false);
-    const last = ls.get('lastTrack', null);
-    const cur = state.queue[state.queueIndex];
-    const pos = last?.context === `store:${name}` && cur && last.trackId === cur.id ? Number(last.position) || 0 : 0;
-    if (pos > 5 && audio.duration) audio.currentTime = Math.min(pos, audio.duration - 2);
-    else if (pos > 5) audio.addEventListener('loadedmetadata', () => { audio.currentTime = pos; }, { once: true });
-  }
-  const isActiveSet = name === state.storeActive;
-  if (!list.length) {
-    $('tracks').innerHTML = '<div class="empty">这个缓存库还没有歌曲 — 播放过的在线歌曲会自动缓存到使用中的库,或用「导入」导入歌单包</div>';
+  let tr, setR, setsR;
+  try {
+    [tr, setR, setsR] = await Promise.all([
+      fetch(`/api/store/tracks?set=${encodeURIComponent(name)}`).then(r => r.json()),
+      fetch(`/api/store/set?set=${encodeURIComponent(name)}`).then(r => r.json()),
+      fetch('/api/store/sets').then(r => r.json()),
+    ]);
+  } catch (e) {
+    if (state.storeView?.name !== name) return;
+    $('tracks').innerHTML = `<div class="empty">加载失败:${esc(e.message)}</div>`;
     return;
   }
-  // 库内歌单分组(set.json 的 songs 顺序即排序);不在任何歌单的进「未分组」
-  const byId = new Map(list.map(t => [t.id, t]));
-  const inGroup = new Set();
-  const pls = (setR?.playlists || []).map(pl => ({
-    name: pl.name || '未命名歌单',
-    icon: pl.icon || null,
-    items: (pl.songs || []).map(id => byId.get(id)).filter(Boolean),
-  }));
-  for (const g of pls) for (const t of g.items) inGroup.add(t.id);
-  const ungrouped = list.filter(t => !inGroup.has(t.id));
-  const collapsed = new Set(ls.get('storecol-' + name, []));
-  const frag = document.createDocumentFragment();
-  let rowIdx = 0;
-  const addGroup = (title, iconDataUrl, items) => {
-    const key = title;
-    const isCollapsed = collapsed.has(key);
-    const group = document.createElement('div');
-    group.className = 'st-group' + (isCollapsed ? ' collapsed' : '');
-    const head = document.createElement('button');
-    head.className = 'st-group-head';
-    head.innerHTML = `
-      <span class="st-caret">${isCollapsed ? '▸' : '▾'}</span>
-      ${iconDataUrl
-        ? `<img class="st-pl-icon" src="${iconDataUrl}" alt="">`
-        : `<span class="st-fallback sm">${esc([...title][0] || '歌')}</span>`}
-      <span class="st-pl-name">${esc(title)}</span>
-      <span class="st-pl-meta">${items.length} 首</span>`;
-    head.onclick = () => {
-      group.classList.toggle('collapsed');
-      const nowCollapsed = group.classList.contains('collapsed');
-      const cur = new Set(ls.get('storecol-' + name, []));
-      if (nowCollapsed) cur.add(key); else cur.delete(key);
-      ls.set('storecol-' + name, [...cur]);
-      head.querySelector('.st-caret').textContent = nowCollapsed ? '▸' : '▾';
-    };
-    const body = document.createElement('div');
-    body.className = 'st-group-body';
-    items.forEach(t => { body.appendChild(storeRowEl(t, rowIdx, isActiveSet)); rowIdx += 1; });
-    group.appendChild(head);
-    group.appendChild(body);
-    frag.appendChild(group);
+  if (state.storeView?.name !== name) return;
+  const set = (setsR?.sets || []).find(s => s.name === name);
+  if (!set) {
+    state.storeView = null;
+    ls.set('storeView', '');
+    toast('缓存库不存在', 'err');
+    return;
+  }
+  state.storeSets = setsR.sets || [];
+  state.storeActive = setsR.active;
+  const tracks = flattenStoreTracks(tr.tracks || [], setR?.playlists).map(t => storeTrackAsPlaylist(t, name));
+  state.storeTracks = tracks;
+  state.current = {
+    id: `store:${name}`,
+    kind: 'store',
+    storeName: name,
+    title: set.name,
+    cover: null,
+    coverUrl: set.cover ? storeCoverUrl(name) : '',
+    count: tracks.length,
+    tracks,
+    cursor: '',
+    hasMore: false,
+    loading: false,
+    rendered: 0,
+    order: null,
+    storeMeta: set,
   };
-  pls.forEach(g => addGroup(g.name, g.icon, g.items));
-  if (ungrouped.length) addGroup('未分组', null, ungrouped);
-  $('tracks').innerHTML = '';
-  $('tracks').appendChild(frag);
+  renderHero();
+  updateHeroSub();
+  if (!tracks.length) {
+    $('tracks').innerHTML = '<div class="empty">这个缓存还没有歌曲。在线播放会写进默认缓存,也可以用「导入」加入歌单包</div>';
+    $('sentinel').textContent = '';
+    if ($('sort-select')) $('sort-select').value = 'default';
+    return;
+  }
+  await restorePlaylistOrder();
+  if (state.storeView?.name !== name) return;
+  if (!state.current.order) {
+    state.current.rendered = 0;
+    appendRows(tracks, 0);
+  }
+  $('sentinel').textContent = '· 没有更多了 ·';
 }
 
-function storeRowEl(t, i, isActiveSet) {
-  const el = document.createElement('div');
-  el.className = 'track store-row';
-  el.dataset.id = t.id;
-  el.style.setProperty('--i', String(i));
-  // 库内任何曲目都能点播:有本地音频走库限定流(免登录),纯在线条目由
-  // /api/stream 自解析(需登录)。不再要求「先设为写入库」。
-  const setName = encodeURIComponent(state.storeView?.name || '');
-  el.innerHTML = `
-    <div class="cell-idx"><span class="num">${i + 1}</span><button class="hovp" title="播放">${ICONS.playRow}</button></div>
-    ${t.hasCover
-      ? `<img class="st-cv" loading="lazy" src="/api/store/track-cover?set=${setName}&id=${t.id}" alt="" onerror="this.style.display='none'">`
-      : `<span class="st-fallback sm">${esc([...(t.name || '曲')][0] || '曲')}</span>`}
-    <div class="name"><span class="t-name">${esc(t.name || `曲目 ${String(t.id).slice(-6)}`)}</span>${t.preview ? '<span class="badge preview">试听</span>' : ''}${t.quality ? `<span class="badge qual">${esc(t.quality)}</span>` : ''}${t.artist ? `<span class="t-sub">${esc(t.artist)}${t.album ? ' · ' + esc(t.album) : ''}</span>` : ''}</div>
-    <div class="artist st-size">${(t.size / 1048576).toFixed(1)}MB</div>
-    <div class="album st-state${t.complete ? ' ok' : ' online'}">${t.complete ? '已缓存' : '在线'}</div>
-    <div class="cell-cache"><button class="mini-btn st-rm">移除</button></div>`;
-  const play = () => playStoreTrack(t);
-  el.onclick = play;
-  el.querySelector('.hovp')?.addEventListener('click', e => { e.stopPropagation(); play(); });
-  el.querySelector('.st-rm').addEventListener('click', async e => {
-    e.stopPropagation();
-    await storeJson('/api/store/remove-track', { id: t.id, set: state.storeView?.name });
-    state.storeProgress.delete(t.id);
-    renderStoreTracksView(); renderStoreHero(); loadStores(); decorateCacheBadges();
-  });
-  return el;
-}
-
-// 库条目 → 队列对象:完整(已缓存)优先排前;本地音频走库限定流(?set=,
-// 免登录),其余条目播放时由 /api/stream 尝试客户端缓存/在线解析。封面用库内
-// 已落盘的 <id>.jpg(离线可用,不走 CDN)。队列恢复(storeQueueObjects)共用此映射。
-function storeQueueObjects(list, setName) {
-  const playable = [...list.filter(t => t.complete), ...list.filter(t => !t.complete)];
-  return playable.map(t => ({
-    id: t.id, name: t.name || `曲目 ${String(t.id).slice(-6)}`,
-    artists: t.artist ? [t.artist] : [], album: t.album || '',
-    duration: t.duration || 0, cover: null, vip: false,
-    qualities: t.quality ? [t.quality] : [],
-    // 库内已落盘的封面(离线可用,不用走 CDN)
-    coverLocal: t.hasCover ? `/api/store/track-cover?set=${encodeURIComponent(setName)}&id=${t.id}` : '',
-    // 库限定流地址:非空时 startCurrent 直接用它(本地 m4a,不走在线解析)
-    storeSrc: t.complete ? `/api/stream/${t.id}?set=${encodeURIComponent(setName)}` : '',
-  }));
-}
-
-function playStoreTrack(track) {
-  const setName = state.storeView?.name || '';
-  const objs = storeQueueObjects(state.storeTracks || [], setName);
-  const idx = objs.findIndex(t => t.id === track.id);
-  if (idx < 0) return;
-  setQueue(objs, idx, `store:${setName}`);
-}
 
 // 同步汽水音乐缓存为库:填名+图标(可选)→ POST /api/store/sync → 轮询进度
 const syncWizard = { icon: null, jobId: null, poll: null };
@@ -1468,15 +1481,17 @@ function decorateCacheBadges() {
     const info = state.cacheStatus.get(id);
     const store = state.storeProgress.get(id);
     const storeComplete = Boolean(store?.complete);
+    const local = el.dataset.local;
     const cached = el.querySelector('.badge.cached');
     const preview = el.querySelector('.badge.preview');
     if (cached && preview) {
-      const storeFull = storeComplete && !store?.preview;          // 完整曲入库才算缓存
-      const isPreview = (info?.ready && info.isPreview) || (storeComplete && store?.preview);
+      const storeFull = (storeComplete && !store?.preview) || local === 'full';
+      const isPreview = (info?.ready && info.isPreview) || (storeComplete && store?.preview) || local === 'preview';
       cached.style.display = (info?.ready && !info.isPreview) || storeFull ? '' : 'none';
       preview.style.display = isPreview ? '' : 'none';
     }
-    setCacheRing(el, storeComplete ? 1 : (store?.progress || 0), storeComplete || (info?.ready && !info.isPreview), busyCacheRings.has(id));
+    const ringDone = local === 'full' || storeComplete || (info?.ready && !info.isPreview);
+    setCacheRing(el, ringDone ? 1 : (store?.progress || 0), ringDone, busyCacheRings.has(id));
   }
   updateHeroSub();
 }
@@ -1533,17 +1548,32 @@ function openCacheMenu(track, anchor) {
 }
 
 async function doClearTrackCache(track) {
-  // 只清理 qsyy 自己的增量缓存;汽水客户端的缓存只读不动
-  if (!state.storeProgress.get(track.id)?.complete) {
+  // 只清理 qsyy 自己的增量缓存;汽水客户端的缓存只读不动。
+  // 正在看某个缓存库时,清的是这一库里的文件,并把它从同一张列表里拿掉。
+  const viewing = state.current?.kind === 'store' ? state.current.storeName : '';
+  const inLibrary = Boolean(viewing) && state.current.tracks.some(t => t.id === String(track.id) && t.storeSrc);
+  if (!state.storeProgress.get(track.id)?.complete && !inLibrary) {
     toast(state.cacheStatus.get(track.id)?.ready
       ? '这首歌的缓存在汽水音乐客户端内,qsyy 对客户端文件只读,无法清理'
       : '这首歌还没有缓存', 'err');
     return;
   }
-  await storeJson('/api/store/remove-track', { id: track.id });
+  await storeJson('/api/store/remove-track', { id: track.id, ...(viewing ? { set: viewing } : {}) });
   state.storeProgress.delete(track.id);
   state.cacheStatus.delete(track.id);
-  requestCacheStatus([track.id]);   // 重新评估:若客户端缓存仍在,环会保持
+  if (viewing && state.current?.storeName === viewing) {
+    const id = String(track.id);
+    state.current.tracks = state.current.tracks.filter(t => t.id !== id);
+    state.current.count = state.current.tracks.length;
+    state.storeTracks = state.current.tracks;
+    if (state.current.order?.ids) state.current.order.ids = state.current.order.ids.filter(x => String(x) !== id);
+    if (!state.current.tracks.length) {
+      $('tracks').innerHTML = '<div class="empty">这个缓存还没有歌曲。在线播放会写进默认缓存,也可以用「导入」加入歌单包</div>';
+      $('sentinel').textContent = '';
+    } else rerenderRows();
+    updateHeroSub();
+    loadStores();
+  } else requestCacheStatus([track.id]);
   decorateCacheBadges();
   toast(`已清理「${track.name}」的缓存`, 'ok');
 }
@@ -1667,13 +1697,11 @@ function persistQueue() {
 function restoreQueue() {
   const saved = ls.get('queue', null);
   if (!saved?.ids?.length) return false;
-  // 库队列:对象要从 storeTracks 重建(coverLocal/storeSrc 在 storeQueueObjects 里)。
-  // storeTracks 未就位时返回 false,由 renderStoreTracksView 就位后再调一次。
+  // 库队列和歌单队列同一套曲目对象,存在 current.tracks 里。
   if (saved.context?.startsWith('store:')) {
-    const setName = saved.context.slice(6);
-    if (state.storeView?.name !== setName || !state.storeTracks?.length) return false;
-    const byId = new Map(storeQueueObjects(state.storeTracks, setName).map(t => [t.id, t]));
-    const queue = saved.ids.map(id => byId.get(id)).filter(Boolean);
+    if (state.current?.id !== saved.context || !state.current.tracks?.length) return false;
+    const byId = new Map(state.current.tracks.map(t => [t.id, t]));
+    const queue = saved.ids.map(id => byId.get(String(id))).filter(Boolean);
     if (!queue.length) return false;
     state.queue = queue;
     state.queueIndex = Math.min(Math.max(0, saved.index), queue.length - 1);
@@ -1811,12 +1839,13 @@ function prefetchNext() {
 audio.onplaying = () => {
   $('p-play').innerHTML = ICONS.pause;
   decoratePlayingRow();
+  updateHeroPlayback();
   const t = state.queue[state.queueIndex];
   document.title = t ? `▶ ${t.name} · qsyy` : 'qsyy';
   prefetchNext();
   startEqLoop();
 };
-audio.onpause = () => { $('p-title').textContent = $('p-title').textContent.replace(' — 点 ▶ 开始', ''); $('p-play').innerHTML = ICONS.play; decoratePlayingRow(); stopEqLoop(); };
+audio.onpause = () => { $('p-title').textContent = $('p-title').textContent.replace(' — 点 ▶ 开始', ''); $('p-play').innerHTML = ICONS.play; decoratePlayingRow(); updateHeroPlayback(); stopEqLoop(); };
 audio.ontimeupdate = () => {
   highlightLyric();
   if (!audio.duration || seeking) return;
@@ -2490,7 +2519,6 @@ sentinelObserver.observe($('sentinel'));
 
 // auto-sync playlists every 5 minutes (skipped while browsing a local
 // library — the refresh must not yank the user out of the store view)
-setInterval(() => { if (!state.storeView) loadPlaylists(false).catch(() => {}); }, 5 * 60 * 1000);
 
 // ------------------------------------------------------------------ boot
 
@@ -2591,6 +2619,7 @@ setInterval(loadStats, 10 * 60 * 1000);
   if (backdrop) backdrop.onclick = () => setDrawer(false);
   // picking a playlist closes the drawer (openPlaylist is delegated further up)
   if ($('playlists')) $('playlists').addEventListener('click', () => setDrawer(false));
+  if ($('stores')) $('stores').addEventListener('click', () => setDrawer(false));
   refreshWebLogin().catch(() => {});
   startProgressStream();
   fetch('/api/effects').then(r => r.json()).then(r => {
@@ -2627,8 +2656,9 @@ setInterval(loadStats, 10 * 60 * 1000);
       } catch (err) { toast('导入失败:' + err.message, 'err'); }
       return;
     }
-    const name = state.storeView?.name;
-    if (!name) { toast('先在侧栏「我的缓存」选择一个缓存库再导入', 'err'); return; }
+    const name = libraryActionName || state.storeView?.name;
+    libraryActionName = '';
+    if (!name) { toast('先选择一个缓存库再导入', 'err'); return; }
     pendingImportFile = { file, name };
     $('im-set').textContent = name;
     $('im-file').textContent = `${file.name} · ${(file.size / 1048576).toFixed(1)}MB`;
@@ -2687,21 +2717,45 @@ setInterval(loadStats, 10 * 60 * 1000);
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    const name = state.storeView?.name;
+    const name = libraryActionName || state.storeView?.name;
+    libraryActionName = '';
     if (!name) return;
     if (!/^image\//.test(file.type)) { toast('请选择图片文件(jpg/png/webp)', 'err'); return; }
     const data = await new Promise(res => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.readAsDataURL(file); });
     const r = await storeJson('/api/store/cover', { name, data });
-    if (r?.ok) { toast('封面已更新', 'ok'); renderStoreHero(); loadStores(); }
+    if (r?.ok) {
+      toast('封面已更新', 'ok');
+      if (state.current?.kind === 'store' && state.current.storeName === name) {
+        state.current.coverUrl = `${storeCoverUrl(name)}&v=${Date.now()}`;
+        state.current.storeMeta = { ...state.current.storeMeta, cover: true };
+        renderHero();
+        updateHeroSub();
+      }
+      loadStores();
+    }
     else toast(r?.error || '封面设置失败', 'err');
   };
   // 侧栏「＋」添加库:同步客户端缓存 / 导入压缩包 / 新建空库
-  const toggleAddMenu = show => {
-    $('store-add-menu')?.classList.toggle('hidden', !show);
-    if (show) $('store-new-form')?.classList.add('hidden');
+  const hideAddPop = () => {
+    $('store-pop')?.classList.add('hidden');
+    document.removeEventListener('pointerdown', onAddPopOutside, true);
   };
-  if ($('store-add-btn')) $('store-add-btn').onclick = () => toggleAddMenu($('store-add-menu')?.classList.contains('hidden'));
-  if ($('store-sync-btn')) $('store-sync-btn').onclick = () => { toggleAddMenu(false); openSyncModal(); };
+  const onAddPopOutside = e => {
+    if ($('store-pop')?.contains(e.target) || e.target === $('store-add-btn')) return;
+    hideAddPop();
+  };
+  const showAddPop = which => {
+    $('store-pop')?.classList.remove('hidden');
+    $('store-add-menu')?.classList.toggle('hidden', which !== 'menu');
+    $('store-new-form')?.classList.toggle('hidden', which !== 'new');
+    if (which === 'new') $('store-new-name')?.focus();
+    setTimeout(() => document.addEventListener('pointerdown', onAddPopOutside, true), 0);
+  };
+  if ($('store-add-btn')) $('store-add-btn').onclick = () => {
+    if ($('store-pop')?.classList.contains('hidden')) showAddPop('menu');
+    else hideAddPop();
+  };
+  if ($('store-sync-btn')) $('store-sync-btn').onclick = () => { hideAddPop(); openSyncModal(); };
   const syncModal = $('sync-modal');
   if (syncModal) syncModal.addEventListener('click', e => { if (e.target === syncModal) closeSyncModal(); });
   if ($('sync-cancel')) $('sync-cancel').onclick = closeSyncModal;
@@ -2735,30 +2789,27 @@ setInterval(loadStats, 10 * 60 * 1000);
   };
   if ($('store-import-btn')) $('store-import-btn').onclick = () => {
     pendingImportTarget = 'new';
-    toggleAddMenu(false);
+    hideAddPop();
     $('restore-file').click();
   };
-  if ($('store-empty-btn')) $('store-empty-btn').onclick = () => {
-    toggleAddMenu(false);
-    const form = $('store-new-form');
-    form.classList.remove('hidden');
-    $('store-new-name').focus();
-  };
+  if ($('store-empty-btn')) $('store-empty-btn').onclick = () => showAddPop('new');
   const doCreateStore = async () => {
     const name = ($('store-new-name').value || '').trim();
     if (!name) return;
-    const dir = ($('store-new-dir').value || '').trim();
+    const dir = ($('store-new-dir')?.value || '').trim();
     const r = await storeJson('/api/store/create', { name, dir });
     if (r?.ok) {
       $('store-new-name').value = '';
-      $('store-new-dir').value = '';
-      $('store-new-form').classList.add('hidden');
+      if ($('store-new-dir')) $('store-new-dir').value = '';
+      hideAddPop();
       toast(`已新建缓存库「${name}」`, 'ok');
+      if (!state.storeSets.some(s => s.active)) await storeJson('/api/store/switch', { name });
       loadStores(); openStoreView(name);
     } else toast(r?.error || '新建失败', 'err');
   };
+  if ($('store-new-form')) $('store-new-form').onsubmit = e => { e.preventDefault(); doCreateStore(); };
   if ($('store-new-ok')) $('store-new-ok').onclick = doCreateStore;
-  if ($('store-new-name')) $('store-new-name').addEventListener('keydown', e => { if (e.key === 'Enter') doCreateStore(); });
+  if ($('store-new-name')) $('store-new-name').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doCreateStore(); } });
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   try {
     // boot in parallel: /api/me + /api/stats + /api/effects don't depend on
@@ -2767,14 +2818,12 @@ setInterval(loadStats, 10 * 60 * 1000);
     // library-first path: local store import/browse/play work logged-out.
     loadStats();
     loadAppVersion();
-    loadStores();
-    await loadPlaylists(true).catch(async () => { state.me = null; await loadMe(); });
-    // reopen the cache-library view if that's where the user last was;
-    // 持久化队列属于某个库时优先回那个库(库队列要等 storeTracks 就位才能恢复)
+    loadMe().catch(() => {});
     const savedQueue = ls.get('queue', null);
     const queueStore = savedQueue?.context?.startsWith('store:') ? savedQueue.context.slice(6) : '';
     const lastStore = queueStore || ls.get('storeView', '');
-    if (lastStore) openStoreView(lastStore);
+    const openName = await ensureDefaultStore(lastStore);
+    if (openName) await openStoreView(openName);
     if (!restoreQueue()) {
       const saved = ls.get('lastTrack', null);
       // queue restore happens after playlist loads in openPlaylist resume path
@@ -2783,6 +2832,6 @@ setInterval(loadStats, 10 * 60 * 1000);
       startCurrent(false);
     }
   } catch (e) {
-    $('tracks').innerHTML = `<div class="empty">${ICONS.warn}<br>加载失败:${esc(e.message)}<br>试试点击左下角「同步收藏」</div>`;
+    $('tracks').innerHTML = `<div class="empty">${ICONS.warn}<br>加载失败:${esc(e.message)}<br>试试从侧栏打开一个缓存库</div>`;
   }
 })();

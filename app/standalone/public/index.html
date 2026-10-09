@@ -18,29 +18,27 @@
 <body>
 <div id="app">
 
-  <button id="sidebar-toggle" class="sidebar-toggle" title="歌单"><svg class="ic" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></button>
+  <button id="sidebar-toggle" class="sidebar-toggle" title="缓存"><svg class="ic" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></button>
   <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
 
   <aside class="sidebar">
     <div class="brand"><img src="/icons/favicon.svg" alt=""><div><div class="b-name">qsyy</div><div class="b-tag">汽水收藏播放器</div></div></div>
     <div id="user" class="user"></div>
-    <div class="nav-caption">我的歌单 <button id="export-btn" class="cap-btn" title="导出歌单为 ZIP 包"><svg class="ic" viewBox="0 0 24 24"><path d="M12 15V4m0 0l-4 4m4-4l4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>导出</button></div>
-    <nav id="playlists" class="playlists"></nav>
-    <div class="nav-caption">我的缓存 <button id="store-add-btn" class="cap-btn" title="添加缓存库:导入压缩包或新建空库">＋</button></div>
-    <div id="store-add-menu" class="store-add-menu hidden">
-      <button id="store-sync-btn" class="add-opt">同步汽水音乐缓存为库…</button>
-      <button id="store-import-btn" class="add-opt">导入压缩包(zip / 备份)…</button>
-      <button id="store-empty-btn" class="add-opt">新建空库…</button>
-    </div>
-    <div id="store-new-form" class="store-new hidden">
-      <input id="store-new-name" type="text" placeholder="新缓存库名称…" autocomplete="off">
-      <button id="store-new-ok" class="mini-btn">新建</button>
-      <input id="store-new-dir" type="text" placeholder="保存位置(留空 = 默认目录)" autocomplete="off">
+    <div class="nav-caption">我的缓存 <button id="store-add-btn" class="cap-btn" type="button" title="新建、导入或同步" aria-label="添加缓存库">＋</button></div>
+    <div id="store-pop" class="store-pop hidden">
+      <div id="store-add-menu" class="store-add-menu">
+        <button id="store-empty-btn" class="add-opt" type="button">新建缓存库</button>
+        <button id="store-import-btn" class="add-opt" type="button">导入压缩包</button>
+        <button id="store-sync-btn" class="add-opt" type="button">同步汽水音乐缓存</button>
+      </div>
+      <form id="store-new-form" class="store-new hidden">
+        <input id="store-new-name" type="text" placeholder="缓存库名称" autocomplete="off" maxlength="32">
+        <input id="store-new-dir" type="text" placeholder="保存位置，留空用默认目录" autocomplete="off">
+        <button id="store-new-ok" class="mini-btn" type="button">新建</button>
+      </form>
     </div>
     <nav id="stores" class="playlists stores"></nav>
     <div class="sidebar-foot">
-      <button id="refresh" class="foot-btn" title="重新拉取收藏歌单"><svg class="ic" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6"/></svg>同步收藏</button>
-      <button id="store-btn" class="foot-btn" title="打开当前使用中的缓存库"><svg class="ic" viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4zM3 7v6m0 0l9 4 9-4V7M12 17v4"/></svg>我的缓存</button>
       <input id="restore-file" type="file" accept=".tar,.zip" style="display:none">
       <input id="cover-file" type="file" accept="image/*" style="display:none">
       <input id="export-icon-file" type="file" accept="image/*" style="display:none">
@@ -58,10 +56,10 @@
     <div class="toolbar">
       <div class="search-wrap">
         <span class="search-icon"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg></span>
-        <input id="search" type="text" placeholder="在当前歌单内搜索…" autocomplete="off">
+        <input id="search" type="text" placeholder="在当前缓存内搜索…" autocomplete="off">
       </div>
       <div class="toolbar-actions">
-        <select id="sort-select" class="pill-select" title="排序方式;拖动列表行可自定义顺序,「同步收藏」恢复汽水默认排序">
+        <select id="sort-select" class="pill-select" title="排序方式;拖动列表行可自定义顺序">
           <option value="default">默认排序</option>
           <option value="az">字母 A→Z</option>
           <option value="duration">时长 短→长</option>
