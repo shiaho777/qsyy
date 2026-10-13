@@ -15,12 +15,16 @@ import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
-  CLIENT_DATA, OS_CACHE_ROOT,
+  CLIENT_DATA, OS_CACHE_ROOT, resolveClientCookiesPath, probeAndroidSoda, isAndroid,
   findDeviceNode, findFfmpeg, openFolder, openClient,
   findPortHolderPid, nodeChildLaunch,
 } from './platform.mjs';
 import {
-  classifyQrPoll, collectCookies, cookieHeader, followRedirects, qrScanHint,
+  classifyQrPoll, collectCookies, cookieHeader, followRedirects, nextQrPollView,
+  qrPollShouldWait, qrScanHint, QR_RATE_LIMIT_COOLDOWN_MS, qrPollDetail,
+  shouldFallbackToGet, checkQrconnectGetUrl, serializeQrPending, restoreQrPending,
+  pickWebSessionCookies, QR_PENDING_TTL_MS, mergeCookiePayload, shouldCommitQrSession,
+  isSignedPassportUrl,
 } from './qr-login.mjs';
 import { readClientCookies } from './cookies.mjs';
 
@@ -277,7 +281,7 @@ function sessionCookies(callback) {
     callback(cookieCache.value);
     return;
   }
-  const text = readClientCookies(COOKIES_DB);
+  const text = readClientCookies(resolveClientCookiesPath() || COOKIES_DB);
   if (text) cookieCache = { value: text, at: Date.now() };
   callback(text || webSession?.cookie || '');
 }
@@ -1060,14 +1064,13 @@ if (!fs.existsSync(WEB_SESSION_FILE) && fs.existsSync(LEGACY_WEB_SESSION_FILE)) 
 try { webSession = JSON.parse(fs.readFileSync(WEB_SESSION_FILE, 'utf8')); } catch (_) {}
 
 function saveWebSession(cookieMap) {
-  const keep = ['sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt', 'uid_tt', 'uid_tt_ss', 'ssid_ucp_v1', 'sid_ucp_v1', 'passport_csrf_token', 'ttwid', 'odin_tt', 'n_mh', 'passport_assist_user', 'session_tlb_tag', 'uid'];
-  const filtered = {};
-  for (const name of keep) if (cookieMap[name]) filtered[name] = cookieMap[name];
-  if (!filtered.sessionid) return false;
+  const filtered = pickWebSessionCookies(cookieMap);
+  if (!filtered) return false;
   webSession = { cookie: Object.entries(filtered).map(([k, v]) => `${k}=${v}`).join('; '), savedAt: Date.now() };
   try { fs.mkdirSync(DECRYPT_DIR, { recursive: true }); } catch (_) {}
   fs.writeFileSync(WEB_SESSION_FILE, JSON.stringify(webSession, null, 2));
   onlineCache.clear();
+  cookieCache = { value: '', at: 0 };
   return true;
 }
 
@@ -1096,46 +1099,67 @@ const PASSPORT_HEADERS = {
   'bd-ticket-guard-server-cert-sn': '0',
 };
 
-const qrPending = new Map(); // token → { cookies, device_id, install_id }
+const qrPending = new Map(); // token → { cookies, device_id, install_id, createdAt }
+const QR_STATE_FILE = path.join(DECRYPT_DIR, 'qr-pending.json');
+
+function persistQrState() {
+  try {
+    fs.mkdirSync(DECRYPT_DIR, { recursive: true });
+    fs.writeFileSync(QR_STATE_FILE, JSON.stringify(serializeQrPending(qrPending), null, 2));
+  } catch (_) {}
+}
+
+function loadQrState() {
+  try {
+    const dumped = JSON.parse(fs.readFileSync(QR_STATE_FILE, 'utf8'));
+    for (const [token, value] of restoreQrPending(dumped)) qrPending.set(token, value);
+  } catch (_) {}
+}
+loadQrState();
+
+function randomDigits(length) {
+  let out = String(1 + Math.floor(Math.random() * 8));
+  while (out.length < length) out += String(Math.floor(Math.random() * 10));
+  return out;
+}
 
 function passportDevice() {
-  const device_id = String(Date.now());
-  const install_id = String(Date.now() + 1);
+  const device_id = randomDigits(16);
+  const install_id = randomDigits(15);
   return { device_id, install_id, did: device_id, iid: install_id };
 }
 
-async function createQrLogin() {
-  const device = passportDevice();
-  const search = passportQuery({
-    ...device, next: 'https://api.qishui.com',
-    need_logo: 'false', need_short_url: 'false', is_frontier: 'false',
-  });
-  const result = await new Promise(resolve => {
-    https.get(`${API_BASE}/passport/web/get_qrcode/?${search}`, { headers: PASSPORT_HEADERS }, res => {
+function passportHttp(method, target, { cookies, body } = {}) {
+  return new Promise(resolve => {
+    const headers = {
+      ...PASSPORT_HEADERS,
+      cookie: cookieHeader(cookies || {}),
+      'x-tt-passport-csrf-token': cookies?.passport_csrf_token || '',
+    };
+    if (method === 'POST' && body != null) {
+      headers['content-type'] = 'application/x-www-form-urlencoded';
+      headers['content-length'] = Buffer.byteLength(body);
+    }
+    const req = https.request(target, { method, headers }, res => {
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
-        const cookies = collectCookies(res.headers['set-cookie']);
-        try { resolve({ status: res.statusCode, cookies, json: JSON.parse(Buffer.concat(chunks).toString()) }); }
-        catch (_) { resolve({ status: res.statusCode, cookies, json: null }); }
+        const jar = collectCookies(res.headers['set-cookie']);
+        let json = null;
+        try { json = JSON.parse(Buffer.concat(chunks).toString()); } catch (_) {}
+        resolve({ status: res.statusCode, cookies: jar, json });
       });
-    }).on('error', () => resolve({ status: 0, cookies: {}, json: null }));
+    });
+    req.on('error', () => resolve({ status: 0, cookies: {}, json: null }));
+    req.setTimeout(15000, () => { try { req.destroy(); } catch (_) {} resolve({ status: 0, cookies: {}, json: null }); });
+    if (method === 'POST' && body != null) req.end(body);
+    else req.end();
   });
-  const data = result.json?.data || {};
-  if (!data.token) throw new Error(result.json?.message || `get_qrcode failed (${result.status})`);
-  qrPending.set(data.token, { cookies: result.cookies, ...device });
-  setTimeout(() => qrPending.delete(data.token), 10 * 60 * 1000);
-  return {
-    token: data.token,
-    qrcode: data.qrcode || '',
-    url: data.qrcode_index_url || data.web_url || '',
-    hint: qrScanHint(data),
-  };
 }
 
-async function pollQrLogin(token) {
+function qrPollSpec(token) {
   const pending = qrPending.get(token);
-  if (!pending) return { status: 'expired', message: '二维码已过期,请重新生成' };
+  if (!pending) return null;
   const search = passportQuery({
     device_id: pending.device_id, install_id: pending.install_id,
     did: pending.did, iid: pending.iid,
@@ -1144,46 +1168,123 @@ async function pollQrLogin(token) {
     need_logo: 'false', need_short_url: 'false', is_frontier: 'false',
     token, is_new_login: '1', next: 'https://api.qishui.com',
   }).toString();
-  const result = await new Promise(resolve => {
-    const req = https.request(`${API_BASE}/passport/web/check_qrconnect/?${search}`, {
-      method: 'POST',
-      headers: {
-        ...PASSPORT_HEADERS,
-        'content-type': 'application/x-www-form-urlencoded',
-        'content-length': Buffer.byteLength(body),
-        cookie: cookieHeader(pending.cookies),
-        'x-tt-passport-csrf-token': pending.cookies.passport_csrf_token || '',
-      },
-    }, res => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        const cookies = collectCookies(res.headers['set-cookie']);
-        try { resolve({ status: res.statusCode, cookies, json: JSON.parse(Buffer.concat(chunks).toString()) }); }
-        catch (_) { resolve({ status: res.statusCode, cookies, json: null }); }
-      });
-    });
-    req.on('error', () => resolve({ status: 0, cookies: {}, json: null }));
-    req.end(body);
-  });
-  Object.assign(pending.cookies, result.cookies);
-  if (pending.cookies.sessionid && saveWebSession(pending.cookies)) {
-    qrPending.delete(token);
-    return { status: 'success', message: '登录成功' };
+  return {
+    token,
+    postUrl: `${API_BASE}/passport/web/check_qrconnect/?${search}`,
+    getUrl: checkQrconnectGetUrl(API_BASE, search, token),
+    body,
+    cookies: pending.cookies,
+    headers: {
+      ...PASSPORT_HEADERS,
+      'content-type': 'application/x-www-form-urlencoded',
+      'x-tt-passport-csrf-token': pending.cookies.passport_csrf_token || '',
+    },
+    origin: API_BASE,
+    page: `${API_BASE}/qsyy-poll.html`,
+  };
+}
+
+function parsePollJson(input) {
+  if (input?.json && typeof input.json === 'object') return input.json;
+  const raw = input?.text || input?.body;
+  if (typeof raw === 'string' && raw) {
+    try { return JSON.parse(raw); } catch (_) {}
+  }
+  return null;
+}
+
+async function applyQrPollPayload(token, result) {
+  const pending = qrPending.get(token);
+  if (!pending) return { status: 'expired', message: '二维码已过期,请重新生成' };
+  Object.assign(pending.cookies, result.cookies || {});
+  if (result.signed) {
+    pending.preferSigner = true;
+    pending.signedAt = Date.now();
   }
   const classified = classifyQrPoll(result.json);
+  if (shouldCommitQrSession(classified, pending.cookies) && saveWebSession(pending.cookies)) {
+    qrPending.delete(token);
+    persistQrState();
+    return { status: 'success', message: '登录成功' };
+  }
+  if (classified.status === 'rate_limited') {
+    pending.cooldownUntil = Date.now() + QR_RATE_LIMIT_COOLDOWN_MS;
+    const view = { ...nextQrPollView(classified, pending.lastResult), signer: true };
+    view.detail = qrPollDetail(classified, result.json, result.status);
+    pending.lastResult = view;
+    persistQrState();
+    return view;
+  }
   if (classified.status === 'confirmed') {
     if (classified.redirect) {
       await followRedirects(classified.redirect, PASSPORT_HEADERS, pending.cookies);
     }
-    if (pending.cookies.sessionid && saveWebSession(pending.cookies)) {
+    if (shouldCommitQrSession(classified, pending.cookies) && saveWebSession(pending.cookies)) {
       qrPending.delete(token);
+      persistQrState();
       return { status: 'success', message: '登录成功' };
     }
-    return { status: 'scanned', message: '已确认,正在领取登录态…' };
+    const waiting = { status: 'scanned', message: '已确认,正在领取登录态…', signer: true };
+    pending.lastResult = waiting;
+    persistQrState();
+    return { ...waiting, detail: qrPollDetail(classified, result.json, result.status) };
   }
-  if (classified.status === 'expired') qrPending.delete(token);
-  return { status: classified.status, message: classified.message };
+  const view = nextQrPollView(classified, pending.lastResult);
+  view.detail = qrPollDetail(classified, result.json, result.status);
+  if (result.signed) view.signer = true;
+  if (view.status === 'expired') qrPending.delete(token);
+  else pending.lastResult = view;
+  persistQrState();
+  return view;
+}
+
+async function createQrLogin() {
+  const device = passportDevice();
+  const search = passportQuery({
+    ...device, next: 'https://api.qishui.com',
+    need_logo: 'false', need_short_url: 'false', is_frontier: 'false',
+  });
+  const result = await passportHttp('GET', `${API_BASE}/passport/web/get_qrcode/?${search}`, { cookies: {} });
+  const data = result.json?.data || {};
+  if (!data.token) throw new Error(result.json?.message || `get_qrcode failed (${result.status})`);
+  qrPending.set(data.token, {
+    cookies: result.cookies, ...device,
+    lastCheck: 0, cooldownUntil: 0,
+    lastResult: { status: 'waiting', message: '等待扫码' },
+    createdAt: Date.now(),
+  });
+  setTimeout(() => {
+    qrPending.delete(data.token);
+    persistQrState();
+  }, QR_PENDING_TTL_MS);
+  persistQrState();
+  return {
+    token: data.token,
+    qrcode: data.qrcode || '',
+    url: data.qrcode_index_url || data.web_url || '',
+    hint: qrScanHint(data),
+  };
+}
+
+async function pollQrLogin(token, { peek = false } = {}) {
+  const pending = qrPending.get(token);
+  if (!pending) return { status: 'expired', message: '二维码已过期,请重新生成' };
+  const now = Date.now();
+  if (peek) return pending.lastResult || { status: 'waiting', message: '等待扫码' };
+  if (pending.preferSigner && pending.signedAt && now - pending.signedAt < 15000) {
+    return pending.lastResult || { status: 'waiting', message: '等待扫码' };
+  }
+  if (qrPollShouldWait(now, pending.lastCheck, pending.cooldownUntil)) {
+    return pending.lastResult || { status: 'waiting', message: '等待扫码' };
+  }
+  pending.lastCheck = now;
+  persistQrState();
+  const spec = qrPollSpec(token);
+  let result = await passportHttp('POST', spec.postUrl, { cookies: pending.cookies, body: spec.body });
+  if (shouldFallbackToGet(result)) {
+    result = await passportHttp('GET', spec.getUrl, { cookies: pending.cookies });
+  }
+  return applyQrPollPayload(token, result);
 }
 
 // Resolve an online play URL for a track via the web track_v2 endpoint.
@@ -2020,17 +2121,25 @@ const serverHandler = async (request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(staticFiles.index);
       return;
     }
-    for (const file of ['app.js', 'style.css', 'manifest.webmanifest']) {
+    for (const file of ['app.js', 'style.css', 'manifest.webmanifest', 'qr-signer.html']) {
       if (url.pathname === `/${file}`) {
         const types = {
           'app.js': 'text/javascript',
           'style.css': 'text/css',
           'manifest.webmanifest': 'application/manifest+json',
+          'qr-signer.html': 'text/html',
         };
         response.writeHead(200, { 'content-type': `${types[file]}; charset=utf-8`, 'cache-control': 'no-store' })
           .end(staticFiles[file]);
         return;
       }
+    }
+    if (url.pathname === '/security/sdk-glue.js') {
+      response.writeHead(200, {
+        'content-type': 'text/javascript; charset=utf-8',
+        'cache-control': 'no-store',
+      }).end(staticFiles['sdk-glue.js']);
+      return;
     }
     // 应用图标:public/icons 下的生成产物(见 scripts/make-icons.py)。
     // 文件名白名单(无斜杠/无点点,防路径穿越),命中则长缓存。
@@ -2201,6 +2310,7 @@ const serverHandler = async (request, response) => {
         loggedIn: Boolean(webSession?.cookie),
         clientSession: await ttnetResolveProbe(),
         savedAt: webSession?.savedAt || 0,
+        soda: isAndroid ? probeAndroidSoda() : undefined,
       });
       return;
     }
@@ -2216,8 +2326,48 @@ const serverHandler = async (request, response) => {
       catch (error) { sendJson(response, 500, { ok: false, error: error.message }); }
       return;
     }
+    if (url.pathname.startsWith('/api/weblogin/poll-spec') && request.method === 'GET') {
+      const spec = qrPollSpec(url.searchParams.get('token') || '');
+      if (!spec) { sendJson(response, 404, { ok: false, error: '二维码已过期,请重新生成' }); return; }
+      sendJson(response, 200, { ok: true, ...spec });
+      return;
+    }
     if (url.pathname.startsWith('/api/weblogin/poll') && request.method === 'GET') {
-      sendJson(response, 200, { ok: true, ...(await pollQrLogin(url.searchParams.get('token') || '')) });
+      const peek = url.searchParams.get('peek') === '1';
+      sendJson(response, 200, { ok: true, ...(await pollQrLogin(url.searchParams.get('token') || '', { peek })) });
+      return;
+    }
+    if (route === 'POST /api/weblogin/poll-result') {
+      const input = await readBody(request);
+      const token = String(input.token || url.searchParams.get('token') || '');
+      const pending = qrPending.get(token);
+      if (!pending) { sendJson(response, 200, { ok: true, status: 'expired', message: '二维码已过期,请重新生成' }); return; }
+      if (input.error && !input.json && !input.text && !input.body) {
+        const view = {
+          status: pending.lastResult?.status || 'waiting',
+          message: String(input.error),
+          signer: true,
+        };
+        pending.lastResult = view;
+        persistQrState();
+        sendJson(response, 200, { ok: true, ...view });
+        return;
+      }
+      pending.cookies = mergeCookiePayload(pending.cookies, input);
+      const result = {
+        status: Number(input.httpStatus || input.status) || 0,
+        cookies: pending.cookies,
+        json: parsePollJson(input),
+        signed: Boolean(input.signed) || isSignedPassportUrl(input.responseURL),
+      };
+      sendJson(response, 200, { ok: true, ...(await applyQrPollPayload(token, result)) });
+      return;
+    }
+    if (route === 'POST /api/weblogin/adopt') {
+      const input = await readBody(request);
+      const jar = mergeCookiePayload({}, input);
+      if (saveWebSession(jar)) sendJson(response, 200, { ok: true, status: 'success', message: '登录成功' });
+      else sendJson(response, 400, { ok: false, error: '没有拿到 sessionid' });
       return;
     }
     if (route === 'GET /api/store/sets') {
@@ -3152,6 +3302,8 @@ const staticFiles = (() => {
     get 'app.js'() { return load('app.js'); },
     get 'style.css'() { return load('style.css'); },
     get 'manifest.webmanifest'() { return load('manifest.webmanifest'); },
+    get 'qr-signer.html'() { return load('qr-signer.html'); },
+    get 'sdk-glue.js'() { return load('security/sdk-glue.js'); },
     icon: name => load(`icons/${name}`),
   };
 })();

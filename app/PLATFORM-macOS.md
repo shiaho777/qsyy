@@ -45,10 +45,27 @@ ffmpeg 与 `LunaCacheV2` 缓存目录。
 ## 移动端(Android)
 
 安装包在本机进程里用 nodejs-mobile 跑同一份 standalone 服务,WebView 打开
-`http://127.0.0.1:18790`,不用填写电脑地址。手机上没有汽水客户端,因此没有
-LunaCache 直读,也没有 mssdk/cronet 签名;播放走已导入的缓存库,或扫码网页会话
-拿到的直链。构建时 Gradle 下载 libnode(不入库),只打 arm64。内存页大于
-4096 字节的设备会停在错误说明,而不是在加载原生库时闪退。
+`http://127.0.0.1:18790`,不用填写电脑地址。
+
+Mac / Windows 免扫码,是因为桌面汽水(Electron)把 `Cookies` SQLite 和
+`LunaCacheV2` 写在**当前 OS 用户**目录里:
+
+| 端 | 汽水数据目录 | qsyy 为什么读得到 |
+|----|--------------|-------------------|
+| macOS | `~/Library/Application Support/SodaMusic` | 同一 macOS 用户,文件权限允许同用户进程读 |
+| Windows | `%APPDATA%\SodaMusic` | 同一 Windows 用户,同上 |
+| Android | `/data/data/com.luna.music/` 与 `Android/data/com.luna.music/` | **每个 App 是不同的 Linux UID**,系统禁止 qsyy 读汽水的私有目录 |
+
+所以「手机上也装了汽水 App」并不等于 Mac 那种「同一用户目录」。qsyy 仍然会:
+检测 `com.luna.music` 是否安装、尝试读共享存储、用系统文件选择器让用户授权
+汽水数据目录(能读到 `Cookies` 就拷进 `soda-import/` 当桌面会话用)。读不到时
+用汽水 App 扫码拿网页会话和歌单。扫码轮询在安卓上会再走一层 WebView(同源
+`api.qishui.com`),避免 Node 直连护照接口被 `error_code=7` 卡住一直「等待中」。
+没有 mssdk/cronet,在线播放走扫码会话直链。汽水安卓缓存是另一套 `.mdl`,不是
+桌面 `LunaCacheV2`,即使授权了目录也不能当桌面缓存来播。
+
+构建时 Gradle 下载 libnode(不入库),只打 arm64。内存页大于 4096 字节的设备
+会停在错误说明,而不是在加载原生库时闪退。
 
 电脑上的服务仍可对局域网浏览器开放:
 
@@ -69,8 +86,9 @@ QSYY_HOST=0.0.0.0 npm run standalone
   (含 manifest、safe-area 适配、SVG 图标)
 - **音频播放**:所有流式接口都支持 Range,移动浏览器可正常拖动进度
 
-平台差异说明:APK 内嵌服务不扫描汽水缓存。连到桌面端的手机浏览器仍然由
-桌面端提供缓存直读和在线签名。
+平台差异说明:APK 会检测本机汽水、尝试读共享存储、并允许用户授权目录;
+读不到私有沙盒时走扫码。连到桌面端的手机浏览器仍然由桌面端提供缓存直读
+和在线签名。
 
 ## 容器(Docker)
 

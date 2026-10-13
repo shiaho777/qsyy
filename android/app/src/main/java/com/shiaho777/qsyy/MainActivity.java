@@ -1,17 +1,20 @@
 package com.shiaho777.qsyy;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.DownloadManager;
 import android.content.ActivityNotFoundException;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
@@ -31,6 +34,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Locale;
+import org.json.JSONObject;
 
 /**
  * Single-activity WebView shell. NodeRuntime runs the standalone server in
@@ -42,6 +46,8 @@ public class MainActivity extends AppCompatActivity {
     private WebView webView;
     private TextView status;
     private ValueCallback<Uri[]> fileCallback;
+    private PassportPoller passportPoller;
+    private String serverUrl = "http://127.0.0.1:18790";
 
     private final ActivityResultLauncher<Intent> fileChooser =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
@@ -55,6 +61,22 @@ public class MainActivity extends AppCompatActivity {
     private final ActivityResultLauncher<String> notifyPermission =
             registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
                 if (granted) startPlaybackService();
+            });
+
+    private final ActivityResultLauncher<String> storagePermission =
+            registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {});
+
+    private final ActivityResultLauncher<Uri> sodaTree =
+            registerForActivityResult(new ActivityResultContracts.OpenDocumentTree(), uri -> {
+                if (uri == null) return;
+                try {
+                    getContentResolver().takePersistableUriPermission(
+                            uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (SecurityException ignored) {}
+                new Thread(() -> {
+                    boolean ok = SodaProbe.importFromTree(this, uri);
+                    runOnUiThread(() -> notifySodaImported(ok));
+                }, "qsyy-soda-import").start();
             });
 
     @Override
@@ -79,6 +101,7 @@ public class MainActivity extends AppCompatActivity {
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     private void launch(String serverUrl) {
+        this.serverUrl = serverUrl;
         webView = new WebView(this);
         setContentView(webView);
 
@@ -134,6 +157,66 @@ public class MainActivity extends AppCompatActivity {
         webView.addJavascriptInterface(new AndroidBridge(this), "QsyyAndroid");
         webView.loadUrl(serverUrl);
         ensurePlaybackService();
+        passportPoller = new PassportPoller(this, serverUrl);
+        maybeAskSodaStorage(false);
+        new Thread(() -> SodaProbe.importFromReadableRoots(this), "qsyy-soda-probe").start();
+    }
+
+    void openSodaFolderPicker() {
+        try {
+            sodaTree.launch(null);
+        } catch (ActivityNotFoundException error) {
+            maybeAskSodaStorage(true);
+        }
+    }
+
+    void pollPassport(String token) {
+        if (passportPoller == null) passportPoller = new PassportPoller(this, this.serverUrl);
+        passportPoller.offer(token, result -> runOnUiThread(() -> {
+            if (webView == null || result == null) return;
+            if ("success".equals(result.optString("status"))) {
+                webView.evaluateJavascript(
+                        "window.__qsyyOnQrSuccess && window.__qsyyOnQrSuccess()", null);
+                return;
+            }
+            String payload = JSONObject.quote(result.toString());
+            webView.evaluateJavascript(
+                    "window.__qsyyOnQrPoll && window.__qsyyOnQrPoll(" + payload + ")", null);
+        }));
+    }
+
+    void stopPassportPoll() {
+        if (passportPoller != null) passportPoller.stop();
+    }
+
+    void notifySodaImported(boolean ok) {
+        if (webView == null) return;
+        webView.evaluateJavascript(
+                "window.__qsyySodaImported && window.__qsyySodaImported(" + ok + ")", null);
+    }
+
+    void maybeAskSodaStorage(boolean force) {
+        if (Build.VERSION.SDK_INT < 30) {
+            if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                storagePermission.launch(Manifest.permission.READ_EXTERNAL_STORAGE);
+            }
+            return;
+        }
+        if (Environment.isExternalStorageManager()) return;
+        if (!force && !SodaProbe.installed(this)) return;
+        SharedPreferences prefs = getSharedPreferences("qsyy", MODE_PRIVATE);
+        if (!force && prefs.getBoolean("askedAllFiles", false)) return;
+        prefs.edit().putBoolean("askedAllFiles", true).apply();
+        try {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (ActivityNotFoundException error) {
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+            } catch (ActivityNotFoundException ignored) {}
+        }
     }
 
     private void ensurePlaybackService() {
@@ -177,6 +260,43 @@ public class MainActivity extends AppCompatActivity {
 
         AndroidBridge(Activity activity) {
             this.activity = activity;
+        }
+
+        @JavascriptInterface
+        public String sodaStatus() {
+            return SodaProbe.statusJson(activity);
+        }
+
+        @JavascriptInterface
+        public void requestSodaAccess() {
+            activity.runOnUiThread(() -> {
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).maybeAskSodaStorage(true);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void pickSodaFolder() {
+            activity.runOnUiThread(() -> {
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).openSodaFolderPicker();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void pollPassport(String token) {
+            if (activity instanceof MainActivity) {
+                ((MainActivity) activity).pollPassport(token);
+            }
+        }
+
+        @JavascriptInterface
+        public void stopPassportPoll() {
+            if (activity instanceof MainActivity) {
+                ((MainActivity) activity).stopPassportPoll();
+            }
         }
 
         @JavascriptInterface

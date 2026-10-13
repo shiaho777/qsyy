@@ -22,6 +22,7 @@
     "directories": { "output": "dist", "buildResources": "assets" },
     "files": [
       "main.mjs",
+      "preload.cjs",
       "package.json"
     ],
     "extraResources": [

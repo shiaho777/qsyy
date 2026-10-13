@@ -68,7 +68,7 @@ qsyy 不做"模拟 EQ",而是**直接解析官方下发的音效配置,在浏览
 |----|------|
 | macOS | `qsyy-x.y.z-arm64.dmg` / `.zip` |
 | Windows | `qsyy-setup-x.y.z.exe`(NSIS 安装器,由维护者构建附加到 Release) |
-| Android | `qsyy-x.y.z.apk`,安装后在手机本机打开,不用填地址 |
+| Android | `qsyy-x.y.z.apk`,安装后在手机本机打开,不用填地址。汽水是另一个 App(独立 Linux UID),不能像 Mac 那样直接读同一用户目录;可扫码或授权汽水数据目录 |
 
 桌面端和 Android 都在本机内嵌同一服务端。电脑上的浏览器另开局域网访问时,
 仍可设 `QSYY_HOST=0.0.0.0`。

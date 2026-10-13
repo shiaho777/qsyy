@@ -14,17 +14,53 @@ import { execFileSync } from 'node:child_process';
 export const PLATFORM = process.env.QSYY_PLATFORM || process.platform; // 'darwin' | 'win32' | 'linux' | 'android'
 export const isAndroid = PLATFORM === 'android';
 
-// The Android APK embeds this server. It is not a browser pointed at a
-// desktop machine, and it does not have the 汽水 client: no LunaCacheV2,
-// no device.node, no mssdk/cronet. A phone browser on the LAN is a
-// different case and still talks to a desktop server.
+// The Android APK embeds this server. The phone may have 汽水 installed
+// (com.luna.music), but that app's login and cache live in another app's
+// sandbox. We probe shared storage; when the OS blocks it, login falls
+// back to scanning with 汽水.
+export const ANDROID_SODA_PACKAGE = 'com.luna.music';
+
+export function androidImportedCookiesPath(home = process.env.QSYY_HOME || os.homedir()) {
+  return path.join(home, 'soda-import', 'Cookies');
+}
+
+export function pickAndroidCookiesPath({ imported = '', probedCookies = '' } = {}) {
+  return imported || probedCookies || '';
+}
+
+export function androidSodaDataCandidates(storageRoots = ['/storage/emulated/0', '/sdcard', process.env.EXTERNAL_STORAGE].filter(Boolean)) {
+  const seen = new Set();
+  const out = [];
+  for (const root of storageRoots) {
+    if (!root) continue;
+    const base = path.join(root, 'Android', 'data', ANDROID_SODA_PACKAGE);
+    if (seen.has(base)) continue;
+    seen.add(base);
+    out.push(base);
+  }
+  return out;
+}
+
+export function probeAndroidSoda(filesystem = fs, storageRoots, home) {
+  let imported = false;
+  try { imported = filesystem.existsSync(androidImportedCookiesPath(home)); } catch (_) { imported = false; }
+  for (const base of androidSodaDataCandidates(storageRoots)) {
+    let exists = false;
+    try { exists = filesystem.existsSync(base); } catch (_) { exists = false; }
+    if (!exists) continue;
+    try {
+      filesystem.readdirSync(base);
+      return { found: true, readable: true, path: base, imported };
+    } catch (_) {
+      return { found: true, readable: false, path: base, imported };
+    }
+  }
+  return { found: false, readable: false, path: '', imported };
+}
+
 export const MOBILE_CLIENT_NOTES = {
   android: {
-    // Embedded host: no 汽水 client, so there is no LunaCacheV2 to scan and
-    // no native signer. Playback is an imported library, or a plain CDN URL
-    // from the in-app web session. A phone browser pointed at a desktop
-    // server is a different deployment and is not this profile.
-    localCache: 'no-desktop-client',
+    localCache: 'other-app-sandbox',
     onlinePlayback: 'web-session',
   },
   ios: {
@@ -39,7 +75,7 @@ const HOME = os.homedir();
 
 // The desktop client's install location per platform.
 export const CLIENT_ROOTS = (() => {
-  if (PLATFORM === 'android') return { app: '', name: '' };
+  if (PLATFORM === 'android') return { app: '', name: '汽水音乐' };
   if (PLATFORM === 'darwin') {
     return { app: '/Applications/汽水音乐.app', name: '汽水音乐' };
   }
@@ -96,8 +132,33 @@ export function findDeviceNode({ asarUnpackedDir } = {}) {
 }
 
 // Cache / data roots of the desktop client.
+function androidClientData() {
+  const imported = (() => {
+    try {
+      const candidate = androidImportedCookiesPath();
+      return fs.existsSync(candidate) ? candidate : '';
+    } catch (_) { return ''; }
+  })();
+  const hit = probeAndroidSoda();
+  const probedCookies = hit.path ? [
+    path.join(hit.path, 'Cookies'),
+    path.join(hit.path, 'files', 'Cookies'),
+    path.join(hit.path, 'app_webview', 'Default', 'Cookies'),
+  ].find(candidate => {
+    try { return fs.existsSync(candidate); } catch (_) { return false; }
+  }) || '' : '';
+  const cookies = pickAndroidCookiesPath({ imported, probedCookies });
+  return {
+    data: hit.readable ? hit.path : '',
+    cache: hit.readable ? hit.path : '',
+    cookies,
+    cookiesKind: cookies ? 'sqlite-plain' : 'none',
+    imported: Boolean(imported),
+  };
+}
+
 export const CLIENT_DATA = (() => {
-  if (PLATFORM === 'android') return { data: '', cache: '', cookies: '', cookiesKind: 'none' };
+  if (PLATFORM === 'android') return androidClientData();
   if (PLATFORM === 'darwin') {
     const base = path.join(HOME, 'Library', 'Application Support', 'SodaMusic');
     return { data: base, cache: base, cookies: path.join(base, 'Cookies'), cookiesKind: 'sqlite-plain' };
@@ -117,6 +178,12 @@ export const CLIENT_DATA = (() => {
 export const CLIENT_PACKAGES = path.join(CLIENT_DATA.data, 'Packages');
 
 // ---------------------------------------------------------------- qsyy own data
+
+export function resolveClientCookiesPath() {
+  if (process.env.QSYY_COOKIES_DB) return process.env.QSYY_COOKIES_DB;
+  if (PLATFORM === 'android') return androidClientData().cookies || '';
+  return CLIENT_DATA.cookies;
+}
 
 export const QSYY_CACHE_DIR = process.env.QSYY_CACHE_DIR
   || (CLIENT_DATA.cache ? path.join(CLIENT_DATA.cache, 'LunaCacheV2') : '');
@@ -158,7 +225,7 @@ export function findFfmpeg() {
 // SQLite Cookies file. Callers should use cookies.mjs (CLI if present,
 // otherwise a JS reader) — Windows and Docker typically have no sqlite3 binary.
 export function cookieQueryCommand(dbPath) {
-  if (PLATFORM === 'android' || !dbPath) return null;
+  if (!dbPath) return null;
   return {
     cmd: 'sqlite3',
     args: [dbPath, "SELECT name || '=' || value FROM cookies WHERE host_key IN ('.qishui.com','.bytedance.com');"],
