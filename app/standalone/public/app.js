@@ -1163,8 +1163,7 @@ async function startSync() {
 
 // ---------------------------------------------------------------- export wizard (playlist package → zip)
 
-// 三步向导:① 选歌单/歌曲(复选+全选+搜索+计数) ② 库名必填+库图标(可选)
-// ③ 选目标文件夹(showDirectoryPicker)或直接进下载目录 → <库名>-qsyy.zip
+// 向导:① 选歌单/歌曲 ② 库名+图标 ③ 缺缓存确认(按需) ④ 选导出位置
 const exportWizard = {
   tracks: new Map(),     // playlistId → tracks[](展开时懒加载全部分页)
   icons: new Map(),      // playlistId → 封面 dataURL(导出时作为歌单图标)
@@ -1174,6 +1173,9 @@ const exportWizard = {
   icon: null,            // 库图标 dataURL
   jobId: null,
   pollTimer: null,
+  pendingPlaylists: null,
+  pendingIncomplete: null,
+  exporting: false,
 };
 
 async function fetchPlaylistTracksFull(id) {
@@ -1208,6 +1210,7 @@ function openExportWizard() {
   const w = exportWizard;
   w.tracks.clear(); w.icons.clear(); w.selected.clear(); w.expanded.clear();
   w.name = ''; w.icon = null; w.jobId = null;
+  w.pendingPlaylists = null; w.pendingIncomplete = null; w.exporting = false;
   $('exp-name').value = '';
   $('exp-filename').textContent = '-qsyy.zip';
   $('exp-icon-preview').innerHTML = '库';
@@ -1226,8 +1229,9 @@ function openExportWizard() {
 
 function expGotoStep(n) {
   exportWizard.step = n;
-  ['exp-step1', 'exp-step2', 'exp-step3'].forEach(id => $(id).classList.add('hidden'));
-  $(n === 1 ? 'exp-step1' : n === 2 ? 'exp-step2' : 'exp-step3').classList.remove('hidden');
+  ['exp-step1', 'exp-step2', 'exp-step-gap', 'exp-step3'].forEach(id => $(id).classList.add('hidden'));
+  const id = n === 1 ? 'exp-step1' : n === 2 ? 'exp-step2' : n === 'gap' ? 'exp-step-gap' : 'exp-step3';
+  $(id).classList.remove('hidden');
 }
 
 async function toggleExportPlaylist(plId) {
@@ -1303,10 +1307,8 @@ function renderExportStep1() {
   $('exp-next').disabled = songCount === 0;
 }
 
-async function expConfirm() {
+function collectExportPlaylists() {
   const w = exportWizard;
-  w.name = ($('exp-name').value || '').trim();
-  if (!w.name) return;
   const playlists = [];
   for (const [plId, sel] of w.selected) {
     if (!sel.size) continue;
@@ -1315,18 +1317,124 @@ async function expConfirm() {
     playlists.push({
       name: pl?.title || '未命名歌单',
       icon: w.icons.get(plId) || null,
-      songs: tracks.filter(t => sel.has(t.id)).map(t => ({ id: t.id, name: t.name, artist: t.artists.join(' / '), album: t.album, duration: t.duration, cover: t.cover ? coverCdnUrl(t.cover, 300) : '' })),
+      songs: tracks.filter(t => sel.has(t.id)).map(t => ({
+        id: t.id, name: t.name, artist: t.artists.join(' / '), album: t.album,
+        duration: t.duration, cover: t.cover ? coverCdnUrl(t.cover, 300) : '',
+      })),
     });
   }
+  return playlists;
+}
+
+async function loadActiveStoreById() {
+  try {
+    const r = await (await fetch('/api/store/tracks')).json();
+    return new Map((r.tracks || []).map(t => [String(t.id), t]));
+  } catch (_) { return new Map(); }
+}
+
+function incompleteExportSongs(playlists, storeById) {
+  const seen = new Set();
+  const out = [];
+  for (const pl of playlists) {
+    for (const s of pl.songs || []) {
+      const id = String(s.id || '');
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const st = storeById.get(id);
+      const reasons = [];
+      const playlistName = String(s.name || '').trim();
+      const storeName = String(st?.name || '').trim();
+      if (!playlistName) reasons.push('没有歌名');
+      else if (st && !storeName) reasons.push('缓存里没有歌名');
+      if (st?.preview) reasons.push('只有试听');
+      else if (!st?.complete) reasons.push('还没缓存');
+      if (st?.complete && !st.hasCover && !s.cover) reasons.push('没有封面');
+      if (reasons.length) out.push({ id, name: playlistName || `曲目 ${id.slice(-6)}`, reasons });
+    }
+  }
+  return out;
+}
+
+function dropExportSongs(playlists, skipIds) {
+  return playlists
+    .map(pl => ({ ...pl, songs: (pl.songs || []).filter(s => !skipIds.has(String(s.id))) }))
+    .filter(pl => pl.songs.length);
+}
+
+function renderExportGap(incomplete, keptCount) {
+  const n = incomplete.length;
+  const primary = t => t.reasons.includes('只有试听') ? '只有试听' : t.reasons.includes('还没缓存') ? '还没缓存' : (t.reasons[0] || '还不完整');
+  const nPreview = incomplete.filter(t => primary(t) === '只有试听').length;
+  const nNoCache = incomplete.filter(t => primary(t) === '还没缓存').length;
+  const nNoName = incomplete.filter(t => primary(t) === '没有歌名').length;
+  const bits = [];
+  if (nNoCache) bits.push(`${nNoCache} 首还没缓存`);
+  if (nPreview) bits.push(`${nPreview} 首只有试听`);
+  if (nNoName) bits.push(`${nNoName} 首没有歌名`);
+  let sub = `导出包只会带上当前写入库里已经下完的音频。已选的歌里，${bits.join('，')}。放进包里的话，导入之后只能在线播。要一起带走吗？`;
+  if (keptCount > 0) sub += `另外 ${keptCount} 首有完整缓存，会照常打包。`;
+  $('exp-gap-sub').textContent = sub;
+  const cap = 20;
+  $('exp-gap-list').innerHTML = incomplete.slice(0, cap).map(t => `
+    <div class="exp-gap-row">
+      <span class="s-name">${esc(t.name)}</span>
+      <span class="s-tag">${esc(t.reasons.join(' · '))}</span>
+    </div>`).join('') + (n > cap ? `<div class="exp-gap-more">还有 ${n - cap} 首没列出来</div>` : '');
+  $('exp-gap-count').textContent = `${n} 首不完整`;
+}
+
+async function expConfirm() {
+  const w = exportWizard;
+  w.name = ($('exp-name').value || '').trim();
+  if (!w.name) return;
+  const playlists = collectExportPlaylists();
   if (!playlists.length) return;
+  const btn = $('exp-confirm');
+  if (btn) btn.disabled = true;
+  try {
+    const storeById = await loadActiveStoreById();
+    const incomplete = incompleteExportSongs(playlists, storeById);
+    w.pendingPlaylists = playlists;
+    w.pendingIncomplete = incomplete;
+    if (!incomplete.length) { await startExport(playlists); return; }
+    const selected = new Set();
+    for (const pl of playlists) for (const s of pl.songs) selected.add(String(s.id));
+    renderExportGap(incomplete, selected.size - incomplete.length);
+    expGotoStep('gap');
+  } catch (e) { toast('导出失败:' + e.message, 'err'); }
+  finally { if (btn) btn.disabled = !($('exp-name').value || '').trim(); }
+}
+
+async function startExport(playlists) {
+  const w = exportWizard;
+  if (!playlists.length) { toast('没有可以导出的歌曲', 'err'); return; }
+  if (w.exporting) return;
+  w.exporting = true;
   try {
     const r = await (await fetch('/api/export', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: w.name, libraryIcon: w.icon, playlists }) })).json();
     if (!r?.ok) { toast(r?.error || '导出失败', 'err'); return; }
     w.jobId = r.jobId;
+    w.pendingPlaylists = null;
+    w.pendingIncomplete = null;
     expGotoStep(3);
     $('exp-progress').textContent = '正在构建导出包…';
     exportWizard.pollTimer = setInterval(expPoll, 600);
   } catch (e) { toast('导出失败:' + e.message, 'err'); }
+  finally { w.exporting = false; }
+}
+
+function expGapKeep() {
+  if (!exportWizard.pendingPlaylists) return;
+  startExport(exportWizard.pendingPlaylists);
+}
+
+function expGapSkip() {
+  const w = exportWizard;
+  if (!w.pendingPlaylists || !w.pendingIncomplete) return;
+  const kept = dropExportSongs(w.pendingPlaylists, new Set(w.pendingIncomplete.map(t => t.id)));
+  if (!kept.length) { toast('跳过之后就没有歌可以导出了', 'err'); return; }
+  startExport(kept);
 }
 
 async function expPoll() {
@@ -2678,6 +2786,9 @@ setInterval(loadStats, 10 * 60 * 1000);
     $('exp-filename').textContent = `${v || '…'}-qsyy.zip`;
   };
   if ($('exp-confirm')) $('exp-confirm').onclick = expConfirm;
+  if ($('exp-gap-back')) $('exp-gap-back').onclick = () => expGotoStep(2);
+  if ($('exp-gap-skip')) $('exp-gap-skip').onclick = expGapSkip;
+  if ($('exp-gap-keep')) $('exp-gap-keep').onclick = expGapKeep;
   if ($('exp-icon-btn')) $('exp-icon-btn').onclick = () => $('export-icon-file').click();
   if ($('exp-icon-rm')) $('exp-icon-rm').onclick = () => {
     exportWizard.icon = null;
