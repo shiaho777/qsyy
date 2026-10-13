@@ -29,8 +29,9 @@ try {
   process.env.QSYY_HOST = '127.0.0.1';
   process.env.QSYY_PORT = process.env.QSYY_PORT || '18790';
   process.env.QSYY_DOWNLOAD_DIR = process.env.QSYY_DOWNLOAD_DIR || path.join(home, 'Downloads');
-  // No QSYY_CACHE_DIR. The phone has no 汽水 LunaCacheV2; pointing the
-  // scanner at an empty directory only makes every playlist poll retry.
+  // Do not point QSYY_CACHE_DIR at an empty folder. Android 汽水 cache is
+  // another app's UID sandbox (and a different format); the server probes it
+  // and may import a Cookies file the user authorized.
   fs.mkdirSync(process.env.TMPDIR, { recursive: true });
   fs.mkdirSync(process.env.QSYY_DOWNLOAD_DIR, { recursive: true });
   fs.mkdirSync(process.env.XDG_CACHE_HOME, { recursive: true });

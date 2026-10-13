@@ -4,14 +4,22 @@
 版本号遵循语义化版本;每条 Release 的详细说明由 `scripts/release-notes.mjs`
 从 Conventional Commits 自动生成(见 AGENTS.md 的发版规范)。
 
+## [Unreleased]
+
 ## [1.3.2] - 2026-10-13
 
 ### 新功能
 - 歌单导出时若有未缓存或只有试听的歌,打包前弹出确认:跳过 / 一起带走 / 上一步(Issue #93)
 
 ### 修复
-- 扫码登录改为用抖音做身份验证,轮询认数字状态并跟随 redirect 收会话;
-  用汽水音乐扫这个码不会授权(Issue #95)
+- 扫码请用汽水音乐 App,并走官方安全页签名(`bdms` / `a_bogus`)。无签名请求
+  扫码后会被 `error_code=7` 挡住,界面一直停在等待中;确认后的登录 Cookie
+  从浏览器会话收割。Android WebView 与桌面隐藏窗口共用同一套签名页(Issue #97)
+- 轮询把 `error_code=7` 当成限流并说出来;已扫码状态不会被后续的「等待」冲掉;
+  会话落盘,前端不再吞掉轮询错误(Issue #97)
+- Android 会检测本机汽水、申请存储访问、并允许授权汽水数据目录;读到
+  `Cookies` 就按桌面同样方式导入。读不到沙盒时说明原因:安卓每个 App 是独立
+  用户,不像 Mac/Windows 共用同一个用户目录(Issue #97)
 - 客户端 Cookies 不再依赖 PATH 上的 sqlite3:没有 CLI 时用 JS 解析同一份
   SQLite,Windows / Docker 已登录也不会被当成未登录(Issue #95)
 - Windows 客户端数据目录改用 `%APPDATA%\SodaMusic`,并回退 `qishui`(Issue #95)

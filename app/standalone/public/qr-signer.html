@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>qsyy passport</title>
+<script src="/security/sdk-glue.js"></script>
+<script>
+window._SdkGlueInit({
+  self: { aid: 386088, pageId: 24554 },
+  bdms: { aid: 386088, paths: ['/passport'] },
+});
+
+window.__qishuiRequest = function (request) {
+  return new Promise(function (resolve, reject) {
+    var xhr = new XMLHttpRequest();
+    xhr.open(request.method || 'GET', request.url, true);
+    xhr.withCredentials = true;
+    var headers = request.headers || {};
+    Object.keys(headers).forEach(function (name) {
+      if (/^(cookie|user-agent|host|content-length|origin|referer)$/i.test(name)) return;
+      xhr.setRequestHeader(name, String(headers[name]));
+    });
+    xhr.timeout = request.timeout || 20000;
+    xhr.onload = function () {
+      resolve({
+        status: xhr.status,
+        body: xhr.responseText,
+        responseURL: xhr.responseURL,
+        headers: xhr.getAllResponseHeaders(),
+      });
+    };
+    xhr.onerror = function () { reject(new Error('XMLHttpRequest network error')); };
+    xhr.ontimeout = function () { reject(new Error('XMLHttpRequest timeout')); };
+    xhr.send(request.body == null ? null : request.body);
+  });
+};
+
+function parseJson(text) {
+  try { return JSON.parse(text); } catch (e) { return null; }
+}
+
+function aBogusOf(url) {
+  try { return new URL(String(url || ''), location.href).searchParams.get('a_bogus') || ''; }
+  catch (e) { return ''; }
+}
+
+window.qsyyWhenReady = function (timeout) {
+  var limit = timeout || 20000;
+  var start = Date.now();
+  return new Promise(function (resolve, reject) {
+    var tick = function () {
+      if (window.bdms) return resolve(true);
+      if (Date.now() - start > limit) {
+        return reject(new Error('汽水安全组件未就绪'));
+      }
+      setTimeout(tick, 50);
+    };
+    tick();
+  });
+};
+
+window.qsyyPassportPoll = async function (opts) {
+  await window.qsyyWhenReady();
+  var headers = Object.assign({}, opts.headers || {});
+  delete headers.cookie;
+  delete headers.Cookie;
+  var result = await window.__qishuiRequest({
+    method: 'POST',
+    url: opts.postUrl,
+    headers: headers,
+    body: opts.body,
+    timeout: 20000,
+  });
+  var json = parseJson(result.body);
+  if (!json && opts.getUrl) {
+    result = await window.__qishuiRequest({
+      method: 'GET',
+      url: opts.getUrl,
+      headers: headers,
+      body: null,
+      timeout: 20000,
+    });
+    json = parseJson(result.body);
+  }
+  var aBogus = aBogusOf(result.responseURL || opts.postUrl || '');
+  if (aBogus.length !== 44) {
+    throw new Error('汽水安全签名生成失败：a_bogus 缺失（' + aBogus.length + ' 字符）');
+  }
+  var data = json && json.data && typeof json.data === 'object' ? json.data : json || {};
+  var redirect = data.redirect_url || data.redirectUrl || '';
+  var status = String(data.status == null ? '' : data.status).toLowerCase();
+  if (redirect && (status === '3' || status === 'confirmed' || status === 'success')) {
+    try {
+      await window.__qishuiRequest({
+        method: 'GET',
+        url: redirect,
+        headers: headers,
+        body: null,
+        timeout: 20000,
+      });
+    } catch (e) {}
+  }
+  return {
+    status: result.status,
+    json: json,
+    text: result.body,
+    responseURL: result.responseURL,
+    aBogus: aBogus,
+    signed: true,
+    documentCookie: document.cookie || '',
+    headers: result.headers || '',
+  };
+};
+</script>
+</head>
+<body></body>
+</html>

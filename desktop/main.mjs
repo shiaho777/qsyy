@@ -3,7 +3,7 @@
 // standalone`) and points a BrowserWindow at it. The server module resolves
 // the client install, cache and cookies exactly as it does headless, so the
 // desktop app is a pure presentation shell — no server logic is duplicated.
-import { app, BrowserWindow, shell, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, shell, Menu, nativeImage, ipcMain } from 'electron';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -82,6 +82,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: path.join(root, 'preload.cjs'),
     },
   });
 
@@ -148,7 +149,101 @@ async function boot() {
   app.exit(1);
 }
 
+const qrSigners = new Map();
+
+async function jsonRequest(method, url, body) {
+  const { net } = await import('electron');
+  return new Promise((resolve, reject) => {
+    const request = net.request({ method, url });
+    if (body != null) request.setHeader('content-type', 'application/json');
+    let data = '';
+    request.on('response', res => {
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (error) { reject(error); }
+      });
+    });
+    request.on('error', reject);
+    if (body != null) request.write(JSON.stringify(body));
+    request.end();
+  });
+}
+
+function closeQrSigner(token) {
+  const win = qrSigners.get(token);
+  qrSigners.delete(token);
+  if (win && !win.isDestroyed()) win.close();
+}
+
+async function ensureQrSigner(token) {
+  const existing = qrSigners.get(token);
+  if (existing && !existing.isDestroyed()) return existing;
+  const win = new BrowserWindow({
+    show: false,
+    width: 420,
+    height: 420,
+    webPreferences: {
+      webSecurity: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      partition: `persist:qsyy-qr-${token}`,
+    },
+  });
+  const base = verifiedUrl || serverUrl;
+  await win.loadURL(`${base}/qr-signer.html`);
+  await win.webContents.executeJavaScript('window.qsyyWhenReady()');
+  qrSigners.set(token, win);
+  win.on('closed', () => { if (qrSigners.get(token) === win) qrSigners.delete(token); });
+  return win;
+}
+
+ipcMain.handle('qsyy-qr-poll', async (_event, token) => {
+  const key = String(token || '');
+  if (!key) return { status: 'expired', message: '二维码已过期,请重新生成' };
+  const base = verifiedUrl || serverUrl;
+  try {
+    const spec = await jsonRequest('GET', `${base}/api/weblogin/poll-spec?token=${encodeURIComponent(key)}`);
+    if (!spec?.ok) return { status: 'expired', message: '二维码已过期,请重新生成' };
+    const win = await ensureQrSigner(key);
+    const headers = { ...(spec.headers || {}) };
+    delete headers.cookie;
+    delete headers.Cookie;
+    const poll = await win.webContents.executeJavaScript(
+      `window.qsyyPassportPoll(${JSON.stringify({
+        postUrl: spec.postUrl,
+        getUrl: spec.getUrl,
+        body: spec.body,
+        headers,
+      })})`,
+    );
+    const cookies = await win.webContents.session.cookies.get({});
+    const view = await jsonRequest('POST', `${base}/api/weblogin/poll-result`, {
+      token: key,
+      ...poll,
+      signed: true,
+      httpStatus: poll?.status || 0,
+      browserCookies: cookies.map(item => ({ name: item.name, value: item.value })),
+    });
+    if (view?.status === 'success' || view?.status === 'expired') closeQrSigner(key);
+    return view;
+  } catch (error) {
+    return { status: 'error', message: String(error?.message || error) };
+  }
+});
+
+ipcMain.handle('qsyy-qr-stop', async (_event, token) => {
+  const key = String(token || '');
+  if (key) closeQrSigner(key);
+  else for (const item of [...qrSigners.keys()]) closeQrSigner(item);
+  return { ok: true };
+});
+
 app.whenReady().then(boot);
+app.on('before-quit', () => {
+  for (const token of [...qrSigners.keys()]) closeQrSigner(token);
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => {
   // count real windows, not just our reference: a lost reference must never

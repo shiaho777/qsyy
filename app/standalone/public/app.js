@@ -177,6 +177,7 @@ async function api(path, options) {
 
 function bindUserActions() {
   if ($('web-login')) $('web-login').onclick = e => { e.preventDefault(); openQrModal(); };
+  if ($('soda-folder')) $('soda-folder').onclick = e => { e.preventDefault(); pickSodaFolder(); };
   if ($('web-logout')) $('web-logout').onclick = async e => {
     e.preventDefault();
     try { await fetch('/api/weblogin/logout', { method: 'POST' }); } catch (_) {}
@@ -210,11 +211,11 @@ async function loadMe() {
       <div class="hint">网页会话 · 可在线播放</div></div>
       <button id="web-logout" class="user-btn" type="button">退出</button>`;
   } else {
-    const android = Boolean(window.QsyyAndroid);
     box.innerHTML = `
       <div class="user-copy"><div class="name">未登录汽水</div>
-      <div class="hint">${android ? '读不到汽水 App 的私有缓存,扫码后可在线播' : '本地库仍可播放'}</div></div>
-      <button id="web-login" class="user-btn" type="button">扫码登录</button>`;
+      <div class="hint">${androidLoginHint()}</div></div>
+      <button id="web-login" class="user-btn" type="button">扫码登录</button>
+      ${window.QsyyAndroid?.pickSodaFolder ? '<button id="soda-folder" class="user-btn" type="button">授权目录</button>' : ''}`;
   }
   bindUserActions();
 }
@@ -1491,10 +1492,30 @@ async function expToDownloads() {
 
 // ---------------------------------------------------------------- online availability (client session)
 
+function sodaBridgeStatus() {
+  try {
+    const raw = window.QsyyAndroid?.sodaStatus?.();
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) { return null; }
+}
+
+function androidLoginHint() {
+  const soda = sodaBridgeStatus() || state.sodaProbe;
+  if (!window.QsyyAndroid && !soda) return '本地库仍可播放';
+  if (soda?.imported) return '已导入汽水登录文件，正在读取';
+  if (soda?.readable) return '已找到汽水共享目录。登录文件若在里面会自动读；否则请扫码';
+  if (soda?.installed || soda?.found) {
+    return '汽水已安装。安卓里每个 App 是独立用户，qsyy 读不了汽水的私有目录；Mac 能免扫码是因为桌面程序共用同一个用户目录。请扫码，或授权汽水数据目录';
+  }
+  if (soda?.installed === false) return '未检测到汽水音乐。安装后可扫码同步歌单，或授权它的数据目录';
+  return '用汽水音乐扫码后可同步歌单、在线播放';
+}
+
 async function refreshWebLogin() {
   try {
     const r = await (await fetch('/api/weblogin/status')).json();
     state.onlineAvailable = Boolean(r.clientSession) || Boolean(r.loggedIn);
+    if (r.soda) state.sodaProbe = r.soda;
   } catch (_) { state.onlineAvailable = false; }
   updateFootHint();
 }
@@ -1511,6 +1532,11 @@ let qrPoll = null;
 let qrToken = '';
 function stopQrPoll() {
   if (qrPoll) { clearInterval(qrPoll); qrPoll = null; }
+  try { window.QsyyAndroid?.stopPassportPoll?.(); } catch (_) {}
+  try { window.QsyyDesktop?.stopPassportPoll?.(); } catch (_) {}
+}
+function hasSignedPoller() {
+  return Boolean(window.QsyyAndroid?.pollPassport || window.QsyyDesktop?.pollPassport);
 }
 function closeQrModal() {
   stopQrPoll();
@@ -1519,27 +1545,56 @@ function closeQrModal() {
   m.classList.remove('open');
   setTimeout(() => m.classList.add('hidden'), 220);
 }
+function pickSodaFolder() {
+  try { window.QsyyAndroid?.pickSodaFolder?.(); }
+  catch (err) { toast('无法打开目录选择:' + (err.message || err), 'err'); }
+}
+async function onQrSuccess() {
+  stopQrPoll();
+  toast('登录成功', 'ok');
+  closeQrModal();
+  await loadMe();
+  await loadPlaylists(true, true).catch(() => {});
+}
+function applyQrPollView(r) {
+  if (!r) return;
+  if (r.message && $('qr-status')) $('qr-status').textContent = r.message;
+  if (r.status === 'success') {
+    onQrSuccess();
+    return;
+  }
+  if (r.status === 'expired') stopQrPoll();
+  if ((r.limited || r.signer) && window.QsyyAndroid?.pollPassport && qrToken) {
+    try { window.QsyyAndroid.pollPassport(qrToken); } catch (_) {}
+  }
+}
 async function pollQr() {
   if (!qrToken) return;
   try {
-    const r = await (await fetch(`/api/weblogin/poll?token=${encodeURIComponent(qrToken)}`)).json();
-    if (r?.message && $('qr-status')) $('qr-status').textContent = r.message;
-    if (r?.status === 'success') {
-      stopQrPoll();
-      toast('登录成功', 'ok');
-      closeQrModal();
-      await loadMe();
-      await loadPlaylists(true, true).catch(() => {});
-    } else if (r?.status === 'expired') {
-      stopQrPoll();
+    if (window.QsyyAndroid?.pollPassport) {
+      try { window.QsyyAndroid.pollPassport(qrToken); } catch (_) {}
+      const r = await (await fetch(`/api/weblogin/poll?token=${encodeURIComponent(qrToken)}&peek=1`)).json();
+      applyQrPollView(r);
+      return;
     }
-  } catch (_) {}
+    if (window.QsyyDesktop?.pollPassport) {
+      const signed = await window.QsyyDesktop.pollPassport(qrToken);
+      applyQrPollView(signed);
+      return;
+    }
+    const r = await (await fetch(`/api/weblogin/poll?token=${encodeURIComponent(qrToken)}`)).json();
+    applyQrPollView(r);
+  } catch (err) {
+    if ($('qr-status')) $('qr-status').textContent = '轮询失败: ' + (err.message || err);
+  }
 }
 async function startQr() {
   stopQrPoll();
   qrToken = '';
   if ($('qr-status')) $('qr-status').textContent = '正在获取二维码…';
   if ($('qr-image')) { $('qr-image').hidden = true; $('qr-image').removeAttribute('src'); }
+  const folderBtn = $('qr-soda-folder');
+  if (folderBtn) folderBtn.hidden = !window.QsyyAndroid?.pickSodaFolder;
   try {
     const r = await (await fetch('/api/weblogin/qr')).json();
     if (!r?.ok) { if ($('qr-status')) $('qr-status').textContent = r?.error || '二维码获取失败'; return; }
@@ -1547,8 +1602,13 @@ async function startQr() {
     const src = qrImageSrc(r.qrcode, r.url);
     if (src && $('qr-image')) { $('qr-image').src = src; $('qr-image').hidden = false; }
     if ($('qr-hint') && r.hint) $('qr-hint').textContent = r.hint;
-    if ($('qr-status')) $('qr-status').textContent = '等待扫码';
-    if (qrToken) { qrPoll = setInterval(pollQr, 1500); pollQr(); }
+    if ($('qr-status')) {
+      $('qr-status').textContent = hasSignedPoller() ? '正在接通汽水登录通道…' : '等待扫码';
+    }
+    if (qrToken) {
+      qrPoll = setInterval(pollQr, 2800);
+      pollQr();
+    }
   } catch (err) {
     if ($('qr-status')) $('qr-status').textContent = err.message || '二维码获取失败';
   }
@@ -1560,6 +1620,15 @@ function openQrModal() {
   requestAnimationFrame(() => m.classList.add('open'));
   startQr();
 }
+window.__qsyyOnQrSuccess = onQrSuccess;
+window.__qsyyOnQrPoll = function (payload) {
+  try { applyQrPollView(typeof payload === 'string' ? JSON.parse(payload) : payload); }
+  catch (_) {}
+};
+window.__qsyySodaImported = async function (ok) {
+  toast(ok ? '已导入汽水登录文件，正在读取' : '这个目录里没有找到 Cookies 文件。可改选汽水数据目录，或继续扫码', ok ? 'ok' : 'err');
+  await loadMe();
+};
 
 function decoratePlayingRow() {
   const current = state.queue[state.queueIndex];
@@ -2769,6 +2838,7 @@ setInterval(loadStats, 10 * 60 * 1000);
   if (qrModal) qrModal.addEventListener('click', e => { if (e.target === qrModal) closeQrModal(); });
   if ($('qr-close')) $('qr-close').onclick = closeQrModal;
   if ($('qr-refresh')) $('qr-refresh').onclick = startQr;
+  if ($('qr-soda-folder')) $('qr-soda-folder').onclick = pickSodaFolder;
 
   // ---------------------------------------------------------------- export wizard bindings
   if ($('export-btn')) $('export-btn').onclick = openExportWizard;

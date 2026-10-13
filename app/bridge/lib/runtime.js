@@ -68,7 +68,7 @@ function resolvePlatformRuntime(platform, { env, home, filesystem }) {
       device: '',
       ffmpeg: '',
       cacheDir: '',
-      reason: '手机上没有汽水音乐客户端，不能读取它的缓存',
+      reason: '安卓不允许读取另一个 App 的私有缓存(汽水与 qsyy 不是同一 Linux 用户)',
     };
   }
   const bridgeRoot = env.QISHUI_PLUGIN_ROOT
