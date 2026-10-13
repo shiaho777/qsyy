@@ -21,11 +21,9 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { PLATFORM, CLIENT_DATA, CLIENT_PACKAGES, NATIVE_LIBS } from './platform.mjs';
-
-const HOME = os.homedir();
+import { readClientCookies } from './cookies.mjs';
 
 function latestPackageDir() {
   try {
@@ -72,12 +70,7 @@ if (metasecOk && engineOk && ttnetModule) {
 }
 
 function readCookies() {
-  try {
-    return execSync(
-      `sqlite3 "${CLIENT_DATA.cookies}" "SELECT name || '=' || value FROM cookies WHERE host_key IN ('.qishui.com','.bytedance.com');"`,
-      { encoding: 'utf8' },
-    ).trim().split('\n').filter(Boolean).join('; ');
-  } catch (_) { return ''; }
+  return readClientCookies(CLIENT_DATA.cookies);
 }
 
 function deviceParams() {
@@ -170,7 +163,8 @@ async function resolveTrack(trackId) {
   const cookie = readCookies();
   if (!cookie) return { ok: false, error: 'client not logged in' };
   const dev = deviceParams();
-  const q = `aid=386088&app_version=3.6.0&channel=official&device_platform=MacOS&deviceid=${dev.deviceid}&installid=${dev.installid}&os=Darwin`;
+  const plat = PLATFORM === 'darwin' ? 'device_platform=MacOS&os=Darwin' : 'device_platform=PC&os=Windows';
+  const q = `aid=386088&app_version=3.6.0&channel=official&${plat}&deviceid=${dev.deviceid}&installid=${dev.installid}`;
   const r = await engineRequest(
     `https://api.qishui.com/luna/pc/track_v2?${q}&track_id=${trackId}&media_type=track`,
     'POST',

@@ -35,7 +35,7 @@ tasks.register("fetchLibnode") {
 tasks.register<Copy>("syncQsyyRuntime") {
     into(qsyyAssets.map { it.dir("qsyy-app") })
     from(rootProject.file("../app/standalone")) {
-        include("server.mjs", "platform.mjs", "ttnet-helper.mjs", "public/**")
+        include("server.mjs", "platform.mjs", "ttnet-helper.mjs", "qr-login.mjs", "cookies.mjs", "public/**")
         exclude("device.json", "web-session.json")
         into("standalone")
     }

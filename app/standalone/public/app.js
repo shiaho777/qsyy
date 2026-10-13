@@ -210,9 +210,10 @@ async function loadMe() {
       <div class="hint">网页会话 · 可在线播放</div></div>
       <button id="web-logout" class="user-btn" type="button">退出</button>`;
   } else {
+    const android = Boolean(window.QsyyAndroid);
     box.innerHTML = `
       <div class="user-copy"><div class="name">未登录汽水</div>
-      <div class="hint">本地库仍可播放</div></div>
+      <div class="hint">${android ? '读不到汽水 App 的私有缓存,扫码后可在线播' : '本地库仍可播放'}</div></div>
       <button id="web-login" class="user-btn" type="button">扫码登录</button>`;
   }
   bindUserActions();
@@ -1545,7 +1546,8 @@ async function startQr() {
     qrToken = r.token || '';
     const src = qrImageSrc(r.qrcode, r.url);
     if (src && $('qr-image')) { $('qr-image').src = src; $('qr-image').hidden = false; }
-    if ($('qr-status')) $('qr-status').textContent = '打开汽水音乐,扫一扫';
+    if ($('qr-hint') && r.hint) $('qr-hint').textContent = r.hint;
+    if ($('qr-status')) $('qr-status').textContent = '等待扫码';
     if (qrToken) { qrPoll = setInterval(pollQr, 1500); pollQr(); }
   } catch (err) {
     if ($('qr-status')) $('qr-status').textContent = err.message || '二维码获取失败';
