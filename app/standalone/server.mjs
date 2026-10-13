@@ -10,15 +10,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { spawn, execFile, execFileSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
   CLIENT_DATA, OS_CACHE_ROOT,
-  findDeviceNode, findFfmpeg, cookieQueryCommand, openFolder, openClient,
+  findDeviceNode, findFfmpeg, openFolder, openClient,
   findPortHolderPid, nodeChildLaunch,
 } from './platform.mjs';
+import {
+  classifyQrPoll, collectCookies, cookieHeader, followRedirects, qrScanHint,
+} from './qr-login.mjs';
+import { readClientCookies } from './cookies.mjs';
 
 const require = createRequire(import.meta.url);
 const { RestoreService } = require('../bridge/lib/restore-service.js');
@@ -269,21 +273,13 @@ const COMMON_QUERY = (() => {
 let cookieCache = { value: '', at: 0 };
 let webSession = null;
 function sessionCookies(callback) {
-  const fallback = () => callback(cookieCache.value || webSession?.cookie || '');
   if (cookieCache.value && Date.now() - cookieCache.at < 120000) {
     callback(cookieCache.value);
     return;
   }
-  const query = cookieQueryCommand(COOKIES_DB);
-  if (!query?.cmd || !COOKIES_DB || !fs.existsSync(COOKIES_DB)) {
-    fallback();
-    return;
-  }
-  execFile(query.cmd, query.args, { encoding: 'utf8', timeout: 5000 }, (error, stdout) => {
-    const text = !error ? stdout.trim().split('\n').filter(Boolean).join('; ') : '';
-    if (text) cookieCache = { value: text, at: Date.now() };
-    callback(text || webSession?.cookie || '');
-  });
+  const text = readClientCookies(COOKIES_DB);
+  if (text) cookieCache = { value: text, at: Date.now() };
+  callback(text || webSession?.cookie || '');
 }
 
 // Keep-alive agents: a fresh TLS handshake used to precede every playlist
@@ -1077,18 +1073,18 @@ function saveWebSession(cookieMap) {
 
 function passportQuery(extra = {}) {
   const now = String(Date.now());
-  const params = [
-    ['passport_jssdk_version', '2.4.13'], ['passport_jssdk_type', 'normal'], ['is_from_ttaccountsdk', '1'],
-    ['aid', '386088'], ['language', 'zh'], ['account_sdk_source', 'web'], ['account_sdk_source_info', ''],
-    ['p_js_v', '2.4.13'], ['p_js_t', 'pro'], ['p_zt', '3.3.5'], ['p_ver', '1.0.29'],
-    ['request_host', 'app%3A%2F%2Fresources'], ['p_bd', '1.0.0.41'],
-    ['biz_trace_id', String(Date.now() + Math.floor(Math.random() * 1000))],
-    ['is_new_login', '1'], ['is_from_iesaccountsaas', '1'],
-    ['device_id', now], ['install_id', String(Date.now() + 1)], ['did', now], ['iid', String(Date.now() + 1)],
-    ['device_platform', 'PC'], ['version_code', '3.3.0'],
-    ...Object.entries(extra),
-  ];
-  return params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+  const params = {
+    passport_jssdk_version: '2.4.13', passport_jssdk_type: 'normal', is_from_ttaccountsdk: '1',
+    aid: '386088', language: 'zh', account_sdk_source: 'web', account_sdk_source_info: '',
+    p_js_v: '2.4.13', p_js_t: 'pro', p_zt: '3.3.5', p_ver: '1.0.29',
+    request_host: 'app://resources', p_bd: '1.0.0.41',
+    biz_trace_id: String(Date.now() + Math.floor(Math.random() * 1000)),
+    is_new_login: '1', is_from_iesaccountsaas: '1',
+    device_id: now, install_id: String(Date.now() + 1), did: now, iid: String(Date.now() + 1),
+    device_platform: 'PC', version_code: '3.3.0',
+    ...extra,
+  };
+  return Object.entries(params).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
 }
 
 const PASSPORT_HEADERS = {
@@ -1100,19 +1096,20 @@ const PASSPORT_HEADERS = {
   'bd-ticket-guard-server-cert-sn': '0',
 };
 
-function collectCookies(setCookieHeaders, into = {}) {
-  for (const raw of setCookieHeaders || []) {
-    const [pair] = raw.split(';');
-    const eq = pair.indexOf('=');
-    if (eq > 0) into[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
-  }
-  return into;
+const qrPending = new Map(); // token → { cookies, device_id, install_id }
+
+function passportDevice() {
+  const device_id = String(Date.now());
+  const install_id = String(Date.now() + 1);
+  return { device_id, install_id, did: device_id, iid: install_id };
 }
 
-const qrPending = new Map(); // token → { cookies }
-
 async function createQrLogin() {
-  const search = passportQuery({ next: 'https://api.qishui.com', need_logo: 'false', need_short_url: 'false', is_frontier: 'true' });
+  const device = passportDevice();
+  const search = passportQuery({
+    ...device, next: 'https://api.qishui.com',
+    need_logo: 'false', need_short_url: 'false', is_frontier: 'false',
+  });
   const result = await new Promise(resolve => {
     https.get(`${API_BASE}/passport/web/get_qrcode/?${search}`, { headers: PASSPORT_HEADERS }, res => {
       const chunks = [];
@@ -1126,20 +1123,37 @@ async function createQrLogin() {
   });
   const data = result.json?.data || {};
   if (!data.token) throw new Error(result.json?.message || `get_qrcode failed (${result.status})`);
-  qrPending.set(data.token, { cookies: result.cookies });
+  qrPending.set(data.token, { cookies: result.cookies, ...device });
   setTimeout(() => qrPending.delete(data.token), 10 * 60 * 1000);
-  return { token: data.token, qrcode: data.qrcode || '', url: data.qrcode_index_url || data.web_url || '' };
+  return {
+    token: data.token,
+    qrcode: data.qrcode || '',
+    url: data.qrcode_index_url || data.web_url || '',
+    hint: qrScanHint(data),
+  };
 }
 
 async function pollQrLogin(token) {
   const pending = qrPending.get(token);
   if (!pending) return { status: 'expired', message: '二维码已过期,请重新生成' };
-  const search = passportQuery();
-  const form = new URLSearchParams({ need_logo: 'false', need_short_url: 'false', is_frontier: 'true', token, is_new_login: '1', next: 'https://api.qishui.com' });
+  const search = passportQuery({
+    device_id: pending.device_id, install_id: pending.install_id,
+    did: pending.did, iid: pending.iid,
+  });
+  const body = new URLSearchParams({
+    need_logo: 'false', need_short_url: 'false', is_frontier: 'false',
+    token, is_new_login: '1', next: 'https://api.qishui.com',
+  }).toString();
   const result = await new Promise(resolve => {
     const req = https.request(`${API_BASE}/passport/web/check_qrconnect/?${search}`, {
       method: 'POST',
-      headers: { ...PASSPORT_HEADERS, 'content-type': 'application/x-www-form-urlencoded', cookie: Object.entries(pending.cookies).map(([k, v]) => `${k}=${v}`).join('; ') },
+      headers: {
+        ...PASSPORT_HEADERS,
+        'content-type': 'application/x-www-form-urlencoded',
+        'content-length': Buffer.byteLength(body),
+        cookie: cookieHeader(pending.cookies),
+        'x-tt-passport-csrf-token': pending.cookies.passport_csrf_token || '',
+      },
     }, res => {
       const chunks = [];
       res.on('data', c => chunks.push(c));
@@ -1150,20 +1164,26 @@ async function pollQrLogin(token) {
       });
     });
     req.on('error', () => resolve({ status: 0, cookies: {}, json: null }));
-    req.end(form.toString());
+    req.end(body);
   });
-  const data = result.json?.data || {};
-  if (data.error_code === 7) return { status: 'waiting', message: '等待中' };
-  const merged = { ...pending.cookies, ...result.cookies };
-  if (merged.sessionid && saveWebSession(merged)) {
+  Object.assign(pending.cookies, result.cookies);
+  if (pending.cookies.sessionid && saveWebSession(pending.cookies)) {
     qrPending.delete(token);
     return { status: 'success', message: '登录成功' };
   }
-  const status = String(data.status || '').toLowerCase();
-  if (status === 'confirmed' || status === 'scanned') return { status: 'scanned', message: '已扫码,请在手机上确认' };
-  if (status === 'new' || status === '') return { status: 'waiting', message: '等待扫码' };
-  if (status === 'expired') { qrPending.delete(token); return { status: 'expired', message: '二维码已过期' }; }
-  return { status: 'waiting', message: result.json?.message || '等待扫码' };
+  const classified = classifyQrPoll(result.json);
+  if (classified.status === 'confirmed') {
+    if (classified.redirect) {
+      await followRedirects(classified.redirect, PASSPORT_HEADERS, pending.cookies);
+    }
+    if (pending.cookies.sessionid && saveWebSession(pending.cookies)) {
+      qrPending.delete(token);
+      return { status: 'success', message: '登录成功' };
+    }
+    return { status: 'scanned', message: '已确认,正在领取登录态…' };
+  }
+  if (classified.status === 'expired') qrPending.delete(token);
+  return { status: classified.status, message: classified.message };
 }
 
 // Resolve an online play URL for a track via the web track_v2 endpoint.

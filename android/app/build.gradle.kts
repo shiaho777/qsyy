@@ -35,7 +35,7 @@ tasks.register("fetchLibnode") {
 tasks.register<Copy>("syncQsyyRuntime") {
     into(qsyyAssets.map { it.dir("qsyy-app") })
     from(rootProject.file("../app/standalone")) {
-        include("server.mjs", "platform.mjs", "ttnet-helper.mjs", "public/**")
+        include("server.mjs", "platform.mjs", "ttnet-helper.mjs", "qr-login.mjs", "cookies.mjs", "public/**")
         exclude("device.json", "web-session.json")
         into("standalone")
     }
@@ -58,8 +58,8 @@ android {
         applicationId = "com.shiaho777.qsyy"
         minSdk = 24
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.3.1"
+        versionCode = 11
+        versionName = "1.3.2"
         externalNativeBuild {
             cmake {
                 arguments += "-DANDROID_STL=c++_shared"

@@ -4,6 +4,20 @@
 版本号遵循语义化版本;每条 Release 的详细说明由 `scripts/release-notes.mjs`
 从 Conventional Commits 自动生成(见 AGENTS.md 的发版规范)。
 
+## [1.3.2] - 2026-10-13
+
+### 新功能
+- 歌单导出时若有未缓存或只有试听的歌,打包前弹出确认:跳过 / 一起带走 / 上一步(Issue #93)
+
+### 修复
+- 扫码登录改为用抖音做身份验证,轮询认数字状态并跟随 redirect 收会话;
+  用汽水音乐扫这个码不会授权(Issue #95)
+- 客户端 Cookies 不再依赖 PATH 上的 sqlite3:没有 CLI 时用 JS 解析同一份
+  SQLite,Windows / Docker 已登录也不会被当成未登录(Issue #95)
+- Windows 客户端数据目录改用 `%APPDATA%\SodaMusic`,并回退 `qishui`(Issue #95)
+
+[1.3.2]: https://github.com/shiaho777/qsyy/releases/tag/v1.3.2
+
 ## [1.3.1] - 2026-10-09
 
 ### 新功能

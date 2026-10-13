@@ -45,8 +45,11 @@ export const CLIENT_ROOTS = (() => {
   }
   if (PLATFORM === 'win32') {
     // Per-user install is the default; the machine-wide one is the fallback.
+    const local = process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local');
     const candidates = [
-      process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'qishui'),
+      path.join(local, 'Programs', 'qishui'),
+      path.join(local, 'Programs', 'SodaMusic'),
+      path.join(local, 'Programs', '汽水音乐'),
       process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'qishui'),
       process.env['PROGRAMFILES(X86)'] && path.join(process.env['PROGRAMFILES(X86)'], 'qishui'),
     ].filter(Boolean);
@@ -100,7 +103,9 @@ export const CLIENT_DATA = (() => {
     return { data: base, cache: base, cookies: path.join(base, 'Cookies'), cookiesKind: 'sqlite-plain' };
   }
   if (PLATFORM === 'win32') {
-    const base = path.join(HOME, 'AppData', 'Roaming', 'SodaMusic') || path.join(HOME, 'AppData', 'Roaming', 'qishui');
+    const roaming = process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming');
+    const candidates = [path.join(roaming, 'SodaMusic'), path.join(roaming, 'qishui')];
+    const base = candidates.find(p => fs.existsSync(p)) || candidates[0];
     return { data: base, cache: base, cookies: path.join(base, 'Cookies'), cookiesKind: 'sqlite-plain' };
   }
   const base = process.env.XDG_CONFIG_HOME
@@ -149,9 +154,9 @@ export function findFfmpeg() {
 
 // ---------------------------------------------------------------- cookies
 
-// Session cookies for qishui.com. All desktop builds store cookies in a
-// plain SQLite database (Chromium variants without OS-keychain encryption),
-// so the same sqlite3 CLI query works everywhere.
+// Session cookies for qishui.com. Desktop builds store them in a plain
+// SQLite Cookies file. Callers should use cookies.mjs (CLI if present,
+// otherwise a JS reader) — Windows and Docker typically have no sqlite3 binary.
 export function cookieQueryCommand(dbPath) {
   if (PLATFORM === 'android' || !dbPath) return null;
   return {
