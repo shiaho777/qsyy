@@ -581,7 +581,7 @@ function playOrPrime(t) {
   if (t.storeSrc || info?.ready || state.onlineAvailable) {
     if (!t.storeSrc && !info?.ready) {
       toast(`「${t.name}」在线播放准备中(约几秒)…`);
-      busyCacheRings.add(t.id);
+      markCacheBusy(t.id);
       decorateCacheBadges();
       pollProgress();
     }
@@ -1659,32 +1659,49 @@ function decorateCacheBadges() {
       preview.style.display = isPreview ? '' : 'none';
     }
     const ringDone = local === 'full' || storeComplete || (info?.ready && !info.isPreview);
-    setCacheRing(el, ringDone ? 1 : (store?.progress || 0), ringDone, busyCacheRings.has(id));
+    const failed = !ringDone && failedCacheRings.has(id);
+    setCacheRing(el, ringDone ? 1 : (store?.progress || 0), ringDone, !ringDone && !failed && busyCacheRings.has(id), failed);
+    const cell = el.querySelector('.cell-cache');
+    if (cell) cell.title = failed && store?.error ? store.error : '缓存操作:清理 / 重加载';
   }
   updateHeroSub();
 }
 
 // 进度圈:p∈[0,1]。done 满圈+对勾;busy 流动扫描(解析中);其余按真实比例
-function setCacheRing(el, p, done, busy) {
+function setCacheRing(el, p, done, busy, failed) {
   const ring = el.querySelector('.ring');
   if (!ring) return;
   const C = 2 * Math.PI * 8.5;
-  const isDone = Boolean(done) && !busy;
+  const isDone = Boolean(done);
+  const isFailed = Boolean(failed) && !isDone;
+  const isBusy = Boolean(busy) && !isDone && !isFailed;
   const pp = isDone ? 1 : Math.max(0, Math.min(1, p || 0));
   const fill = ring.querySelector('.ring-fill');
-  ring.classList.toggle('busy', Boolean(busy) && !isDone);
-  if (!ring.classList.contains('busy')) {
+  ring.classList.toggle('busy', isBusy);
+  ring.classList.toggle('failed', isFailed);
+  ring.classList.toggle('done', isDone);
+  if (!isBusy) {
     fill.style.strokeDasharray = String(C);
-    fill.style.strokeDashoffset = String(C * (1 - pp));
+    fill.style.strokeDashoffset = String(C * (1 - (isFailed && pp === 0 ? 0.18 : pp)));
   } else {
     fill.style.strokeDasharray = '';
     fill.style.strokeDashoffset = '';
   }
-  ring.classList.toggle('done', isDone);
 }
 
 // 自有缓存的实时进度:SSE 推流(250ms)+ 轮询兜底
-const busyCacheRings = new Set();   // 解析中/排队中:圈做流动扫描
+// busy 只表示「还在排队或下载」。完成、失败、超时都必须离开这个集合，否则圈会一直转。
+const busyCacheRings = new Set();
+const failedCacheRings = new Set();
+const busySince = new Map();
+const CACHE_BUSY_GRACE_MS = 8000;
+
+function markCacheBusy(id) {
+  const key = String(id);
+  if (!busyCacheRings.has(key)) busySince.set(key, Date.now());
+  busyCacheRings.add(key);
+  failedCacheRings.delete(key);
+}
 
 // ---------------------------------------------------------------- 行尾缓存环操作菜单(清理/重加载)
 // position:fixed 贴 viewport 定位 + 高 z-index:避免早前 absolute 浮层被
@@ -1729,6 +1746,9 @@ async function doClearTrackCache(track) {
   await storeJson('/api/store/remove-track', { id: track.id, ...(viewing ? { set: viewing } : {}) });
   state.storeProgress.delete(track.id);
   state.cacheStatus.delete(track.id);
+  busyCacheRings.delete(String(track.id));
+  failedCacheRings.delete(String(track.id));
+  busySince.delete(String(track.id));
   if (viewing && state.current?.storeName === viewing) {
     const id = String(track.id);
     state.current.tracks = state.current.tracks.filter(t => t.id !== id);
@@ -1754,7 +1774,7 @@ async function doReloadTrackCache(track) {
   }
   const r = await storeJson('/api/store/cache', { id: track.id });
   if (r?.ok) {
-    busyCacheRings.add(track.id);
+    markCacheBusy(track.id);
     decorateCacheBadges();
     pollProgress();                 // SSE 断线时的轮询兜底;进度本身走 progress-stream
     toast(`正在重新缓存「${track.name}」…`);
@@ -1763,15 +1783,47 @@ async function doReloadTrackCache(track) {
 let progressTimer = null;
 
 function applyProgress(all) {
+  const seen = new Set();
   let changed = false;
   for (const [id, st] of Object.entries(all || {})) {
+    seen.add(id);
     const prev = state.storeProgress.get(id);
-    if (st.progress > 0 || st.complete || prev) busyCacheRings.delete(id);
-    if (!prev || prev.complete !== st.complete || Math.abs((prev.progress || 0) - (st.progress || 0)) > 0.002) {
-      state.storeProgress.set(id, st);
-      changed = true;
-      if (st.complete) state.cacheStatus.set(id, { ...(state.cacheStatus.get(id) || {}), ready: true, isPreview: false });
+    const phase = st.phase || (st.complete ? 'done' : '');
+    const next = { ...st, phase };
+    if (next.complete || phase === 'done' || phase === 'failed' || next.progress > 0) {
+      busyCacheRings.delete(id);
+      busySince.delete(id);
     }
+    if (phase === 'failed') failedCacheRings.add(id);
+    else if (phase === 'done' || next.complete || phase === 'queued' || phase === 'running') failedCacheRings.delete(id);
+    if ((phase === 'queued' || phase === 'running') && !(next.progress > 0) && !next.complete) {
+      if (!busyCacheRings.has(id)) busySince.set(id, Date.now());
+      busyCacheRings.add(id);
+    }
+    if (!prev || prev.complete !== next.complete || prev.phase !== next.phase || prev.error !== next.error
+      || Math.abs((prev.progress || 0) - (next.progress || 0)) > 0.002) {
+      state.storeProgress.set(id, next);
+      changed = true;
+      if (next.complete) state.cacheStatus.set(id, { ...(state.cacheStatus.get(id) || {}), ready: true, isPreview: Boolean(next.preview) });
+    }
+  }
+  const now = Date.now();
+  for (const id of [...busyCacheRings]) {
+    if (seen.has(id)) continue;
+    if (state.storeProgress.get(id)?.complete || state.cacheStatus.get(id)?.ready) {
+      busyCacheRings.delete(id);
+      busySince.delete(id);
+      failedCacheRings.delete(id);
+      changed = true;
+      continue;
+    }
+    if (now - (busySince.get(id) || now) < CACHE_BUSY_GRACE_MS) continue;
+    busyCacheRings.delete(id);
+    busySince.delete(id);
+    failedCacheRings.add(id);
+    const prev = state.storeProgress.get(id) || {};
+    state.storeProgress.set(id, { ...prev, phase: 'failed', error: prev.error || '缓存没有完成' });
+    changed = true;
   }
   if (changed) decorateCacheBadges();
 }
@@ -1824,10 +1876,20 @@ async function pumpCacheQueue() {
       for (const [id, info] of Object.entries(data.tracks || {})) {
         state.cacheStatus.set(id, info || { ready: false });
         cacheQueued.delete(id);
+        if (info?.ready && !info.isPreview) {
+          busyCacheRings.delete(id);
+          busySince.delete(id);
+          failedCacheRings.delete(id);
+        }
       }
       for (const [id, st] of Object.entries(data.store || {})) {
         state.storeProgress.set(id, st);
-        if (st.complete) state.cacheStatus.set(id, { ...(state.cacheStatus.get(id) || {}), ready: true, isPreview: false });
+        if (st.complete) {
+          state.cacheStatus.set(id, { ...(state.cacheStatus.get(id) || {}), ready: true, isPreview: false });
+          busyCacheRings.delete(id);
+          busySince.delete(id);
+          failedCacheRings.delete(id);
+        }
       }
       decorateCacheBadges();
     } catch (_) {
@@ -2170,7 +2232,7 @@ function syncSideButtons() {
 }
 // panel helpers: fade out before hiding so closing isn't abrupt
 function closePanel(el) {
-  if (el.classList.contains('hidden')) return;
+  if (!el || el.classList.contains('hidden')) return;
   el.classList.add('closing');
   // 只有仍在 closing 状态才落 hidden:若期间被重新打开(remove closing),不抢关
   setTimeout(() => { if (el.classList.contains('closing')) { el.classList.add('hidden'); el.classList.remove('closing'); } }, 190);
@@ -2438,6 +2500,17 @@ window.addEventListener('resize', () => {
 
 // ------------------------------------------------------------------ downloads
 
+function trackStoreName(t) {
+  const src = String(t?.storeSrc || '');
+  const at = src.indexOf('set=');
+  if (at >= 0) {
+    const raw = src.slice(at + 4).split('&')[0];
+    try { return decodeURIComponent(raw); } catch (_) { return raw; }
+  }
+  const ctx = String(state.queueContext || '');
+  return ctx.startsWith('store:') ? ctx.slice('store:'.length) : '';
+}
+
 async function download(t) {
   const fmt = state.fmt;
   toast(`开始下载:${t.name}`);
@@ -2448,8 +2521,9 @@ async function download(t) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         trackId: t.id, title: t.name,
-        artist: t.artists.join(' / '), album: t.album,
+        artist: (t.artists || []).join(' / '), album: t.album,
         quality: state.quality, outputFormat: fmt, coverData,
+        set: trackStoreName(t),
       }),
     });
     openDownloads();
@@ -2475,8 +2549,9 @@ async function fetchCover(t) {
 function openDownloads() {
   closePanel($('queue-panel'));
   closePanel($('lyrics-panel'));
-  closePanel($('store-panel'));
-  $('downloads-panel').classList.remove('hidden');
+  const panel = $('downloads-panel');
+  if (!panel) return;
+  panel.classList.remove('hidden');
   syncSideButtons();
 }
 if ($('p-downloads-btn')) $('p-downloads-btn').onclick = () => {
@@ -2546,7 +2621,7 @@ if ($('download-all')) $('download-all').onclick = async () => {
         const coverData = await fetchCover(t);
         await api('/api/download', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ trackId: t.id, title: t.name, artist: t.artists.join(' / '), album: t.album, quality: state.quality, outputFormat: fmt, coverData }),
+          body: JSON.stringify({ trackId: t.id, title: t.name, artist: (t.artists || []).join(' / '), album: t.album, quality: state.quality, outputFormat: fmt, coverData, set: trackStoreName(t) }),
         });
       } catch (_) { failed += 1; }
       done += 1;
