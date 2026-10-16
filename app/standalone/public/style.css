@@ -518,8 +518,9 @@ body::before {
 .ring-check { stroke: #e8e8ee; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 13; stroke-dashoffset: 13; transition: stroke-dashoffset 220ms var(--ease); }
 .ring.done .ring-fill { stroke: var(--faint); }
 .ring.done .ring-check { stroke-dashoffset: 0; }
-/* 解析/排队中:流动扫描 */
-.ring.busy .ring-fill { stroke-dasharray: 13 40.4; animation: ringFlow .9s linear infinite; }
+.ring.failed .ring-fill { stroke: #d07070; animation: none; }
+/* 解析/排队中:流动扫描。失败态必须盖过它，避免出错后继续转 */
+.ring.busy:not(.failed) .ring-fill { stroke-dasharray: 13 40.4; animation: ringFlow .9s linear infinite; }
 @keyframes ringFlow { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -53.4; } }
 
 

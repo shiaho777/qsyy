@@ -30,6 +30,7 @@ import { readClientCookies } from './cookies.mjs';
 
 const require = createRequire(import.meta.url);
 const { RestoreService } = require('../bridge/lib/restore-service.js');
+const { normalizeRestoreInput } = require('../bridge/lib/restore-input.js');
 const { DownloadEventBus } = require('../bridge/lib/events.js');
 const { createLogger } = require('../bridge/lib/logger.js');
 const { createRuntimeResolver } = require('../bridge/lib/runtime.js');
@@ -661,7 +662,74 @@ async function lyricsForDownload(trackId) {
   }
 }
 
-async function startDownload({ trackId, title, artist, album, quality, outputFormat, coverData }) {
+// 库里已经有完整 m4a 时直接导出。试听片段不算，仍走客户端缓存恢复。
+function storedM4aIn(dir, trackId) {
+  if (!dir || !/^\d+$/.test(String(trackId))) return '';
+  const file = path.join(dir, `${trackId}.m4a`);
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size < 1024) return '';
+  } catch (_) { return ''; }
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(dir, `${trackId}.json`), 'utf8'));
+    if (meta?.preview || meta?.complete === false) return '';
+  } catch (_) {}
+  return file;
+}
+
+function findStoredM4a(trackId, setName) {
+  const dirs = [];
+  const name = String(setName || '');
+  if (setNameOk(name) && !name.startsWith('.')) dirs.push(storeDir(name));
+  dirs.push(STORE_DIR);
+  for (const storeName of listStoreDirs()) dirs.push(storeDir(storeName));
+  const seen = new Set();
+  for (const dir of dirs) {
+    const key = path.resolve(dir);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const file = storedM4aIn(dir, trackId);
+    if (file) return file;
+  }
+  return '';
+}
+
+function exportStoredCopy(job, source, input) {
+  Object.assign(job, { status: 'downloading', progress: 40, phase: '导出已缓存音频', error: '' });
+  persistJobs();
+  Promise.resolve().then(async () => {
+    const normalized = normalizeRestoreInput({
+      quality: input.quality || 'highest',
+      outputDir: DOWNLOAD_DIR,
+      trackId: String(job.trackId),
+      title: input.title || '',
+      artist: input.artist || '',
+      album: input.album || '',
+      lyricsEnabled: false,
+      lyricsText: '',
+      outputFormat: input.outputFormat || 'source',
+      coverData: input.coverData || '',
+      audioUrls: [],
+    });
+    const staged = path.join(DOWNLOAD_DIR, `.qsyy-dl-${job.jobId}${path.extname(source) || '.m4a'}`);
+    fs.copyFileSync(source, staged);
+    const output = restoreService.finalizeOutput(staged, normalized, {}) || staged;
+    Object.assign(job, { status: 'completed', progress: 100, phase: '下载完成', output: output || '', error: '' });
+    persistJobs();
+    const lyricsText = await lyricsForDownload(String(job.trackId));
+    if (lyricsText) {
+      try { restoreService.writeLyrics({ ...normalized, lyricsEnabled: true, lyricsText }, output); } catch (_) {}
+    }
+  }).catch(error => {
+    Object.assign(job, {
+      status: 'failed', progress: 100, phase: '下载失败',
+      error: error?.message || String(error),
+    });
+    persistJobs();
+  });
+}
+
+async function startDownload({ trackId, title, artist, album, quality, outputFormat, coverData, set }) {
   let jobId = '';
   try {
     fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
@@ -672,6 +740,11 @@ async function startDownload({ trackId, title, artist, album, quality, outputFor
       status: 'downloading', progress: 0, phase: '准备恢复缓存', error: '', output: '', startedAt: Date.now(),
     };
     downloadJobs.set(jobId, job);
+    const stored = findStoredM4a(String(trackId), set);
+    if (stored) {
+      exportStoredCopy(job, stored, { trackId, title, artist, album, quality, outputFormat, coverData });
+      return job;
+    }
   const lyricsText = await lyricsForDownload(String(trackId));
   restoreService.restore({
     jobId,
@@ -1695,10 +1768,51 @@ function switchStore(name) {
   try { fs.mkdirSync(STORE_DIR, { recursive: true }); } catch (_) {}
   try { fs.writeFileSync(ACTIVE_STORE_FILE, JSON.stringify({ name })); } catch (_) {}
   downloadQueue.length = 0;
+  cacheJobs.clear();
   storeMeta.clear();
   loadStoreMeta();
 }
-const downloadQueue = [];           // { trackId, resolve }
+const downloadQueue = [];           // { trackId, lane, resolve }
+// 在线缓存任务的显式状态。进度为 0 的失败任务以前不会出现在进度流里，
+// 前端只能一直转圈。phase: queued | running | failed
+const cacheJobs = new Map();
+const cacheInflight = new Map();    // trackId → { promise, job }
+const CACHE_IDLE_MS = 25000;
+
+function touchCacheJob(trackId, patch) {
+  const id = String(trackId);
+  const prev = cacheJobs.get(id) || { phase: 'queued', progress: 0, error: '' };
+  const next = { ...prev, ...patch };
+  if (next.phase === 'done' && storeStatus(id)?.complete) cacheJobs.delete(id);
+  else cacheJobs.set(id, next);
+  for (const wake of progressWakers) wake();
+}
+
+function progressSnapshot() {
+  const all = {};
+  let activeCount = 0;
+  for (const id of storeMeta.keys()) {
+    const status = storeStatus(id);
+    if (!status) continue;
+    const job = cacheJobs.get(id);
+    if (!(status.complete || status.progress > 0 || job)) continue;
+    const phase = job?.phase || (status.complete ? 'done' : 'running');
+    all[id] = { ...status, phase, error: job?.error || '' };
+    if (!status.complete && (phase === 'queued' || phase === 'running')) activeCount += 1;
+  }
+  for (const [id, job] of cacheJobs) {
+    if (all[id]) continue;
+    all[id] = {
+      complete: false,
+      progress: job.progress || 0,
+      preview: false,
+      phase: job.phase,
+      error: job.error || '',
+    };
+    if (job.phase === 'queued' || job.phase === 'running') activeCount += 1;
+  }
+  return { all, activeCount };
+}
 const effectConfigs = new Map();     // configUrl → parsed DSP chain (capped; each config is a few KB)
 function cacheEffectConfig(url, config) {
   effectConfigs.set(url, config);
@@ -1896,10 +2010,15 @@ function decryptStoreFile(trackId) {
 // sequential download.
 function fetchSegment(url, headers, range) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { ...headers, range }, agent: cdnAgent }, res => {
+    const req = https.get(url, { headers: { ...headers, range }, agent: cdnAgent }, res => {
       if (res.statusCode !== 206) { res.resume(); reject(new Error(`segment status ${res.statusCode}`)); return; }
       resolve(res);
-    }).on('error', reject);
+    });
+    req.setTimeout(CACHE_IDLE_MS, () => {
+      req.destroy();
+      reject(new Error('下载超时'));
+    });
+    req.on('error', reject);
   });
 }
 
@@ -1933,7 +2052,7 @@ async function downloadParallel(url, headers, filePath, totalSize, onProgress) {
 async function resumeDownload(trackId) {
   const resolved = await ttnetResolve(trackId);
   const info = resolved?.ok ? resolved : (webSession?.cookie ? await resolveOnlineTrack(trackId) : null);
-  if (!info) return null;
+  if (!info) return { error: '没有解析到在线地址' };
   const meta = storeMeta.get(trackId) || { trackId, size: 0, downloaded: 0, complete: false, spade: '', preview: false };
   meta.spade = info.spade || meta.spade;
   meta.size = info.size || meta.size;
@@ -1946,6 +2065,7 @@ async function resumeDownload(trackId) {
 
   let start = fs.existsSync(partPath(trackId)) ? fs.statSync(partPath(trackId)).size : 0;
   if (start > 0 && meta.size && start > meta.size) start = 0;
+  let failure = '';
   const ok = await new Promise(resolve => {
     if (start === 0 && meta.size > 0) {
       // fresh download: 4 parallel segments into a preallocated file
@@ -1955,11 +2075,15 @@ async function resumeDownload(trackId) {
       }, partPath(trackId), meta.size, received => {
         meta.downloaded = received;
         saveStoreMetaThrottled(meta);
-      }).then(() => resolve(true)).catch(() => resolve(false));
+        touchCacheJob(trackId, { phase: 'running', progress: meta.size ? meta.downloaded / meta.size : 0, error: '' });
+      }).then(() => resolve(true)).catch(error => {
+        failure = /超时/.test(error?.message || '') ? '下载超时' : '下载中断';
+        resolve(false);
+      });
       return;
     }
     const go = (url, depth = 0) => {
-      if (depth > 4) { resolve(false); return; }
+      if (depth > 4) { failure = failure || '下载中断'; resolve(false); return; }
       const request = https.get(url, {
         headers: {
           'user-agent': 'Mozilla/5.0',
@@ -1972,25 +2096,32 @@ async function resumeDownload(trackId) {
           go(res.headers.location, depth + 1);
           return;
         }
-        if (res.statusCode !== (start > 0 ? 206 : 200)) { res.resume(); resolve(false); return; }
+        if (res.statusCode !== (start > 0 ? 206 : 200)) { res.resume(); failure = '下载中断'; resolve(false); return; }
         if (start === 0 && res.headers['content-length']) meta.size = Number(res.headers['content-length']) || meta.size;
         meta.downloaded = start;
         const out = fs.createWriteStream(partPath(trackId), { flags: start > 0 ? 'a' : 'w' });
         res.on('data', chunk => {
           meta.downloaded += chunk.length;
           saveStoreMetaThrottled(meta);
+          touchCacheJob(trackId, { phase: 'running', progress: meta.size ? meta.downloaded / meta.size : 0, error: '' });
         });
         res.on('aborted', () => resolve(false));
+        res.on('error', () => resolve(false));
         out.on('finish', () => resolve(true));
         out.on('error', () => resolve(false));
         res.pipe(out);
+      });
+      request.setTimeout(CACHE_IDLE_MS, () => {
+        failure = '下载超时';
+        request.destroy();
+        resolve(false);
       });
       request.on('error', () => resolve(false));
     };
     go(info.url);
   });
   saveStoreMeta(meta);
-  if (!ok && meta.downloaded === 0) return null;
+  if (!ok && meta.downloaded === 0) return { error: failure || '下载中断' };
   if (meta.size && meta.downloaded >= meta.size) {
     const out = await decryptStoreFile(trackId);
     if (out) {
@@ -1999,8 +2130,9 @@ async function resumeDownload(trackId) {
       try { fs.unlinkSync(partPath(trackId)); } catch (_) {} // m4a replaces the encrypted part
       return { m4a: out };
     }
+    return { error: '解密失败' };
   }
-  return null; // partial (kept for next resume) or decrypt failure
+  return { error: failure || '只下到一部分' };
 }
 
 // Two lanes: /api/stream (playback) gets a dedicated download lane so a batch
@@ -2010,12 +2142,29 @@ const DOWNLOAD_MAX_CONCURRENT = 2;
 let downloadActiveCount = 0;
 let playbackDownloadActive = 0;
 
+function finishCacheJob(trackId, result) {
+  const id = String(trackId);
+  if (result?.m4a || storeStatus(id)?.complete) {
+    touchCacheJob(id, { phase: 'done', progress: 1, error: '' });
+    return result?.m4a ? result : { m4a: m4aPath(id) };
+  }
+  if (result?.plainUrl) {
+    touchCacheJob(id, { phase: 'done', error: '' });
+    return result;
+  }
+  const progress = storeStatus(id)?.progress || 0;
+  touchCacheJob(id, { phase: 'failed', progress, error: result?.error || '缓存没有完成' });
+  return null;
+}
+
 function startDownloadJob(job) {
   downloadActiveCount += 1;
+  touchCacheJob(job.trackId, { phase: 'running', error: '' });
   resumeDownload(job.trackId)
-    .then(result => job.resolve(result))
-    .catch(() => job.resolve(null))
+    .then(result => job.resolve(finishCacheJob(job.trackId, result)))
+    .catch(error => job.resolve(finishCacheJob(job.trackId, { error: error?.message || '缓存没有完成' })))
     .finally(() => {
+      cacheInflight.delete(String(job.trackId));
       downloadActiveCount -= 1;
       if (job.lane === 'playback') playbackDownloadActive -= 1;
       pumpDownloadQueue();
@@ -2023,47 +2172,52 @@ function startDownloadJob(job) {
 }
 
 function pumpDownloadQueue() {
-  // one lane is always reserved for playback jobs
-  const playbackCapacity = playbackDownloadActive ? 0 : 1;
-  const backgroundCapacity = DOWNLOAD_MAX_CONCURRENT - playbackCapacity - playbackDownloadActive;
-  while (downloadQueue.length
-    && downloadActiveCount < DOWNLOAD_MAX_CONCURRENT
-    && (downloadQueue[0].lane === 'playback' ? playbackCapacity > 0 : backgroundCapacity > 0)) {
-    const job = downloadQueue.shift();
-    if (job.lane === 'playback') {
-      playbackDownloadActive += 1;
-      startDownloadJob(job);
-    } else {
-      backgroundCapacity -= 1;
-      startDownloadJob(job);
-    }
+  // 播放道空闲时留一个名额给刚点的歌。队首如果是另一条道、暂时排不上，
+  // 不能挡住后面排得上的任务，否则那些圈会一直转。
+  let guard = downloadQueue.length + 1;
+  while (downloadQueue.length && downloadActiveCount < DOWNLOAD_MAX_CONCURRENT && guard-- > 0) {
+    const playbackRoom = playbackDownloadActive ? 0 : 1;
+    const backgroundActive = downloadActiveCount - playbackDownloadActive;
+    const backgroundRoom = DOWNLOAD_MAX_CONCURRENT - playbackRoom - playbackDownloadActive - backgroundActive;
+    const idx = downloadQueue.findIndex(job => (job.lane === 'playback' ? playbackRoom : backgroundRoom) > 0);
+    if (idx < 0) break;
+    const job = downloadQueue.splice(idx, 1)[0];
+    if (job.lane === 'playback') playbackDownloadActive += 1;
+    startDownloadJob(job);
   }
 }
 
 // Resolve with { m4a } / { plainUrl } / null once the track is stored.
 // Concurrent callers for the same track share one queued job.
 function ensureOnlineCached(trackId, priority = false) {
-  if (storeStatus(trackId)?.complete) return Promise.resolve({ m4a: m4aPath(trackId) });
+  const id = String(trackId);
+  if (storeStatus(id)?.complete) {
+    cacheJobs.delete(id);
+    return Promise.resolve({ m4a: m4aPath(id) });
+  }
   // 允许删到零个库:在线播放时按需重建写入库(自动缓存)
   try { fs.mkdirSync(STORE_DIR, { recursive: true }); } catch (_) {}
-  const lane = priority ? 'playback' : 'background';
-  return new Promise(resolve => {
-    const existing = downloadQueue.find(job => job.trackId === trackId);
-    if (existing) {
-      const prev = existing.resolve;
-      existing.resolve = value => { prev(value); resolve(value); };
-      if (priority && existing.lane !== 'playback') {
-        // upgrade a queued background job to the playback lane
-        downloadQueue.splice(downloadQueue.indexOf(existing), 1);
-        existing.lane = 'playback';
-        downloadQueue.unshift(existing);
+  const inflight = cacheInflight.get(id);
+  if (inflight) {
+    if (priority && inflight.job.lane !== 'playback') {
+      inflight.job.lane = 'playback';
+      const idx = downloadQueue.indexOf(inflight.job);
+      if (idx >= 0) {
+        downloadQueue.splice(idx, 1);
+        downloadQueue.unshift(inflight.job);
+        pumpDownloadQueue();
       }
-    } else {
-      const job = { trackId, lane, resolve };
-      if (priority) downloadQueue.unshift(job); else downloadQueue.push(job);
     }
-    pumpDownloadQueue();
-  });
+    return inflight.promise;
+  }
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  const job = { trackId: id, lane: priority ? 'playback' : 'background', resolve };
+  cacheInflight.set(id, { promise, job });
+  if (priority) downloadQueue.unshift(job); else downloadQueue.push(job);
+  touchCacheJob(id, { phase: 'queued', progress: storeStatus(id)?.progress || 0, error: '' });
+  pumpDownloadQueue();
+  return promise;
 }
 
 // Proxy a signed/plaintext CDN stream with Range passthrough for <audio>.
@@ -2278,12 +2432,7 @@ const serverHandler = async (request, response) => {
       const send = () => {
         if (!dirty) return;
         dirty = false;
-        const all = {};
-        for (const id of storeMeta.keys()) {
-          const status = storeStatus(id);
-          if (status && (status.complete || status.progress > 0)) all[id] = status;
-        }
-        const payload = `data: ${JSON.stringify({ all })}\n\n`;
+        const payload = `data: ${JSON.stringify({ all: progressSnapshot().all })}\n\n`;
         if (payload === lastPayload) return; // no visible change → skip write
         lastPayload = payload;
         try { response.write(payload); } catch (_) {}
@@ -2294,15 +2443,7 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'GET /api/progress') {
-      const all = {};
-      let activeCount = 0;
-      for (const id of storeMeta.keys()) {
-        const status = storeStatus(id);
-        if (!status) continue;
-        if (status.complete || status.progress > 0) all[id] = status;
-        if (!status.complete) activeCount += 1;
-      }
-      sendJson(response, 200, { all, activeCount });
+      sendJson(response, 200, progressSnapshot());
       return;
     }
     if (route === 'GET /api/weblogin/status') {
@@ -2689,12 +2830,16 @@ const serverHandler = async (request, response) => {
         try { fs.unlinkSync(path.join(dir, `${id}.${suffix}`)); } catch (_) {}
       }
       removeFromStoreSet(otherSet || activeStoreName(), id);
-      if (!otherSet) storeMeta.delete(id);
+      if (!otherSet) {
+        storeMeta.delete(id);
+        cacheJobs.delete(id);
+      }
       sendJson(response, 200, { ok: true });
       return;
     }
     if (route === 'POST /api/store/clear') {
       downloadQueue.length = 0;
+      cacheJobs.clear();
       fs.rmSync(STORE_DIR, { recursive: true, force: true });
       switchStore(activeStoreName());
       sendJson(response, 200, { ok: true });
