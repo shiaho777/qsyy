@@ -11,6 +11,7 @@
 ### 修复
 - 点「下载单曲」时，界面去关一个不存在的面板，请求被当成失败，下载面板也打不开。库里已有完整音频时改为直接导出 (Issue #99)
 - 缓存圈在在线缓存失败、下载超时，或这首歌其实已在客户端缓存里时会一直转。任务现在有排队、下载、完成、失败；失败停转，悬停可见原因 (Issue #99)
+- 单曲下载在读取汽水缓存前失败，提示 `local restore dependencies are missing`。恢复脚本和 lmdb 改为从 `app/bridge` 查找 (Issue #101)
 
 [1.4.0]: https://github.com/shiaho777/qsyy/releases/tag/v1.4.0
 

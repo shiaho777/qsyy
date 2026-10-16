@@ -71,8 +71,11 @@ function resolvePlatformRuntime(platform, { env, home, filesystem }) {
       reason: '安卓不允许读取另一个 App 的私有缓存(汽水与 qsyy 不是同一 Linux 用户)',
     };
   }
+  // This file is app/bridge/lib/runtime.js. restore_cache.js and
+  // node_modules/lmdb live in app/bridge, one level up. Two levels up is
+  // app/, which has neither, so every download died before touching cache.
   const bridgeRoot = env.QISHUI_PLUGIN_ROOT
-    || path.resolve(__dirname, '..', '..');
+    || path.resolve(__dirname, '..');
   const installRoot = clientInstallRoot(platform, { env, home, filesystem });
   const unpacked = unpackedDir(platform, installRoot);
   return {
