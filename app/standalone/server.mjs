@@ -1976,10 +1976,10 @@ function storeStatus(id) {
   };
 }
 
-function decryptStoreFile(trackId, output) {
+function decryptStoreFile(trackId, dest) {
   const meta = storeMeta.get(trackId) || {};
   return new Promise(resolve => {
-    const target = output || m4aPath(trackId);
+    const target = dest || m4aPath(trackId);
     const child = spawnNodeChild([
       RESTORE_SCRIPT, '--decrypt-online',
       '--input', partPath(trackId),
@@ -2103,7 +2103,9 @@ async function resumeDownload(trackId) {
   let start = fs.existsSync(partPath(trackId)) ? fs.statSync(partPath(trackId)).size : 0;
   if (start > 0 && meta.size && start > meta.size) start = 0;
   let failure = '';
-  const ok = await new Promise(resolve => {
+  const ok = meta.size && start >= meta.size
+    ? true
+    : await new Promise(resolve => {
     if (start === 0 && meta.size > 0) {
       // fresh download: 4 parallel segments into a preallocated file
       downloadParallel(info.url, {
