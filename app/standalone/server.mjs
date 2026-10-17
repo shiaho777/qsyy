@@ -1068,9 +1068,11 @@ function releaseTtnetTurn() {
   if (next) next(); // the woken turn re-locks in acquireTtnetTurn
 }
 
-async function ttnetResolve(trackId) {
+async function ttnetResolve(trackId, opts = {}) {
   const hit = ttnetCache.get(trackId);
-  if (hit && Date.now() - hit.at < (hit.result.ok ? 20 : 1) * 60 * 1000) return hit.result.ok ? hit.result : null;
+  // A stored trial must not keep reusing a 20-minute preview resolve after
+  // the account can already fetch the full track.
+  if (!opts.fresh && hit && Date.now() - hit.at < (hit.result.ok ? 20 : 1) * 60 * 1000) return hit.result.ok ? hit.result : null;
   await acquireTtnetTurn();
   try {
     let child = ttnetChild;
@@ -1364,9 +1366,9 @@ async function pollQrLogin(token, { peek = false } = {}) {
 // The CDN URL embeds signed params, so playback is proxied through us.
 const onlineCache = new Map(); // trackId → { info, at }
 
-async function resolveOnlineTrack(trackId) {
+async function resolveOnlineTrack(trackId, opts = {}) {
   const hit = onlineCache.get(trackId);
-  if (hit && Date.now() - hit.at < 25 * 60 * 1000) return hit.info;
+  if (!opts.fresh && hit && Date.now() - hit.at < 25 * 60 * 1000) return hit.info;
   if (!webSession?.cookie) return null;
   const result = await new Promise(resolve => {
     https.get(`${API_BASE}/luna/pc/track_v2?track_id=${trackId}&media_type=track&aid=386088&device_platform=web&channel=pc_web`, {
@@ -1974,10 +1976,10 @@ function storeStatus(id) {
   };
 }
 
-function decryptStoreFile(trackId) {
+function decryptStoreFile(trackId, output) {
   const meta = storeMeta.get(trackId) || {};
   return new Promise(resolve => {
-    const target = m4aPath(trackId);
+    const target = output || m4aPath(trackId);
     const child = spawnNodeChild([
       RESTORE_SCRIPT, '--decrypt-online',
       '--input', partPath(trackId),
@@ -2050,10 +2052,38 @@ async function downloadParallel(url, headers, filePath, totalSize, onProgress) {
 }
 // Download (resuming a .part if present) → decrypt when full.
 async function resumeDownload(trackId) {
-  const resolved = await ttnetResolve(trackId);
-  const info = resolved?.ok ? resolved : (webSession?.cookie ? await resolveOnlineTrack(trackId) : null);
-  if (!info) return { error: '没有解析到在线地址' };
   const meta = storeMeta.get(trackId) || { trackId, size: 0, downloaded: 0, complete: false, spade: '', preview: false };
+  const fresh = Boolean(meta.preview);
+  const resolved = await ttnetResolve(trackId, { fresh });
+  const info = resolved?.ok ? resolved : (webSession?.cookie ? await resolveOnlineTrack(trackId, { fresh }) : null);
+  if (!info) return { error: '没有解析到在线地址' };
+  const file = m4aPath(trackId);
+  const hasFile = fs.existsSync(file);
+  if (meta.complete && !meta.preview && hasFile) return { m4a: file };
+  // Still a trial: the clip already on disk is the best this account can play.
+  if (info.preview && meta.preview && meta.complete && hasFile) {
+    meta.spade = info.spade || meta.spade;
+    if (info.quality) meta.quality = info.quality;
+    storeMeta.set(trackId, meta);
+    saveStoreMeta(meta);
+    return { m4a: file };
+  }
+  // The account can now fetch the full track. Keep the short m4a until the
+  // full file has replaced it. A .part that already belongs to this full
+  // target is resumed; a leftover trial part is discarded.
+  const upgrading = Boolean(meta.preview) && !info.preview;
+  const replacing = upgrading && hasFile;
+  if (upgrading) {
+    const part = partPath(trackId);
+    const partSize = fs.existsSync(part) ? fs.statSync(part).size : 0;
+    const sameTarget = Boolean(meta.size && info.size && meta.size === info.size && partSize > 0 && partSize <= info.size);
+    if (!sameTarget) {
+      try { fs.unlinkSync(part); } catch (_) {}
+      meta.downloaded = 0;
+      meta.size = info.size || 0;
+    }
+    meta.complete = false;
+  }
   meta.spade = info.spade || meta.spade;
   meta.size = info.size || meta.size;
   if (info.preview) meta.preview = true;
@@ -2061,7 +2091,14 @@ async function resumeDownload(trackId) {
   if (info.quality) meta.quality = info.quality;
   storeMeta.set(trackId, meta);
   saveStoreMeta(meta);
-  if (!info.encrypted) return { plainUrl: info.url };
+  if (!info.encrypted) {
+    if (!info.preview) {
+      meta.preview = false;
+      meta.complete = false;
+      saveStoreMeta(meta);
+    }
+    return { plainUrl: info.url };
+  }
 
   let start = fs.existsSync(partPath(trackId)) ? fs.statSync(partPath(trackId)).size : 0;
   if (start > 0 && meta.size && start > meta.size) start = 0;
@@ -2121,14 +2158,32 @@ async function resumeDownload(trackId) {
     go(info.url);
   });
   saveStoreMeta(meta);
-  if (!ok && meta.downloaded === 0) return { error: failure || '下载中断' };
-  if (meta.size && meta.downloaded >= meta.size) {
-    const out = await decryptStoreFile(trackId);
-    if (out) {
+  if (!ok && meta.downloaded === 0) {
+    if (replacing && fs.existsSync(file)) {
       meta.complete = true;
+      meta.preview = true;
+      saveStoreMeta(meta);
+    }
+    return { error: failure || '下载中断' };
+  }
+  if (meta.size && meta.downloaded >= meta.size) {
+    const staging = replacing ? `${file}.next` : file;
+    const out = await decryptStoreFile(trackId, staging);
+    if (out) {
+      if (replacing) {
+        try { fs.renameSync(staging, file); } catch (_) {}
+      }
+      meta.complete = true;
+      meta.preview = Boolean(info.preview);
       saveStoreMeta(meta);
       try { fs.unlinkSync(partPath(trackId)); } catch (_) {} // m4a replaces the encrypted part
-      return { m4a: out };
+      return { m4a: replacing ? file : out };
+    }
+    try { fs.unlinkSync(staging); } catch (_) {}
+    if (replacing && hasFile) {
+      meta.complete = true;
+      meta.preview = true;
+      saveStoreMeta(meta);
     }
     return { error: '解密失败' };
   }
@@ -2191,7 +2246,10 @@ function pumpDownloadQueue() {
 // Concurrent callers for the same track share one queued job.
 function ensureOnlineCached(trackId, priority = false) {
   const id = String(trackId);
-  if (storeStatus(id)?.complete) {
+  const stored = storeStatus(id);
+  // A finished trial clip is not the song. Play and cache look it up again
+  // and replace it once the account can fetch the full track.
+  if (stored?.complete && !stored.preview) {
     cacheJobs.delete(id);
     return Promise.resolve({ m4a: m4aPath(id) });
   }

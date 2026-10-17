@@ -1654,11 +1654,12 @@ function decorateCacheBadges() {
     const preview = el.querySelector('.badge.preview');
     if (cached && preview) {
       const storeFull = (storeComplete && !store?.preview) || local === 'full';
-      const isPreview = (info?.ready && info.isPreview) || (storeComplete && store?.preview) || local === 'preview';
-      cached.style.display = (info?.ready && !info.isPreview) || storeFull ? '' : 'none';
+      const clientFull = Boolean(info?.ready && !info.isPreview);
+      const isPreview = !storeFull && !clientFull && ((info?.ready && info.isPreview) || (storeComplete && store?.preview) || local === 'preview');
+      cached.style.display = storeFull || clientFull ? '' : 'none';
       preview.style.display = isPreview ? '' : 'none';
     }
-    const ringDone = local === 'full' || storeComplete || (info?.ready && !info.isPreview);
+    const ringDone = local === 'full' || (storeComplete && !store?.preview) || (info?.ready && !info.isPreview);
     const failed = !ringDone && failedCacheRings.has(id);
     setCacheRing(el, ringDone ? 1 : (store?.progress || 0), ringDone, !ringDone && !failed && busyCacheRings.has(id), failed);
     const cell = el.querySelector('.cell-cache');
@@ -1885,7 +1886,7 @@ async function pumpCacheQueue() {
       for (const [id, st] of Object.entries(data.store || {})) {
         state.storeProgress.set(id, st);
         if (st.complete) {
-          state.cacheStatus.set(id, { ...(state.cacheStatus.get(id) || {}), ready: true, isPreview: false });
+          state.cacheStatus.set(id, { ...(state.cacheStatus.get(id) || {}), ready: true, isPreview: Boolean(st.preview) });
           busyCacheRings.delete(id);
           busySince.delete(id);
           failedCacheRings.delete(id);
