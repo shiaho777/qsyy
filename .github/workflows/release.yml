@@ -72,6 +72,14 @@ jobs:
           npm install --prefix app/bridge --no-audit --no-fund
           npm install --prefix desktop --no-audit --no-fund
 
+      # Helper CHECK traps would otherwise surface as "qsyy quit unexpectedly".
+      # Universal, because the arm64 dmg and the x64 zip share extraResources.
+      - name: Build quiet-trap helper
+        run: |
+          cc -shared -fPIC -O2 -arch arm64 -arch x86_64 \
+            -o app/standalone/native/quiet-trap.dylib \
+            app/standalone/native/quiet-trap.c
+
       - name: Build macOS app (dmg + zip)
         working-directory: desktop
         run: npm run dist:mac

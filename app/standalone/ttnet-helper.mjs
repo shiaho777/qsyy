@@ -21,9 +21,13 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { PLATFORM, CLIENT_DATA, CLIENT_PACKAGES, NATIVE_LIBS } from './platform.mjs';
 import { readClientCookies } from './cookies.mjs';
+
+const helperDir = path.dirname(fileURLToPath(import.meta.url));
 
 function latestPackageDir() {
   try {
@@ -78,6 +82,26 @@ function deviceParams() {
   return { deviceid: '2433637762995168', installid: '1167019340224857' };
 }
 
+// Plain dylib: Node reports "did not self-register" after the constructor
+// has already run. That constructor is the whole point.
+function armQuietExit() {
+  if (PLATFORM !== 'darwin' || process.env.QSYY_DEBUG || process.env.SODA_DEBUG) return;
+  const bundled = path.join(helperDir, 'native', 'quiet-trap.dylib');
+  let file = fs.existsSync(bundled) ? bundled : '';
+  if (!file) {
+    const source = path.join(helperDir, 'native', 'quiet-trap.c');
+    const built = path.join(os.tmpdir(), `qsyy-quiet-trap-${process.arch}.dylib`);
+    if (fs.existsSync(source)) {
+      try {
+        const arch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
+        execFileSync('cc', ['-shared', '-fPIC', '-O2', '-arch', arch, '-o', built, source], { timeout: 20000, stdio: 'ignore' });
+        if (fs.existsSync(built)) file = built;
+      } catch (_) {}
+    }
+  }
+  if (file) dlopen(file);
+}
+
 let ready = false;
 if (ttnet) {
   try {
@@ -99,22 +123,61 @@ if (ttnet) {
     ready = true;
   } catch (_) {}
 }
+// After initTTNet, so this replaces handlers the signing library just installed.
+armQuietExit();
+
+// ttnet.request() returns an External whose finalizer calls
+// Cronet_UrlRequest_Destroy. Dropping that object while the request is still
+// marked started trips CHECK(!started_) on TTNet-AN-IO and kills this
+// process. Hold every handle until a terminal event, and drop it on a later
+// turn so Destroy runs after the completion callback has returned.
+const liveRequests = new Set();
+
+function releaseRequest(handle) {
+  if (!handle) return;
+  setImmediate(() => liveRequests.delete(handle));
+}
 
 function engineRequest(url, method, headers, body) {
   return new Promise(resolve => {
     let acc = '';
     let status = 0;
-    const timer = setTimeout(() => resolve({ status: 0, body: '' }), 15000);
+    let settled = false;
+    let handle = null;
+    const finish = (result) => {
+      const current = handle;
+      if (settled) {
+        releaseRequest(current);
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+      releaseRequest(current);
+    };
+    const timer = setTimeout(() => {
+      try {
+        if (handle && typeof ttnet.cancel === 'function') ttnet.cancel(handle);
+      } catch (_) {}
+      if (!settled) {
+        settled = true;
+        resolve({ status: 0, body: '' });
+      }
+    }, 15000);
     try {
-      ttnet.request({ url, method, headers, body: body || undefined }, {
+      handle = ttnet.request({ url, method, headers, body: body || undefined }, {
         onEvent: ev => {
           if (ev.type === 'response') status = ev.statusCode;
           else if (ev.type === 'data') acc += typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString('utf8');
-          else if (ev.type === 'end') { clearTimeout(timer); resolve({ status, body: acc }); }
-          else if (ev.type === 'error') { clearTimeout(timer); resolve({ status, body: '' }); }
+          else if (ev.type === 'end') finish({ status, body: acc });
+          else if (ev.type === 'error') finish({ status: 0, body: '' });
         },
       });
-    } catch (e) { clearTimeout(timer); resolve({ status: 0, body: '' }); }
+      if (handle) liveRequests.add(handle);
+      if (settled) releaseRequest(handle);
+    } catch (e) {
+      finish({ status: 0, body: '' });
+    }
   });
 }
 
