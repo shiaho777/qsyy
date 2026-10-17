@@ -5,6 +5,7 @@ app/standalone/device.json
 # --- 运行时生成 ---
 app/debug/
 *.log
+app/standalone/native/quiet-trap.dylib
 
 # --- 依赖 ---
 node_modules/
