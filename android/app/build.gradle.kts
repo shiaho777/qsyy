@@ -58,8 +58,8 @@ android {
         applicationId = "com.shiaho777.qsyy"
         minSdk = 24
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.4.2"
+        versionCode = 16
+        versionName = "1.4.3"
         externalNativeBuild {
             cmake {
                 arguments += "-DANDROID_STL=c++_shared"
