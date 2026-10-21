@@ -1738,7 +1738,10 @@ async function doClearTrackCache(track) {
   // 正在看某个缓存库时,清的是这一库里的文件,并把它从同一张列表里拿掉。
   const viewing = state.current?.kind === 'store' ? state.current.storeName : '';
   const inLibrary = Boolean(viewing) && state.current.tracks.some(t => t.id === String(track.id) && t.storeSrc);
-  if (!state.storeProgress.get(track.id)?.complete && !inLibrary) {
+  const store = state.storeProgress.get(track.id);
+  // 未完成的在线下载也在 qsyy 自己的库里(.part)。以前只认 complete,
+  // 失败的半截文件清不掉,下次播放还是用它。
+  if (!store && !inLibrary) {
     toast(state.cacheStatus.get(track.id)?.ready
       ? '这首歌的缓存在汽水音乐客户端内,qsyy 对客户端文件只读,无法清理'
       : '这首歌还没有缓存', 'err');
