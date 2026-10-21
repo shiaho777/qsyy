@@ -410,13 +410,22 @@ function scanKey(extraArgs) {
   return extraArgs.join('|');
 }
 
+// A miss must not sit in the 90s cache. The client writes new chunks while
+// qsyy is open; treating "not there yet" as a long-lived answer hides them.
+function scanIsReusable(value) {
+  if (!value) return false;
+  if (value.batch && Object.values(value.batch).some(row => !row)) return false;
+  if (Array.isArray(value.candidates) && value.candidates.length === 0 && !value.batch) return false;
+  return true;
+}
+
 // Cache entries are stamped when their LMDB snapshot was taken; a single
 // track probe may hit a stale batch (missing the newest chunk), so results
 // from an older snapshot are re-scanned once when explicitly probed.
 function runScan(extraArgs) {
   const key = scanKey(extraArgs);
   const cached = scanCache.get(key);
-  if (cached && Date.now() - cached.at < SCAN_CACHE_TTL) return Promise.resolve(cached.value);
+  if (cached && scanIsReusable(cached.value) && Date.now() - cached.at < SCAN_CACHE_TTL) return Promise.resolve(cached.value);
   if (scanCache.size > 400) {
     // hard cap: each entry is a batch result; unbounded growth on long
     // sessions of browsing many playlists is the only leak path
@@ -471,11 +480,12 @@ function runScan(extraArgs) {
           if (process.env.QSYY_DEBUG) console.error(`[qsyy] scan #${seq} → ${key.slice(0, 80)}`);
         });
         if (value !== null) return value;
-        // null child result on a fresh snapshot: retry with a new one
-        releaseScanSnapshot(snapshot);
         await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
-        continue;
       } catch (_) {
+      } finally {
+        // Always drop the ref. Leaving it held kept the first snapshot for
+        // the whole process, so songs cached in the client afterwards stayed
+        // invisible.
         releaseScanSnapshot(snapshot);
       }
     }
@@ -485,7 +495,7 @@ function runScan(extraArgs) {
   promise.then(
     value => {
       scanInflight.delete(key);
-      if (value !== null) scanCache.set(key, { at: Date.now(), value });
+      if (value !== null && scanIsReusable(value)) scanCache.set(key, { at: Date.now(), value });
     },
     () => scanInflight.delete(key),
   );
@@ -2101,9 +2111,16 @@ async function resumeDownload(trackId) {
   }
 
   let start = fs.existsSync(partPath(trackId)) ? fs.statSync(partPath(trackId)).size : 0;
-  if (start > 0 && meta.size && start > meta.size) start = 0;
+  // File length reaches the target as soon as the last segment writes, even
+  // when an earlier segment never arrived. Only the received-byte count says
+  // the part is complete.
+  if (meta.size && (start > meta.size || (start >= meta.size && (meta.downloaded || 0) < meta.size))) {
+    try { fs.unlinkSync(partPath(trackId)); } catch (_) {}
+    meta.downloaded = 0;
+    start = 0;
+  }
   let failure = '';
-  const ok = meta.size && start >= meta.size
+  const ok = meta.size && start >= meta.size && (meta.downloaded || 0) >= meta.size
     ? true
     : await new Promise(resolve => {
     if (start === 0 && meta.size > 0) {
@@ -2117,6 +2134,10 @@ async function resumeDownload(trackId) {
         touchCacheJob(trackId, { phase: 'running', progress: meta.size ? meta.downloaded / meta.size : 0, error: '' });
       }).then(() => resolve(true)).catch(error => {
         failure = /超时/.test(error?.message || '') ? '下载超时' : '下载中断';
+        // A failed segment leaves a full-length file with a hole. A later
+        // resume would see the length and refuse to fill the hole.
+        try { fs.unlinkSync(partPath(trackId)); } catch (_) {}
+        meta.downloaded = 0;
         resolve(false);
       });
       return;
