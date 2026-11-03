@@ -117,20 +117,6 @@ export const NATIVE_LIBS = (() => {
   };
 })();
 
-// The client's native key module (decodeSpade), used to decrypt CENC streams.
-export function findDeviceNode({ asarUnpackedDir } = {}) {
-  if (PLATFORM === 'android') return '';
-  const moduleName = PLATFORM === 'win32' ? 'device.node' : 'device.node'; // same name on all platforms
-  const candidates = [];
-  if (asarUnpackedDir) candidates.push(path.join(asarUnpackedDir, moduleName));
-  if (PLATFORM === 'darwin') {
-    candidates.push(path.join(CLIENT_ROOTS.app, 'Contents', 'Resources', 'app.asar.unpacked', moduleName));
-  } else if (CLIENT_ROOTS.app) {
-    candidates.push(path.join(CLIENT_ROOTS.app, 'resources', 'app.asar.unpacked', moduleName));
-  }
-  return candidates.find(p => p && fs.existsSync(p)) || candidates[0] || '';
-}
-
 // Cache / data roots of the desktop client.
 function androidClientData() {
   const imported = (() => {
@@ -296,6 +282,5 @@ export const platformSummary = {
   cacheDir: QSYY_CACHE_DIR || null,
   cookiesDb: QSYY_COOKIES_DB || null,
   ffmpeg: findFfmpeg() || null,
-  deviceNode: findDeviceNode() || null,
   nodeChild: Boolean(nodeChildLaunch()),
 };

@@ -46,12 +46,11 @@ class RestoreService {
     });
 
     const runtime = this.runtime();
-    if (!runtime.script || !runtime.lmdb || !runtime.device) {
+    if (!runtime.script || !runtime.lmdb) {
       this.logger('restore-dependencies-missing', {
         jobId,
         script: Boolean(runtime.script),
         lmdb: Boolean(runtime.lmdb),
-        device: Boolean(runtime.device),
       });
       throw new Error(runtime.reason || 'local restore dependencies are missing');
     }
@@ -67,11 +66,9 @@ class RestoreService {
       '--cache-dir', runtime.cacheDir,
       '--output-dir', normalized.outputDir,
       '--lmdb-module', runtime.lmdb,
-      '--device-node', runtime.device,
       '--quality', normalized.quality,
       '--fuzzy',
       '--wait-ms', '120000',
-      '--ffmpeg', runtime.ffmpeg,
     ];
     if (normalized.trackId) args.push('--track-id', normalized.trackId);
     for (const url of normalized.audioUrls) args.push('--audio-url', url);

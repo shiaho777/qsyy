@@ -2,8 +2,9 @@
 
 // macOS port of the Windows restore_cache.js contract.
 // Reads the Soda Music (Mac) LunaCacheV2 index with lmdb, locates the cached
-// chunk for a track, and copies it out as a plain media file. The Mac client
-// stores cache files unencrypted, so no device.node step is needed.
+// chunk for a track, and copies it out as a plain media file. Encrypted
+// (CENC) entries are decrypted in pure JS via lib/cenc.js; no client native
+// module and no ffmpeg are involved.
 //
 // The live entries.db can abort an lmdb open while the client writes to it,
 // so every scan runs against a fresh file snapshot inside a forked child; a
@@ -14,6 +15,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const { decodeSpadeA, stripEncryptionBoxes } = require('./lib/cenc');
 
 function parseArgs(argv) {
   const args = {};
@@ -301,6 +303,7 @@ function decryptMp4(source, destination, key) {
     if (plaintext.length !== sample.size) throw new Error('Decrypted sample size changed');
     plaintext.copy(output, sample.offset);
   }
+  stripEncryptionBoxes(output);
   fs.writeFileSync(destination, output);
   return samples.length;
 }
@@ -431,25 +434,15 @@ function scanSnapshot(args) {
 // <trackId>.m4a — used by 「同步汽水音乐缓存为库」. One lmdb snapshot, one
 // process, sequential writes; each track emits a JSON line so the parent can
 // stream progress. Plaintext entries are copied as-is; cenc-aes-ctr entries go
-// through decodeSpade + per-sample AES-CTR decrypt + ffmpeg faststart remux.
+// through decodeSpadeA + per-sample AES-CTR decrypt + in-place box cleanup.
 // 30s preview chunks are reported but never imported (the online path serves
 // them better).
 function restoreAllSnapshot(args) {
   const lmdb = require(args['lmdb-module']);
   const env = lmdb.open({ path: args.snapshot, readOnly: true, useVersions: false });
   const outputDir = args['output-dir'];
-  const ffmpeg = args.ffmpeg || 'ffmpeg';
-  const devicePath = args['device-node'];
   const cacheDir = args['cache-dir'];
-  const { spawnSync } = require('child_process');
   fs.mkdirSync(outputDir, { recursive: true });
-  let device = null;
-  const loadDevice = () => {
-    if (device) return device;
-    device = require(path.resolve(devicePath));
-    if (typeof device.decodeSpade !== 'function') throw new Error('device.node has no decodeSpade');
-    return device;
-  };
   try {
     const byTrack = new Map();
     for (const key of env.getKeys()) {
@@ -489,13 +482,7 @@ function restoreAllSnapshot(args) {
       const tmp = path.join(outputDir, `.qsyy-sync-${pick.trackId}.m4a`);
       try {
         if (pick.encryption?.encrypted && pick.encryption.method === 'cenc-aes-ctr') {
-          const keyHex = loadDevice().decodeSpade(pick.encryption.spade);
-          if (!/^[0-9a-f]{32}$/i.test(String(keyHex))) throw new Error('decodeSpade did not return an AES-128 key');
-          const decrypted = `${tmp}.dec`;
-          decryptMp4(source, decrypted, Buffer.from(String(keyHex), 'hex'));
-          const remux = spawnSync(ffmpeg, ['-y', '-v', 'error', '-i', decrypted, '-map', '0:a:0', '-c', 'copy', '-movflags', '+faststart', tmp], { encoding: 'utf8' });
-          if (remux.status === 0 && fs.existsSync(tmp)) fs.unlinkSync(decrypted);
-          else fs.renameSync(decrypted, tmp);
+          decryptMp4(source, tmp, Buffer.from(decodeSpadeA(pick.encryption.spade), 'hex'));
         } else {
           fs.copyFileSync(source, tmp);
         }
@@ -503,7 +490,6 @@ function restoreAllSnapshot(args) {
         emit({ type: 'track', trackId: pick.trackId, ok: true, size: fs.statSync(target).size, quality: pick.entryQuality });
       } catch (error) {
         try { fs.unlinkSync(tmp); } catch (_) {}
-        try { fs.unlinkSync(`${tmp}.dec`); } catch (_) {}
         emit({ type: 'track', trackId: pick.trackId, ok: false, error: error?.message || String(error), size: pick.size, quality: pick.entryQuality });
       }
     }
@@ -585,26 +571,10 @@ async function main() {
     const input = args['input'];
     const output = args['output'];
     const spade = args['spade'];
-    const devicePath = args['device-node'];
-    if (!input || !output || !spade || !devicePath) {
-      throw new Error('decrypt-online requires --input, --output, --spade, --device-node');
+    if (!input || !output || !spade) {
+      throw new Error('decrypt-online requires --input, --output, --spade');
     }
-    const device = require(path.resolve(devicePath));
-    if (typeof device.decodeSpade !== 'function') throw new Error('device.node has no decodeSpade');
-    const keyHex = device.decodeSpade(spade);
-    if (!/^[0-9a-f]{32}$/i.test(String(keyHex))) throw new Error('decodeSpade did not return an AES-128 key');
-    const decrypted = `${output}.dec.m4a`;
-    const samples = decryptMp4(path.resolve(input), decrypted, Buffer.from(String(keyHex), 'hex'));
-    if (args.ffmpeg && fs.existsSync(args.ffmpeg)) {
-      const { spawnSync } = require('child_process');
-      const remux = spawnSync(args.ffmpeg, ['-y', '-v', 'error', '-i', decrypted, '-map', '0:a:0', '-c', 'copy', '-movflags', '+faststart', output], { encoding: 'utf8' });
-      if (remux.status === 0 && fs.existsSync(output)) {
-        fs.unlinkSync(decrypted);
-        emit({ ok: true, output, samples });
-        return;
-      }
-    }
-    fs.renameSync(decrypted, output);
+    const samples = decryptMp4(path.resolve(input), output, Buffer.from(decodeSpadeA(spade), 'hex'));
     emit({ ok: true, output, samples });
     return;
   }
@@ -638,26 +608,7 @@ async function main() {
       const target = path.join(outputDir, `.qsyy-restore-${best.chunkId}.${extension}`);
       const source = path.join(cacheDir, `${best.chunkId}.bin`);
       if (best.encryption?.encrypted && best.encryption.method === 'cenc-aes-ctr') {
-        const devicePath = args['device-node'];
-        if (!devicePath) throw new Error('encrypted audio requires --device-node');
-        const device = require(path.resolve(devicePath));
-        if (typeof device.decodeSpade !== 'function') throw new Error('device.node has no decodeSpade');
-        const keyHex = device.decodeSpade(best.encryption.spade);
-        if (!/^[0-9a-f]{32}$/i.test(String(keyHex))) throw new Error('decodeSpade did not return an AES-128 key');
-        const decrypted = path.join(outputDir, `.qsyy-restore-${best.chunkId}.dec.${extension}`);
-        const samples = decryptMp4(source, decrypted, Buffer.from(String(keyHex), 'hex'));
-        if (args.ffmpeg && args.ffmpeg !== 'ffmpeg' ? fs.existsSync(args.ffmpeg) : true) {
-          try {
-            const { spawnSync } = require('child_process');
-            const remux = spawnSync(args.ffmpeg || 'ffmpeg', ['-y', '-v', 'error', '-i', decrypted, '-map', '0:a:0', '-c', 'copy', '-movflags', '+faststart', target], { encoding: 'utf8' });
-            if (remux.status === 0 && fs.existsSync(target)) {
-              fs.unlinkSync(decrypted);
-              emit({ ok: true, chunkId: best.chunkId, output: target, validated: true, size: best.size, quality: best.entryQuality, isPreview: best.isPreview, codec: 'AAC', samples });
-              return;
-            }
-          } catch (_) {}
-        }
-        fs.renameSync(decrypted, target);
+        decryptMp4(source, target, Buffer.from(decodeSpadeA(best.encryption.spade), 'hex'));
       } else {
         fs.copyFileSync(source, target);
       }
