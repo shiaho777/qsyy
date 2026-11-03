@@ -45,6 +45,25 @@ export function qrScanHint(_data) {
   return QR_SCAN_HINT;
 }
 
+export const SCAN_LOGIN_BASE = 'https://bff-pc.qishui.com/light/invoke/scan_login';
+
+// The 汽水 app only accepts this URL. The official PC client takes the token
+// from the passport URL and renders its own QR code instead of showing the
+// passport image.
+export function scanLoginUrl({ token = '', passportUrl = '', os = 'Windows', computerName = '' } = {}) {
+  let fromUrl = '';
+  try { fromUrl = new URL(String(passportUrl)).searchParams.get('token') || ''; } catch (_) {}
+  const target = new URL(SCAN_LOGIN_BASE);
+  target.searchParams.append('token', fromUrl || String(token || ''));
+  target.searchParams.append('os', os === 'Mac' ? 'Mac' : 'Windows');
+  target.searchParams.append('computer_name', String(computerName || ''));
+  return target.toString().replaceAll('+', '%20');
+}
+
+export function scanLoginComputerName(hostname) {
+  return String(hostname || '').replace(/\.local$/i, '').trim() || 'qsyy';
+}
+
 export function classifyQrPoll(payload) {
   const data = payload?.data && typeof payload.data === 'object' ? payload.data : (payload || {});
   const errorCode = Number(data.error_code);

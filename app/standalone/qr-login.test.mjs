@@ -10,7 +10,33 @@ import {
   serializeQrPending, restoreQrPending, parseCookieHeader, pickWebSessionCookies,
   QR_PENDING_TTL_MS, aBogusFromUrl, isSignedPassportUrl, cookieMapFromBrowserCookies,
   shouldCommitQrSession, mergeCookiePayload, A_BOGUS_LENGTH,
+  scanLoginUrl, scanLoginComputerName, SCAN_LOGIN_BASE,
 } from './qr-login.mjs';
+
+test('scanLoginUrl matches the official client format', () => {
+  const url = scanLoginUrl({
+    token: 'fallback',
+    passportUrl: 'https://bff-pc.qishui.com/ucenter_web/app/sdk-next?device_platform=PC&token=tok_1&qr_source_aid=386088',
+    os: 'Mac',
+    computerName: 'shiaho 的 MacBook Pro',
+  });
+  assert.ok(url.startsWith(`${SCAN_LOGIN_BASE}?`));
+  assert.equal(url, `${SCAN_LOGIN_BASE}?token=tok_1&os=Mac&computer_name=shiaho%20%E7%9A%84%20MacBook%20Pro`);
+  assert.ok(!url.includes('+'));
+});
+
+test('scanLoginUrl falls back to the token field and Windows', () => {
+  const url = new URL(scanLoginUrl({ token: 'tok_2', passportUrl: 'not a url', os: 'Linux' }));
+  assert.equal(url.searchParams.get('token'), 'tok_2');
+  assert.equal(url.searchParams.get('os'), 'Windows');
+  assert.equal(url.searchParams.get('computer_name'), '');
+});
+
+test('scanLoginComputerName strips .local and never returns empty', () => {
+  assert.equal(scanLoginComputerName('shiaho-MacBook-Pro.local'), 'shiaho-MacBook-Pro');
+  assert.equal(scanLoginComputerName('DESKTOP-ABC'), 'DESKTOP-ABC');
+  assert.equal(scanLoginComputerName(''), 'qsyy');
+});
 
 test('classifyQrPoll maps numeric passport statuses', () => {
   assert.equal(classifyQrPoll({ data: { status: 'new', error_code: 0 } }).status, 'waiting');
