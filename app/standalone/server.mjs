@@ -36,6 +36,7 @@ const { normalizeRestoreInput } = require('../bridge/lib/restore-input.js');
 const { DownloadEventBus } = require('../bridge/lib/events.js');
 const { createLogger } = require('../bridge/lib/logger.js');
 const { createRuntimeResolver } = require('../bridge/lib/runtime.js');
+const { decodeSpadeA, decryptMp4 } = require('../bridge/lib/cenc.js');
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(root, 'public');
@@ -1779,30 +1780,18 @@ function storeStatus(id) {
   };
 }
 
-function decryptStoreFile(trackId, dest) {
+// In-process on every platform: nodejs-mobile (Android) cannot spawn a Node
+// child, and the decrypt is pure JS (~15ms per track), so no child is needed.
+async function decryptStoreFile(trackId, dest) {
   const meta = storeMeta.get(trackId) || {};
-  return new Promise(resolve => {
-    const target = dest || m4aPath(trackId);
-    const child = spawnNodeChild([
-      RESTORE_SCRIPT, '--decrypt-online',
-      '--input', partPath(trackId),
-      '--output', target,
-      '--spade', String(meta.spade || ''),
-    ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
-    if (!child) { resolve(''); return; }
-    let output = '';
-    child.stdout.on('data', d => { output += d.toString(); });
-    const timer = setTimeout(() => { try { child.kill(); } catch (_) {} resolve(''); }, 120000);
-    child.on('error', () => { clearTimeout(timer); resolve(''); });
-    child.on('close', () => {
-      clearTimeout(timer);
-      try {
-        const lines = output.trim().split(/\r?\n/).filter(Boolean);
-        const result = JSON.parse(lines[lines.length - 1]);
-        resolve(result?.ok && fs.existsSync(target) ? target : '');
-      } catch (_) { resolve(''); }
-    });
-  });
+  const target = dest || m4aPath(trackId);
+  try {
+    decryptMp4(partPath(trackId), target, Buffer.from(decodeSpadeA(meta.spade), 'hex'));
+    return target;
+  } catch (error) {
+    logger('decrypt-failed', { trackId: String(trackId), message: error?.message || String(error) });
+    return '';
+  }
 }
 
 // Fetch the encrypted CDN stream. A fresh download (no resumable .part) uses
