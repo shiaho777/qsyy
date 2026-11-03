@@ -95,6 +95,10 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
 - **纯逻辑模块**与 server 同目录、各配 `*.test.mjs`:`cookies.mjs`、`qr-login.mjs`、
   `lyrics.mjs`(LRC/逐字歌词解析)、`zip.mjs`(歌单包读写)。新抽出的无状态逻辑
   照此放置并补测试,CI 按 `app/standalone/*.test.mjs` 自动收录。
+  **新模块还要加进 `android/app/build.gradle.kts` 的 `syncQsyyRuntime` 白名单**
+  (桌面与 Docker 整包复制 `app/`,Android 按 `include()` 逐个列),漏了只会在 APK
+  运行时报 `ERR_MODULE_NOT_FOUND`;CI 会从 `server.mjs` / `ttnet-helper.mjs`
+  追相对 import 校验白名单。
 - **前端零框架**(`public/js/*.js`,9 个经典脚本,共享全局作用域),无构建步骤。
   `index.html` 里的 `<script>` 顺序即依赖顺序(core → data → ordering → effects →
   equalizer → library → export → player → about):加载期执行的语句只能用到**本文件

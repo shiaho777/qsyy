@@ -40,6 +40,29 @@ jobs:
             end
           ' .github/workflows/*.yml
 
+      - name: Android runtime whitelist covers server imports
+        # syncQsyyRuntime copies app/standalone by explicit include(); a module
+        # missing there only fails at APK runtime (ERR_MODULE_NOT_FOUND).
+        run: |
+          node -e '
+            const fs = require("fs"), path = require("path");
+            const gradle = fs.readFileSync("android/app/build.gradle.kts", "utf8");
+            const block = gradle.match(/app\/standalone"\)\)\s*\{\s*include\(([^)]*)\)/);
+            if (!block) { console.error("syncQsyyRuntime: standalone include() not found"); process.exit(1); }
+            const listed = new Set([...block[1].matchAll(/"([^"]+)"/g)].map(m => m[1]));
+            const seen = new Set(), queue = ["server.mjs", "ttnet-helper.mjs"];
+            let bad = 0;
+            while (queue.length) {
+              const f = queue.shift();
+              if (seen.has(f)) continue;
+              seen.add(f);
+              if (!listed.has(f)) { console.error(`syncQsyyRuntime misses standalone/${f}`); bad = 1; }
+              const src = fs.readFileSync(path.join("app/standalone", f), "utf8");
+              for (const m of src.matchAll(/(?:from|import\()\s*["\x27]\.\/([^"\x27]+)["\x27]/g)) queue.push(m[1]);
+            }
+            process.exit(bad);
+          '
+
       - name: Doc links resolve
         run: |
           node -e '
