@@ -1,5 +1,5 @@
 name: ci
-# Fast gate for every push/PR: syntax + structural checks only.
+# Fast gate for every push/PR: syntax, unit tests and structural checks.
 # Release builds live in release.yml (tag v*). This workflow never closes
 # Issues and never publishes artifacts.
 
@@ -26,16 +26,19 @@ jobs:
             node --check "$f"
           done
 
+      - name: Unit tests
+        run: node --test app/standalone/*.test.mjs
+
       - name: Workflow YAML well-formed
+        # Ruby ships on ubuntu-latest; a real parse catches indentation and
+        # syntax errors, not just tabs.
         run: |
-          node -e '
-            const fs = require("fs");
-            // minimal YAML sanity: tabs are illegal, every file non-empty
-            for (const f of fs.readdirSync(".github/workflows")) {
-              const text = fs.readFileSync(`.github/workflows/${f}`, "utf8");
-              if (/^\t/m.test(text)) throw new Error(`tab indentation in ${f}`);
-            }
-          '
+          ruby -ryaml -e '
+            ARGV.each do |f|
+              doc = YAML.load_file(f)
+              raise "#{f}: empty or not a mapping" unless doc.is_a?(Hash)
+            end
+          ' .github/workflows/*.yml
 
       - name: Doc links resolve
         run: |
