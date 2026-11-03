@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
   CLIENT_DATA, OS_CACHE_ROOT, resolveClientCookiesPath, probeAndroidSoda, isAndroid,
-  findDeviceNode, findFfmpeg, openFolder, openClient,
+  openFolder, openClient,
   findPortHolderPid, nodeChildLaunch, isMac,
 } from './platform.mjs';
 import {
@@ -82,8 +82,6 @@ function resolveLatestRelease() {
 }
 const RESTORE_SCRIPT = path.join(root, '..', 'bridge', 'restore_cache.js');
 const LMDB_MODULE = path.join(root, '..', 'bridge', 'node_modules', 'lmdb');
-const FFMPEG = findFfmpeg();
-const DEVICE_NODE = findDeviceNode();
 // Decrypted copies / lyrics / incremental stores live under the OS cache root.
 const DECRYPT_DIR = path.join(OS_CACHE_ROOT, 'qsyy');
 // One-time migration from the previous app name (SodaCollection).
@@ -203,7 +201,7 @@ function trackChild(child) {
   return child;
 }
 // POSIX: spawn the child as its own process-group leader, so kill(-pid)
-// takes down its own spawns too (ffmpeg remux, restore_cache.js's scan
+// takes down its own spawns too (ffmpeg transcodes, restore_cache.js's scan
 // grandchild). Windows has no kill(-pid) and `detached` opens a console —
 // plain child.kill() is the best effort there.
 function spawnTracked(command, args, options = {}) {
@@ -737,7 +735,7 @@ events.publish = (type, input, jobId, payload) => {
 // ------------------------------------------------------------ decrypt concurrency
 
 // Spawning a decrypt child per stream request used to stampede the machine
-// (each one loads LMDB + device.node + ffmpeg). Cap it and deduplicate by
+// (each one loads LMDB and decrypts the whole file). Cap it and deduplicate by
 // trackId so switching songs quickly cancels nothing but never doubles work.
 const DECRYPT_MAX_CONCURRENT = 2;
 let decryptActive = 0;
@@ -761,7 +759,7 @@ function releaseDecryptSlot() {
 
 // Successful decrypts, by cache chunk id: the m4a already sits in DECRYPT_DIR
 // keyed by chunkId, so a repeat stream of the same file skips the LMDB +
-// device.node + ffmpeg child entirely.
+// decrypt child entirely.
 const decryptedChunkCache = new Map(); // chunkId → m4a path
 
 function decryptForStreaming(trackId) {
@@ -777,8 +775,6 @@ function decryptForStreaming(trackId) {
           '--cache-dir', CACHE_DIR,
           '--output-dir', DECRYPT_DIR,
           '--lmdb-module', LMDB_MODULE,
-          '--device-node', DEVICE_NODE,
-          '--ffmpeg', FFMPEG,
           '--quality', 'highest',
           '--wait-ms', '5000',
           '--track-id', String(trackId),
@@ -1414,7 +1410,7 @@ function removeFromStoreSet(name, trackId) {
 
 // Online playback cache: CDN streams are CENC-encrypted; downloads go into a
 // Downloads go into a persistent, resumable store; once complete we decrypt to
-// a faststart M4A and keep it — next session the track plays instantly and
+// a plain M4A (moov first) and keep it — next session the track plays instantly and
 // shows the same 缓存 badge as client-cached songs.
 // Cache store, organized as switchable named sets under stores/:
 //   stores/<name>/{<trackId>.m4a,.json,.part,.jpg}
@@ -1792,8 +1788,6 @@ function decryptStoreFile(trackId, dest) {
       '--input', partPath(trackId),
       '--output', target,
       '--spade', String(meta.spade || ''),
-      '--device-node', DEVICE_NODE,
-      '--ffmpeg', FFMPEG,
     ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
     if (!child) { resolve(''); return; }
     let output = '';
@@ -2552,7 +2546,7 @@ const serverHandler = async (request, response) => {
     }
     if (route === 'POST /api/store/sync') {
       // 同步汽水音乐缓存为库(一键):--restore-all 子进程在一份 LMDB 快照上
-      // 把客户端缓存的音频本体落成 <id>.m4a(明文直拷,CENC 走解密+remux,
+      // 把客户端缓存的音频本体落成 <id>.m4a(明文直拷,CENC 走纯 JS 解密,
       // 试听条目只建档),随后后台经 track_v2 补齐歌名/歌手/封面(有进度可查)。
       // 库完全来自用户主动操作,无自动积累。
       const input = await readBody(request);
@@ -2588,8 +2582,6 @@ const serverHandler = async (request, response) => {
                 '--lmdb-module', LMDB_MODULE,
                 '--cache-dir', CACHE_DIR,
                 '--output-dir', targetDir,
-                '--device-node', DEVICE_NODE,
-                '--ffmpeg', FFMPEG,
               ], { stdio: ['ignore', 'pipe', 'ignore'], env: CHILD_NODE_ENV });
               if (!child) { resolve(); return; }
               let buf = '';

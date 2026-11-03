@@ -126,8 +126,9 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
   文件快照 → fork 子进程 → 30s 超时 → 失败换新快照重试(3 次)。直接在主进程
   开 lmdb 会与客户端写入冲突。
 - CENC 解密:moov 明文,`senc` 盒携带 IV + 子样本表;密钥在条目
-  `encrypt_info.spade_a`,经客户端 `device.node` 的 `decodeSpade` 解出(返回
-  32 位 hex)。每个音质一条密钥,匹配时先按 `entry.info.quality` 选
+  `encrypt_info.spade_a`,经 `bridge/lib/cenc.js` 的 `decodeSpadeA` 纯 JS 解出
+  (32 位 hex,与客户端 `device.node` 一致;不再加载客户端原生模块)。解密后原地
+  改写加密盒,不经 ffmpeg remux。每个音质一条密钥,匹配时先按 `entry.info.quality` 选
   `video_list` 项。
 - 音质优先级 `QUALITY_RANK = lossless > hi_res > spatial > highest > higher >
   medium > default`;同曲多条目按 `kind === 'F'`(完整)优先。

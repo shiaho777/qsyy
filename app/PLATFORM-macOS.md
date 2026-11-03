@@ -21,9 +21,8 @@
 | qsyy 自有缓存 | `~/Library/Caches/qsyy` | `%LOCALAPPDATA%\qsyy` |
 
 缓存扫描链(`app/bridge/lib/runtime.js`)同样按平台解析:
-restore 脚本、lmdb 模块、`device.node` 探测(Windows 的
-`resources/app.asar.unpacked` 与 macOS 的 `Contents/Resources/` 布局差异已处理)、
-ffmpeg 与 `LunaCacheV2` 缓存目录。
+restore 脚本、lmdb 模块、ffmpeg(仅导出转码使用)与 `LunaCacheV2` 缓存目录。
+CENC 解密是纯 JS(`bridge/lib/cenc.js`),不加载客户端原生模块。
 
 ## 环境变量
 
@@ -110,8 +109,8 @@ app/
 │   ├── public/            # 前端(原生 JS,无框架,虚拟化懒加载)
 │   └── device.json        # 设备参数覆盖(可选,不入库)
 ├── bridge/
-│   ├── restore_cache.js   # 缓存扫描快照 + CENC 解密 + ffmpeg remux
-│   ├── lib/               # RestoreService / 事件总线 / 跨平台运行时解析
+│   ├── restore_cache.js   # 缓存扫描快照 + CENC 解密(纯 JS,无 ffmpeg)
+│   ├── lib/               # RestoreService / 事件总线 / 跨平台运行时解析 / cenc.js 密钥与加密盒处理
 │   └── node_modules/      # lmdb(原生模块,npm install 安装)
 ├── tools/                 # 辅助小工具(decode-wav 调试解码器)
 ├── LICENSE
@@ -165,7 +164,7 @@ app/
 | `GET /api/events` | 下载任务事件流(SSE,push-on-change) |
 | `GET /api/monitor/:trackId` | 长轮询(≤120s):等用户在官方客户端播放出缓存 |
 | `GET /api/store/sets` · `/api/store/tracks` 及对应 POST | 缓存库列表 / 切换 / 创建 / 删除 / 清理 / 移除曲目(`create`/`sync` 接受 `dir` 自定义父目录) |
-| `POST /api/store/sync` · `GET /api/store/sync-status` | 同步客户端缓存为库:导入音频本体(明文直拷 / CENC 解密 remux)+ 后台补档案 |
+| `POST /api/store/sync` · `GET /api/store/sync-status` | 同步客户端缓存为库:导入音频本体(明文直拷 / CENC 解密)+ 后台补档案 |
 | `POST /api/pick-directory` | 系统目录选择器(仅桌面壳;浏览器端返回 400,前端退化为文本输入) |
 | `GET /api/backup` · `POST /api/restore` | tar 备份导出 / 流式导入(路径穿越安全) |
 | `GET /api/weblogin/status` · `/qr` · `/poll` · `POST /logout` | 扫码网页会话兜底通路 |
@@ -183,13 +182,15 @@ moov 明文、音频样本加密,每个音质一条密钥,密钥材料在缓存�
 按此分支处理:
 
 1. `entries.db`(LMDB)按 `trackId` 定位缓存条目 → `chunkId` + `encrypt_info`
-2. 若条目标记加密:加载客户端自带的 `device.node`(只读 require,不修改客户端)→
-   `decodeSpade(spade_a)` 解包出 AES-128 密钥,按 MP4 `senc` 盒子的 IV/子样本表
-   逐样本 AES-CTR 解密
-3. ffmpeg remux 成标准 faststart M4A;转码/写标签(320k MP3、FLAC 等)同样由 ffmpeg 完成
+2. 若条目标记加密:`bridge/lib/cenc.js` 的 `decodeSpadeA(spade_a)` 用纯 JS 解出
+   AES-128 密钥(与客户端 `device.node` 的 `decodeSpade` 结果一致),按 MP4 `senc`
+   盒子的 IV/子样本表逐样本 AES-CTR 解密
+3. `stripEncryptionBoxes` 原地改写:`enca`→`mp4a`,`sinf`/`senc`/`saio`/`saiz`/`pssh`
+   改为 `free`,大小与偏移不变,输出即标准 M4A(moov 在 mdat 前)。
+   只有导出转码/写标签(320k MP3、FLAC 等)才用 ffmpeg
 
-> `device.node` 仅在遇到加密条目时才真正参与解密;客户端更新后路径变化时,
-> `platform.mjs` 的定位逻辑会按候选列表自动查找,极端情况下可用环境变量覆盖。
+> 解密不依赖官方客户端的原生模块,也不需要 ffmpeg,所以安卓等没有这两者的
+> 环境也能解密 CDN 下载的加密流。
 
 扫描稳定性:`entries.db` 被客户端持有时 lmdb 打开可能中断,因此每次扫描都在
 fork 子进程中对文件快照进行(10 秒 TTL 内并发共享同一快照,结果按 key 去重
