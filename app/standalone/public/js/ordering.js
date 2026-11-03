@@ -129,7 +129,7 @@ function rowEl(t, i) {
   el.innerHTML = `
     <div class="cell-idx"><span class="num">${i + 1}</span><button class="hovp" title="播放">${ICONS.playRow}</button><div class="eq"><i></i><i></i><i></i></div></div>
     <img class="cover" loading="lazy" src="${trackCoverUrl(t, 96)}" alt="">
-    <div class="name"><span class="t-name">${esc(t.name)}</span>${t.vip ? '<span class="badge vip">VIP</span>' : ''}${qualityTags}<span class="badge cached" style="display:none">缓存</span><span class="badge preview" style="display:none">试听</span></div>
+    <div class="name"><span class="t-name">${esc(t.name)}</span>${t.vip ? '<span class="badge vip">VIP</span>' : ''}${qualityTags}<span class="badge preview" style="display:none">试听</span></div>
     <div class="artist">${esc(t.artists.join(' / '))}</div>
     <div class="album">${esc(t.album)}</div>
     <div class="dur">${fmtTime(t.duration)}</div>

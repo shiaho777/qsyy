@@ -158,13 +158,12 @@ function decorateCacheBadges() {
     const store = state.storeProgress.get(id);
     const storeComplete = Boolean(store?.complete);
     const local = el.dataset.local;
-    const cached = el.querySelector('.badge.cached');
+    // 完整缓存只由行尾的缓存环表示;标题旁只保留「试听」,因为缓存环表达不了它
     const preview = el.querySelector('.badge.preview');
-    if (cached && preview) {
+    if (preview) {
       const storeFull = (storeComplete && !store?.preview) || local === 'full';
       const clientFull = Boolean(info?.ready && !info.isPreview);
       const isPreview = !storeFull && !clientFull && ((info?.ready && info.isPreview) || (storeComplete && store?.preview) || local === 'preview');
-      cached.style.display = storeFull || clientFull ? '' : 'none';
       preview.style.display = isPreview ? '' : 'none';
     }
     const ringDone = local === 'full' || (storeComplete && !store?.preview) || (info?.ready && !info.isPreview);
