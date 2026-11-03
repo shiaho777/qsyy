@@ -193,8 +193,14 @@ function updateHeroSub() {
     el.textContent = `${cur.tracks.length} 首${mb ? ` · ${(mb / 1048576).toFixed(1)}MB` : ''}${cur.storeMeta?.active ? ' · 写入' : ''}`;
     return;
   }
-  const cachedCount = cur.tracks.filter(t => state.cacheStatus.get(t.id)?.ready).length;
-  el.textContent = `${cur.count} 首 · 已加载 ${cur.tracks.length}${cur.hasMore ? '+' : ''} · 本地缓存 ${cachedCount}`;
+  // 歌单元数据里的 count 可能滞后于实际曲目数，取两者较大值，避免出现「75 首 · 已加载 91」
+  const total = Math.max(Number(cur.count) || 0, cur.tracks.length);
+  // 与行尾缓存环口径一致:试听片段不算已缓存
+  const cachedCount = cur.tracks.filter(t => { const i = state.cacheStatus.get(t.id); return i?.ready && !i.isPreview; }).length;
+  const parts = [`${total} 首`];
+  if (cur.hasMore) parts.push(`已载入 ${cur.tracks.length}`);
+  if (cachedCount) parts.push(!cur.hasMore && cachedCount >= cur.tracks.length ? '全部已缓存' : `${cachedCount} 首已缓存`);
+  el.textContent = parts.join(' · ');
 }
 
 async function loadMore() {
