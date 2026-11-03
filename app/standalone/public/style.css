@@ -127,7 +127,7 @@ body.booting #app { opacity: 0; }
 .pl-item:active { transform: scale(.985); }
 .pl-item::after {
   content: ''; position: absolute; left: -2px; top: 50%; height: 0; width: 3px;
-  border-radius: 3px; background: #fff; box-shadow: 0 0 10px rgba(255,255,255,.55); transform: translateY(-50%);
+  border-radius: 3px; background: var(--accent); box-shadow: 0 0 10px rgba(var(--glow), .55); transform: translateY(-50%);
   transition: height var(--t-med) var(--ease-out);
 }
 .pl-item.active { background: var(--panel-3); color: #fff; }
@@ -222,7 +222,9 @@ body::before {
 #search:hover { background: var(--panel-2); }
 #search:focus { border-color: var(--line-strong); background: var(--panel-2); box-shadow: 0 0 0 3px rgba(255,255,255,.05); }
 #search::placeholder { color: var(--faint); }
-.toolbar-actions { display: flex; gap: 8px; align-items: center; }
+.toolbar-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.tb-group { display: flex; gap: 6px; align-items: center; }
+.tb-sep { width: 1px; height: 20px; background: var(--line); flex: none; }
 .pill-select {
   background: var(--panel); color: var(--muted); border: 1px solid var(--line-soft);
   border-radius: 999px; padding: 7px 12px; font: inherit; font-size: 12px; outline: none; cursor: pointer;
@@ -816,7 +818,16 @@ body::before {
   .hero-actions { margin-top: 12px; }
   .hero-actions .btn { padding: 7px 14px; font-size: 12px; }
   .toolbar { flex-wrap: wrap; }
-  .toolbar-actions { flex-wrap: wrap; }
+  .search-wrap { max-width: none; flex-basis: 100%; }
+  .toolbar-actions {
+    flex-wrap: nowrap; justify-content: flex-start; width: 100%; gap: 8px;
+    overflow-x: auto; scrollbar-width: none; padding: 2px 24px 2px 0; margin-right: -12px;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+            mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+  }
+  .toolbar-actions::-webkit-scrollbar { display: none; }
+  .tb-group { flex: none; flex-wrap: nowrap; }
+  .tb-group .btn, .tb-group .pill-select { flex: none; white-space: nowrap; }
   /* 三行：曲目信息 + 面板入口 / 整宽进度条 / 居中控制键。.controls 用 contents 让子元素直接进网格 */
   .player { grid-column: 1; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto auto; gap: 6px 8px; padding: 10px 12px calc(8px + env(safe-area-inset-bottom)); }
   .now { grid-column: 1; grid-row: 1; }

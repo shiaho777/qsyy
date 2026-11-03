@@ -61,6 +61,7 @@
         <input id="search" type="text" placeholder="在当前歌单内搜索…" autocomplete="off">
       </div>
       <div class="toolbar-actions">
+        <div class="tb-group" role="group" aria-label="播放">
         <select id="sort-select" class="pill-select" title="排序方式;拖动列表行可自定义顺序,「同步」恢复汽水默认排序">
           <option value="default">默认排序</option>
           <option value="az">字母 A→Z</option>
@@ -70,6 +71,9 @@
           <option value="custom" disabled>自定义</option>
         </select>
         <select id="fx-select" class="pill-select" title="音效:智能音效为汽水接口逐曲调校,其余为官方同款目录,Web Audio 实时渲染"></select>
+        </div>
+        <span class="tb-sep" aria-hidden="true"></span>
+        <div class="tb-group" role="group" aria-label="下载">
         <select id="quality-select" class="pill-select" title="下载音质">
           <option value="lossless">无损音质</option>
           <option value="hi_res">Hi-Res</option>
@@ -88,6 +92,7 @@
         </select>
         <button id="download-all" class="btn ghost" title="批量下载当前列表(已缓存的歌)"><svg class="ic" viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19.5h14"/></svg>下载全部</button>
         <button id="download-current" class="btn ghost" title="下载当前播放的歌曲"><svg class="ic" viewBox="0 0 24 24"><path d="M12 4v9m0 0l-3.5-3.5M12 13l3.5-3.5M7 18h10"/></svg>下载单曲</button>
+        </div>
       </div>
     </div>
     <div id="list-head" class="list-head">
