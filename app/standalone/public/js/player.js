@@ -880,7 +880,8 @@ function activateRow(idx) {
   }
   for (const row of lyricsState.rows) row.classList.remove('active', 'near');
   lyricsState.activeIdx = idx;
-  if (idx < 0) return;
+  // 前奏/未开播时没有当前行：把第一行作为「即将唱到」清晰显示，避免整屏都是虚化的
+  if (idx < 0) { lyricsState.rows[0]?.classList.add('near'); return; }
   if (lyricsState.rows[idx]) lyricsState.rows[idx].classList.add('active');
   if (lyricsState.rows[idx - 1]) lyricsState.rows[idx - 1].classList.add('near');
   if (lyricsState.rows[idx + 1]) lyricsState.rows[idx + 1].classList.add('near');

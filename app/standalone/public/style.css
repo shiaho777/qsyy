@@ -439,9 +439,15 @@ body::before {
 .panel-body { overflow-y: auto; padding: 8px; }
 
 /* ============ lyrics panel (karaoke) ============ */
-.lyrics-panel { width: 448px; max-height: 76vh; }
+.lyrics-panel {
+  width: 468px; max-height: 78vh;
+  background:
+    radial-gradient(120% 70% at 0% 0%, rgba(var(--glow), .22), transparent 60%),
+    radial-gradient(90% 60% at 100% 100%, rgba(var(--glow), .14), transparent 65%),
+    rgba(14,14,19,.9);
+}
 .lyrics-body {
-  height: 56vh; overflow-y: auto; padding: 0 26px;
+  height: 58vh; overflow-y: auto; padding: 0 30px;
   scrollbar-width: none; -ms-overflow-style: none;
   overscroll-behavior: contain;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 7%, #000 93%, transparent 100%);
@@ -449,19 +455,29 @@ body::before {
 }
 .lyrics-body::-webkit-scrollbar { width: 0; height: 0; }
 .lyrics-empty { color: var(--faint); text-align: center; padding: 64px 0; font-size: 12.5px; }
-.lyrics-lines { display: flex; flex-direction: column; gap: 22px; }
+.lyrics-lines { display: flex; flex-direction: column; gap: 24px; }
 
+/* focus effect: the active line is sharp and glowing, its neighbours soften,
+   the rest recede (filter/transform don't affect the offset-based scroll math) */
 .lyric-row {
-  cursor: pointer; opacity: .3; transform: scale(.955); transform-origin: left center;
-  transition: opacity var(--t-med) var(--ease), transform var(--t-med) var(--ease);
+  cursor: pointer; opacity: .26; transform: scale(.94); transform-origin: left center;
+  filter: blur(1.4px);
+  transition: opacity 420ms var(--ease), transform 520ms var(--spring), filter 420ms var(--ease);
 }
-.lyric-row.near { opacity: .55; }
-.lyric-row.active { opacity: 1; transform: scale(1.06); }
-.lyric-row:hover { opacity: .8; }
-.lyric-row.active:hover { opacity: 1; }
+.lyric-row.near { opacity: .5; filter: blur(.5px); }
+.lyric-row.active {
+  opacity: 1; transform: scale(1.05); filter: drop-shadow(0 0 18px rgba(var(--glow), .45));
+}
+.lyric-row:hover { opacity: .78; filter: none; }
+.lyric-row.active:hover { opacity: 1; filter: drop-shadow(0 0 18px rgba(var(--glow), .45)); }
+.lyrics-body:hover .lyric-row:not(.active) { filter: none; }
+@media (prefers-reduced-motion: reduce) {
+  .lyric-row, .lyric-row.near { filter: none; transition: opacity var(--t-fast) linear; transform: none; }
+  .lyric-row.active { transform: none; }
+}
 
 .lyric-line {
-  color: var(--muted); font-size: 15.5px; line-height: 1.5; font-weight: 650;
+  color: var(--muted); font-size: 17px; line-height: 1.5; font-weight: 700;
   word-break: break-word; letter-spacing: .2px;
   --lw-a: var(--muted); --lw-b: var(--muted);
 }
