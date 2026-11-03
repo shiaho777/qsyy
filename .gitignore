@@ -7,6 +7,12 @@ app/debug/
 *.log
 app/standalone/native/quiet-trap.dylib
 
+# --- 本地测试素材(下载的音频、打包备份)---
+*.mp3
+*.flac
+*.m4a
+*.zip
+
 # --- 依赖 ---
 node_modules/
 
