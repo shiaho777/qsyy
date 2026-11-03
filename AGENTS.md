@@ -93,7 +93,8 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
   全部收在 `app/standalone/platform.mjs` 与 `app/bridge/lib/runtime.js`。改平台逻辑
   只动这两个文件 + `runtime.js`,不要在 server 里写 `process.platform` 判断。
 - **纯逻辑模块**与 server 同目录、各配 `*.test.mjs`:`cookies.mjs`、`qr-login.mjs`、
-  `lyrics.mjs`(LRC/逐字歌词解析)、`zip.mjs`(歌单包读写)。新抽出的无状态逻辑
+  `lyrics.mjs`(LRC/逐字歌词解析)、`zip.mjs`(歌单包读写)、`qr-encode.mjs`
+  (零依赖二维码编码,扫码登录用)。新抽出的无状态逻辑
   照此放置并补测试,CI 按 `app/standalone/*.test.mjs` 自动收录。
   **新模块还要加进 `android/app/build.gradle.kts` 的 `syncQsyyRuntime` 白名单**
   (桌面与 Docker 整包复制 `app/`,Android 按 `include()` 逐个列),漏了只会在 APK

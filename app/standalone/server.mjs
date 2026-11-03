@@ -16,15 +16,16 @@ import { fileURLToPath } from 'node:url';
 import {
   CLIENT_DATA, OS_CACHE_ROOT, resolveClientCookiesPath, probeAndroidSoda, isAndroid,
   findDeviceNode, findFfmpeg, openFolder, openClient,
-  findPortHolderPid, nodeChildLaunch,
+  findPortHolderPid, nodeChildLaunch, isMac,
 } from './platform.mjs';
 import {
   classifyQrPoll, collectCookies, cookieHeader, followRedirects, nextQrPollView,
   qrPollShouldWait, qrScanHint, QR_RATE_LIMIT_COOLDOWN_MS, qrPollDetail,
   shouldFallbackToGet, checkQrconnectGetUrl, serializeQrPending, restoreQrPending,
   pickWebSessionCookies, QR_PENDING_TTL_MS, mergeCookiePayload, shouldCommitQrSession,
-  isSignedPassportUrl,
+  isSignedPassportUrl, scanLoginUrl, scanLoginComputerName,
 } from './qr-login.mjs';
+import { qrSvgDataUrl } from './qr-encode.mjs';
 import { readClientCookies } from './cookies.mjs';
 import { buildLyrics } from './lyrics.mjs';
 import { zipBuildStream, zipParse } from './zip.mjs';
@@ -1266,10 +1267,16 @@ async function createQrLogin() {
     persistQrState();
   }, QR_PENDING_TTL_MS);
   persistQrState();
+  const scanUrl = scanLoginUrl({
+    token: data.token,
+    passportUrl: data.qrcode_index_url || data.web_url || '',
+    os: isMac ? 'Mac' : 'Windows',
+    computerName: scanLoginComputerName(os.hostname()),
+  });
   return {
     token: data.token,
-    qrcode: data.qrcode || '',
-    url: data.qrcode_index_url || data.web_url || '',
+    qrcode: qrSvgDataUrl(scanUrl),
+    url: scanUrl,
     hint: qrScanHint(data),
   };
 }
