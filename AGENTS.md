@@ -89,9 +89,12 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
 
 ### 架构速记
 
-- **单文件服务端** `app/standalone/server.mjs`(~3600 行)承担全部路由;平台差异
+- **单文件服务端** `app/standalone/server.mjs`(~3370 行)承担全部路由;平台差异
   全部收在 `app/standalone/platform.mjs` 与 `app/bridge/lib/runtime.js`。改平台逻辑
   只动这两个文件 + `runtime.js`,不要在 server 里写 `process.platform` 判断。
+- **纯逻辑模块**与 server 同目录、各配 `*.test.mjs`:`cookies.mjs`、`qr-login.mjs`、
+  `lyrics.mjs`(LRC/逐字歌词解析)、`zip.mjs`(歌单包读写)。新抽出的无状态逻辑
+  照此放置并补测试,CI 按 `app/standalone/*.test.mjs` 自动收录。
 - **前端零框架**(`public/app.js`),无构建步骤。改前端后刷新即生效(服务端按
   mtime 热读文件),不需要重启。
 - **三进程结构**:主服务 / `ttnet-helper.mjs`(签名子进程,崩溃自愈)/
