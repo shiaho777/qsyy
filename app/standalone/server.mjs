@@ -2146,10 +2146,9 @@ const serverHandler = async (request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(staticFiles.index);
       return;
     }
-    for (const file of ['app.js', 'style.css', 'manifest.webmanifest', 'qr-signer.html']) {
+    for (const file of ['style.css', 'manifest.webmanifest', 'qr-signer.html']) {
       if (url.pathname === `/${file}`) {
         const types = {
-          'app.js': 'text/javascript',
           'style.css': 'text/css',
           'manifest.webmanifest': 'application/manifest+json',
           'qr-signer.html': 'text/html',
@@ -2164,6 +2163,21 @@ const serverHandler = async (request, response) => {
         'content-type': 'text/javascript; charset=utf-8',
         'cache-control': 'no-store',
       }).end(staticFiles['sdk-glue.js']);
+      return;
+    }
+    // 前端脚本:public/js 下按功能段拆分的经典脚本(index.html 按序加载)。
+    // 文件名白名单(无斜杠/无点点,防路径穿越);no-store 保证改完刷新即生效。
+    if (url.pathname.startsWith('/js/')) {
+      const name = url.pathname.slice('/js/'.length);
+      if (/^[a-z0-9-]+\.js$/i.test(name)) {
+        const buf = staticFiles.js(name);
+        if (buf.length) {
+          response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' })
+            .end(buf);
+          return;
+        }
+      }
+      response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
       return;
     }
     // 应用图标:public/icons 下的生成产物(见 scripts/make-icons.py)。
@@ -3315,12 +3329,12 @@ const staticFiles = (() => {
   };
   return {
     get index() { return load('index.html'); },
-    get 'app.js'() { return load('app.js'); },
     get 'style.css'() { return load('style.css'); },
     get 'manifest.webmanifest'() { return load('manifest.webmanifest'); },
     get 'qr-signer.html'() { return load('qr-signer.html'); },
     get 'sdk-glue.js'() { return load('security/sdk-glue.js'); },
     icon: name => load(`icons/${name}`),
+    js: name => load(`js/${name}`),
   };
 })();
 
