@@ -38,8 +38,8 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
 → 在 Issue 上评论 PR 链接与状态 → 等 CI → 绿则合并 → 确认 Issue 已关 → 汇报链接
 ```
 
-- 仓库当前门禁:`ci.yml` 的 `gate` job(JS 语法检查、workflow YAML 校验、
-  文档链接校验)。合并前确认它绿。
+- 仓库当前门禁:`ci.yml` 的 `gate` job(JS 语法检查、单元测试、
+  workflow YAML 解析校验、文档链接校验)。合并前确认它绿。
 - 无权限合并时:PR + Issue 评论留链接,明确"等待维护者合并"。
 
 ---
@@ -89,7 +89,7 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
 
 ### 架构速记
 
-- **单文件服务端** `app/standalone/server.mjs`(~1950 行)承担全部路由;平台差异
+- **单文件服务端** `app/standalone/server.mjs`(~3600 行)承担全部路由;平台差异
   全部收在 `app/standalone/platform.mjs` 与 `app/bridge/lib/runtime.js`。改平台逻辑
   只动这两个文件 + `runtime.js`,不要在 server 里写 `process.platform` 判断。
 - **前端零框架**(`public/app.js`),无构建步骤。改前端后刷新即生效(服务端按
