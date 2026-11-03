@@ -109,8 +109,8 @@ app/
 │   ├── public/            # 前端(原生 JS,无框架,虚拟化懒加载)
 │   └── device.json        # 设备参数覆盖(可选,不入库)
 ├── bridge/
-│   ├── restore_cache.js   # 缓存扫描快照 + CENC 解密(纯 JS,无 ffmpeg)
-│   ├── lib/               # RestoreService / 事件总线 / 跨平台运行时解析 / cenc.js 密钥与加密盒处理
+│   ├── restore_cache.js   # 缓存扫描快照 + 缓存同步/单曲还原(调用 lib/cenc.js 解密)
+│   ├── lib/               # RestoreService / 事件总线 / 跨平台运行时解析 / cenc.js CENC 解密(纯 JS)
 │   └── node_modules/      # lmdb(原生模块,npm install 安装)
 ├── tools/                 # 辅助小工具(decode-wav 调试解码器)
 ├── LICENSE
@@ -178,7 +178,7 @@ app/
 汽水本地缓存(LunaCacheV2 的 `.bin`)通常**未加密**,可直接复制为标准
 M4A/MP4 播放;部分条目或在线 CDN 下载的流是 **CENC AES-128-CTR 加密**,
 moov 明文、音频样本加密,每个音质一条密钥,密钥材料在缓存条目的
-`encrypt_info.spade_a` 字段里。解密链路(见 `bridge/restore_cache.js`)
+`encrypt_info.spade_a` 字段里。解密链路(见 `bridge/lib/cenc.js`)
 按此分支处理:
 
 1. `entries.db`(LMDB)按 `trackId` 定位缓存条目 → `chunkId` + `encrypt_info`
@@ -189,8 +189,9 @@ moov 明文、音频样本加密,每个音质一条密钥,密钥材料在缓存�
    改为 `free`,大小与偏移不变,输出即标准 M4A(moov 在 mdat 前)。
    只有导出转码/写标签(320k MP3、FLAC 等)才用 ffmpeg
 
-> 解密不依赖官方客户端的原生模块,也不需要 ffmpeg,所以安卓等没有这两者的
-> 环境也能解密 CDN 下载的加密流。
+> 解密不依赖官方客户端的原生模块,也不需要 ffmpeg。CDN 下载的加密流由主服务
+> 进程内直接调用 `decryptMp4` 解密,不开子进程,所以安卓(nodejs-mobile 无法
+> 起 Node 子进程)也能解密下载。
 
 扫描稳定性:`entries.db` 被客户端持有时 lmdb 打开可能中断,因此每次扫描都在
 fork 子进程中对文件快照进行(10 秒 TTL 内并发共享同一快照,结果按 key 去重
