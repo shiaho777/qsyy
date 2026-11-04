@@ -274,6 +274,47 @@
     </div>
   </div>
 
+  <div id="np" class="np" aria-hidden="true">
+    <div id="np-bg" class="np-bg"></div>
+    <div class="np-shell">
+      <header class="np-head">
+        <button id="np-close" class="np-icon" title="收起 (Esc)"><svg class="ic" viewBox="0 0 24 24"><path d="M5 9l7 7 7-7"/></svg></button>
+        <div class="np-kicker">正在播放</div>
+        <button id="np-open-cover" class="np-icon" title="查看封面"><svg class="ic" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8.5 16l3-3.6 2.4 2.8L16 13l3.5 3.6"/><circle cx="9.2" cy="8.8" r="1.3"/></svg></button>
+      </header>
+      <div class="np-body">
+        <section class="np-left">
+          <div class="np-art"><img id="np-cover" alt=""></div>
+          <div class="np-meta">
+            <div class="np-title" id="np-title"></div>
+            <div class="np-artist" id="np-artist"></div>
+          </div>
+          <div class="np-progress">
+            <span class="np-time" id="np-cur">0:00</span>
+            <div class="seekbar np-seek" id="np-seek" title="拖动快进 / 快退">
+              <div class="rail"></div>
+              <div class="buffer" id="np-buffer"></div>
+              <div class="fill" id="np-fill"></div>
+              <div class="thumb" id="np-thumb"></div>
+            </div>
+            <span class="np-time" id="np-dur">0:00</span>
+          </div>
+          <div class="np-controls">
+            <button id="np-shuffle" class="np-btn mode" title="随机播放"><svg class="ic" viewBox="0 0 24 24"><path d="M3 7h3.5c5.5 0 8.5 10 14 10H21M3 17h3.5c2.2 0 3.9-1.5 5.2-3.2M12.4 10.1C13.7 8.5 15.4 7 17.5 7H21M18.5 4.5L21 7l-2.5 2.5M18.5 14.5L21 17l-2.5 2.5"/></svg></button>
+            <button id="np-prev" class="np-btn" title="上一首"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6v12L8.5 12zM6 5.5v13"/></svg></button>
+            <button id="np-play" class="np-play" title="播放/暂停"><svg class="ic solid" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg></button>
+            <button id="np-next" class="np-btn" title="下一首"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6v12l9.5-6zM18 5.5v13"/></svg></button>
+            <button id="np-repeat" class="np-btn mode" title="循环模式"><svg class="ic" viewBox="0 0 24 24"><path d="M4 12V9a3 3 0 0 1 3-3h13m0 0l-3-3m3 3l-3 3M20 12v3a3 3 0 0 1-3 3H4m0 0l3 3m-3-3l3-3"/></svg></button>
+          </div>
+        </section>
+        <section class="np-right">
+          <div class="np-lyrics-cap">歌词</div>
+          <div id="np-lyrics-host" class="np-lyrics-host"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <div id="cover-expander" class="cover-expander" aria-hidden="true">
     <img id="ce-art" class="ce-art" alt="">
     <div class="ce-meta"><div id="ce-title" class="ce-title"></div><div id="ce-artist" class="ce-artist"></div></div>
