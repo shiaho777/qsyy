@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>qsyy 桌面歌词</title>
+<style>
+:root { --fs: 30px; --hi: hsl(222 85% 76%); --lo: rgba(255,255,255,.9); color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+  color: #fff; cursor: default;
+  -webkit-user-select: none; user-select: none; -webkit-font-smoothing: antialiased;
+}
+
+.frame {
+  position: relative; margin: 6px; padding: 8px 18px 14px; border-radius: 16px;
+  border: 1px solid transparent;
+  transition: background .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+body.hover:not(.locked) .frame {
+  background: rgba(14,14,18,.66); border-color: rgba(255,255,255,.08);
+  box-shadow: 0 12px 32px rgba(0,0,0,.35);
+}
+.drag { position: absolute; inset: 0; border-radius: inherit; -webkit-app-region: drag; }
+body.locked .drag { -webkit-app-region: no-drag; }
+
+.bar {
+  position: relative; z-index: 1; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none; transition: opacity .2s ease;
+}
+body.hover .bar { opacity: 1; pointer-events: auto; }
+.bar .side { position: absolute; top: 2px; display: flex; gap: 2px; }
+.bar .left { left: -6px; }
+.bar .right { right: -6px; }
+.bar .mid { display: flex; align-items: center; gap: 14px; }
+body.locked .bar .left, body.locked .bar .mid, body.locked .bar .right > :not(#lock) { visibility: hidden; }
+
+button {
+  -webkit-app-region: no-drag; appearance: none; border: 0; padding: 0; margin: 0;
+  width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+  background: transparent; color: rgba(255,255,255,.7); cursor: pointer;
+  font: 600 12px/1 inherit; transition: background .12s ease, color .12s ease, transform .12s ease;
+}
+button:hover { background: rgba(255,255,255,.12); color: #fff; }
+button:active { transform: scale(.92); }
+button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+button svg.solid { fill: currentColor; stroke: none; }
+#play { width: 34px; height: 34px; border-radius: 50%; background: rgba(255,255,255,.92); color: #111; }
+#play:hover { background: #fff; }
+#play svg { width: 16px; height: 16px; }
+.fs-btn { width: 28px; font-size: 12px; letter-spacing: -.02em; }
+.fs-btn small { font-size: 9px; margin-left: 1px; }
+body.locked #lock { background: rgba(0,0,0,.55); color: #fff; }
+
+.stage {
+  position: relative; margin-top: 4px; text-align: center;
+  filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.55)) drop-shadow(0 0 10px rgba(0,0,0,.28));
+}
+.line { white-space: nowrap; overflow: hidden; }
+.line.over { text-align: left; }
+.track { display: inline-block; will-change: transform; }
+.main { font-size: var(--fs); font-weight: 700; line-height: 1.38; letter-spacing: .01em; }
+.sub { font-size: calc(var(--fs) * .6); font-weight: 600; line-height: 1.45; margin-top: 1px; color: rgba(255,255,255,.74); }
+/* keep the second row's height when empty so the window never jumps per line */
+.sub:empty::before { content: '\200b'; }
+.main .w {
+  color: transparent; -webkit-background-clip: text; background-clip: text;
+  background-image: linear-gradient(90deg, var(--hi) var(--a, -8%), var(--lo) var(--b, 0%));
+}
+.main.idle { color: var(--lo); }
+.enter { animation: rise .28s cubic-bezier(.2,.7,.2,1); }
+@keyframes rise { from { opacity: 0; transform: translateY(32%); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+<div class="frame" id="frame">
+  <div class="drag"></div>
+  <div class="bar">
+    <div class="side left">
+      <button class="fs-btn" data-fs="-2" title="缩小字号">A<small>−</small></button>
+      <button class="fs-btn" data-fs="2" title="放大字号">A<small>+</small></button>
+    </div>
+    <div class="mid">
+      <button data-cmd="prev" title="上一首"><svg class="solid" viewBox="0 0 24 24"><path d="M7 6h2v12H7zM20 6.5v11L10.5 12z"/></svg></button>
+      <button data-cmd="toggle" id="play" title="播放 / 暂停"></button>
+      <button data-cmd="next" title="下一首"><svg class="solid" viewBox="0 0 24 24"><path d="M15 6h2v12h-2zM4 6.5v11L13.5 12z"/></svg></button>
+    </div>
+    <div class="side right">
+      <button id="lock" title="锁定歌词"></button>
+      <button data-cmd="close" title="关闭桌面歌词"><svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button>
+    </div>
+  </div>
+  <div class="stage">
+    <div class="line main" id="l1"></div>
+    <div class="line sub" id="l2"></div>
+  </div>
+</div>
+<script>
+(() => {
+  const api = window.QsyyDesktop && window.QsyyDesktop.lyrics;
+  const $ = id => document.getElementById(id);
+  const ICON = {
+    play: '<svg class="solid" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg>',
+    pause: '<svg class="solid" viewBox="0 0 24 24"><rect x="7" y="5.5" width="3.4" height="13" rx="1"/><rect x="13.6" y="5.5" width="3.4" height="13" rx="1"/></svg>',
+    lock: '<svg viewBox="0 0 24 24"><rect x="5.5" y="10.5" width="13" height="9" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>',
+    unlock: '<svg viewBox="0 0 24 24"><rect x="5.5" y="10.5" width="13" height="9" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 6.9-.9"/></svg>',
+  };
+  const FS_KEY = 'qsyy-desktop-lyrics-fs';
+  const S = {
+    state: { trackId: '', title: '', artist: '', status: 'idle', lines: [] },
+    clock: { trackId: '', pos: 0, at: 0, rate: 1, playing: false },
+    key: null, idx: -1, spans: [], track: null, words: null, line: null,
+    locked: false, fs: Number(localStorage.getItem(FS_KEY)) || 30,
+  };
+  const l1 = $('l1');
+  const l2 = $('l2');
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  function nowMs() {
+    const c = S.clock;
+    if (c.trackId && S.state.trackId && c.trackId !== S.state.trackId) return -1;
+    return c.playing ? c.pos + (Date.now() - c.at) * (c.rate || 1) : c.pos;
+  }
+
+  function indexAt(ms) {
+    const lines = S.state.lines;
+    let lo = 0, hi = lines.length - 1, idx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (lines[mid].ms <= ms) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return idx;
+  }
+
+  function setLine(el, html, animate) {
+    if (el.dataset.html === html) return;
+    el.dataset.html = html;
+    el.innerHTML = html ? `<span class="track">${html}</span>` : '';
+    el.classList.remove('over');
+    if (animate && html) { el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter'); }
+  }
+
+  function build(idx) {
+    const { lines, status, title, artist } = S.state;
+    let main = '';
+    let sub = '';
+    let line = null;
+    if (!lines.length) {
+      main = esc(title || 'qsyy');
+      if (!title) sub = '播放一首歌，歌词会显示在这里';
+      else if (status === 'loading') sub = '正在加载歌词…';
+      else if (status === 'unavailable') sub = `${artist ? `${esc(artist)} · ` : ''}暂无歌词资源`;
+      else if (status === 'error') sub = '歌词加载失败';
+      else sub = `${artist ? `${esc(artist)} · ` : ''}暂无歌词`;
+    } else if (idx < 0) {
+      main = esc(title);
+      sub = esc(artist);
+    } else {
+      line = lines[idx];
+      main = line.words && line.words.length
+        ? line.words.map(w => `<span class="w">${esc(w.w)}</span>`).join('')
+        : `<span class="w">${esc(line.text)}</span>`;
+      const next = lines[idx + 1];
+      sub = line.cn ? esc(line.cn) : next ? esc(next.text) : '';
+    }
+    setLine(l1, main, true);
+    setLine(l2, sub, true);
+    l1.classList.toggle('idle', !line);
+    S.line = line;
+    S.words = line && line.words && line.words.length ? line.words : null;
+    S.spans = [...l1.querySelectorAll('.w')];
+    S.track = l1.firstElementChild;
+    S.track2 = l2.firstElementChild;
+  }
+
+  function fill(span, p) {
+    // soft 8% edge: map 0..1 onto -8%..100% so 0 is fully unlit and 1 fully lit
+    const a = p * 108 - 8;
+    span.style.setProperty('--a', `${a.toFixed(2)}%`);
+    span.style.setProperty('--b', `${(a + 8).toFixed(2)}%`);
+  }
+
+  function scrollLine(el, track, x) {
+    if (!track) return;
+    const W = el.clientWidth;
+    const tw = track.scrollWidth;
+    const over = tw > W + 1;
+    el.classList.toggle('over', over);
+    const offset = over ? clamp(x - W * 0.45, 0, tw - W) : 0;
+    track.style.transform = offset ? `translateX(${-offset.toFixed(1)}px)` : '';
+  }
+
+  function paint(ms) {
+    const line = S.line;
+    if (!line) { scrollLine(l1, S.track, 0); return; }
+    let x = 0;
+    if (S.words) {
+      for (let i = 0; i < S.spans.length; i += 1) {
+        const w = S.words[i];
+        if (!w) break;
+        const p = clamp(w.d > 0 ? (ms - w.t) / w.d : (ms >= w.t ? 1 : 0), 0, 1);
+        fill(S.spans[i], p);
+        if (p > 0) x = S.spans[i].offsetLeft + S.spans[i].offsetWidth * p;
+      }
+    } else {
+      const lines = S.state.lines;
+      const next = lines[S.idx + 1];
+      const dur = line.dur || (next ? next.ms - line.ms : 0) || 4000;
+      const p = clamp((ms - line.ms) / dur, 0, 1);
+      if (S.spans[0]) fill(S.spans[0], 1);
+      x = (S.track ? S.track.scrollWidth : 0) * p;
+    }
+    scrollLine(l1, S.track, x);
+    // a long translation / next line follows the same progress ratio
+    if (S.track2 && S.track) scrollLine(l2, S.track2, x / Math.max(1, S.track.scrollWidth) * S.track2.scrollWidth);
+  }
+
+  function frame() {
+    requestAnimationFrame(frame);
+    const ms = nowMs();
+    const idx = S.state.lines.length ? indexAt(ms) : -1;
+    const key = `${S.state.trackId}|${S.state.status}|${S.state.lines.length}|${idx}`;
+    if (key !== S.key) { S.key = key; S.idx = idx; build(idx); }
+    paint(ms);
+  }
+
+  function applyGlow(glow) {
+    const m = String(glow || '').match(/(\d+)\D+(\d+)\D+(\d+)/);
+    if (!m) return;
+    const r = m[1] / 255, g = m[2] / 255, b = m[3] / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    let h = 222;
+    if (d > 0.04) {
+      if (max === r) h = 60 * (((g - b) / d) % 6);
+      else if (max === g) h = 60 * ((b - r) / d + 2);
+      else h = 60 * ((r - g) / d + 4);
+      h = (h + 360) % 360;
+    }
+    // always a bright, saturated tint so sung words stay distinct from white
+    document.documentElement.style.setProperty('--hi', `hsl(${Math.round(h)} 85% 76%)`);
+  }
+
+  function reportLayout() {
+    if (!api) return;
+    const r = $('lock').getBoundingClientRect();
+    api.setHotspot({ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
+  }
+
+  let fitted = 0;
+  function fitWindow() {
+    if (!api) return;
+    const h = Math.ceil($('frame').getBoundingClientRect().height + 12);
+    if (h > 0 && h !== fitted) { fitted = h; api.fit(h); }
+  }
+
+  function applyFs(fs) {
+    S.fs = clamp(fs, 18, 56);
+    localStorage.setItem(FS_KEY, String(S.fs));
+    document.documentElement.style.setProperty('--fs', `${S.fs}px`);
+    requestAnimationFrame(reportLayout);
+  }
+
+  function setLocked(locked) {
+    S.locked = Boolean(locked);
+    document.body.classList.toggle('locked', S.locked);
+    $('lock').innerHTML = S.locked ? ICON.lock : ICON.unlock;
+    $('lock').title = S.locked ? '解锁歌词' : '锁定歌词（鼠标穿透）';
+  }
+
+  function setHover(on) { document.body.classList.toggle('hover', Boolean(on)); }
+
+  function onState(s) {
+    S.state = {
+      trackId: String(s && s.trackId || ''),
+      title: String(s && s.title || ''),
+      artist: String(s && s.artist || ''),
+      status: String(s && s.status || 'idle'),
+      lines: Array.isArray(s && s.lines) ? s.lines : [],
+    };
+    S.key = null;
+  }
+
+  function onClock(c) {
+    if (!c) return;
+    S.clock = {
+      trackId: String(c.trackId || ''),
+      pos: Number(c.pos) || 0,
+      at: Number(c.at) || Date.now(),
+      rate: Number(c.rate) || 1,
+      playing: Boolean(c.playing),
+    };
+    $('play').innerHTML = S.clock.playing ? ICON.pause : ICON.play;
+    applyGlow(c.glow);
+  }
+
+  document.querySelectorAll('[data-cmd]').forEach(btn => {
+    btn.addEventListener('click', () => { if (api) api.command(btn.dataset.cmd); });
+  });
+  document.querySelectorAll('[data-fs]').forEach(btn => {
+    btn.addEventListener('click', () => applyFs(S.fs + Number(btn.dataset.fs)));
+  });
+  $('lock').addEventListener('click', () => {
+    if (api) api.setLocked(!S.locked); else setLocked(!S.locked);
+  });
+  window.addEventListener('resize', () => { S.key = null; reportLayout(); });
+
+  $('play').innerHTML = ICON.play;
+  setLocked(false);
+  applyFs(S.fs);
+  // the frame's height comes from its content (font size), never from the
+  // window, so resizing the window to match can't re-trigger this observer
+  new ResizeObserver(fitWindow).observe($('frame'));
+  if (api) {
+    api.onState(onState);
+    api.onClock(onClock);
+    api.onHover(setHover);
+    api.onLocked(setLocked);
+  } else {
+    // opened in a plain browser (preview / debugging): hover by mouse
+    document.addEventListener('mouseenter', () => setHover(true));
+    document.addEventListener('mouseleave', () => setHover(false));
+    window.__qsyyLyrics = { state: onState, clock: onClock, hover: setHover, lock: setLocked };
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

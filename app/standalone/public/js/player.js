@@ -474,7 +474,7 @@ function startCurrent(autoplay = true) {
   $('p-queue-count').textContent = state.queue.length > 0 ? `${state.queueIndex + 1}/${state.queue.length}` : '';
   renderQueuePanel();
   updateMediaSession(t);
-  if (!$('lyrics-panel').classList.contains('hidden') || ls.get('lyrics-open', false)) loadLyrics(t);
+  if (!$('lyrics-panel').classList.contains('hidden') || ls.get('lyrics-open', false) || deskLyricsOn) loadLyrics(t);
   ls.set('lastTrack', { playlistId: state.current?.id, trackId: t.id, position: 0, context: state.queueContext || 'playlist' });
   // 库限定流(?set=):本地 m4a 直取,免登录免在线解析
   audio.src = t.storeSrc || `/api/stream/${t.id}`;
@@ -964,6 +964,7 @@ async function loadLyrics(track) {
   $('lyrics-empty').textContent = '正在加载歌词…';
   $('lyrics-empty').classList.remove('hidden');
   $('lyrics-title').textContent = `${track.name} · 歌词`;
+  pushDeskLyrics('loading');
   try {
     const data = await api(`/api/lyrics/${track.id}`);
     if (seq !== lyricsState.requestSeq) return;
@@ -972,11 +973,13 @@ async function loadLyrics(track) {
     else {
       lyricsState.lines = [];
       renderLyrics(data.error === 'unavailable' ? '这首歌暂无歌词资源' : '这首歌暂时没有歌词');
+      pushDeskLyrics(data.error === 'unavailable' ? 'unavailable' : 'empty');
       return;
     }
     renderLyrics();
+    pushDeskLyrics('ready');
   } catch (_) {
-    if (seq === lyricsState.requestSeq) { lyricsState.lines = []; renderLyrics(); }
+    if (seq === lyricsState.requestSeq) { lyricsState.lines = []; renderLyrics(); pushDeskLyrics('error'); }
   }
 }
 
@@ -1003,6 +1006,71 @@ if ($('p-lyrics-btn')) $('p-lyrics-btn').onclick = () => {
   startLyricsLoop();
 };
 if ($('lyrics-close')) $('lyrics-close').onclick = () => { stopLyricsLoop(); closePanel($('lyrics-panel')); ls.set('lyrics-open', false); syncSideButtons(); };
+
+// ------------------------------------------------------------------ desktop lyrics
+// Electron only: a floating always-on-top window (desktop-lyrics.html). This
+// window owns playback, so it pushes the parsed lines once per track and a
+// clock on every play/pause/seek; the floating window interpolates between.
+const deskLyricsBridge = window.QsyyDesktop?.desktopLyrics || null;
+let deskLyricsOn = false;
+
+function pushDeskLyrics(status) {
+  if (!deskLyricsBridge || !deskLyricsOn) return;
+  const t = state.queue[state.queueIndex];
+  const sameTrack = t && lyricsState.trackId === t.id;
+  deskLyricsBridge.pushState({
+    trackId: t?.id || '',
+    title: t?.name || '',
+    artist: t ? t.artists.join(' / ') : '',
+    status: sameTrack ? status : (t ? 'loading' : 'idle'),
+    lines: sameTrack ? lyricsState.lines : [],
+  });
+  pushDeskClock();
+}
+
+function pushDeskClock() {
+  if (!deskLyricsBridge || !deskLyricsOn) return;
+  const t = state.queue[state.queueIndex];
+  deskLyricsBridge.pushClock({
+    trackId: t?.id || '',
+    pos: audio.currentTime * 1000 + LYRIC_LATENCY_MS,
+    at: Date.now(),
+    rate: audio.playbackRate || 1,
+    playing: !audio.paused && !audio.ended,
+    glow: document.documentElement.style.getPropertyValue('--glow'),
+  });
+}
+
+function setDeskLyricsOn(on) {
+  deskLyricsOn = Boolean(on);
+  $('p-desklyrics-btn')?.classList.toggle('on', deskLyricsOn);
+  if (!deskLyricsOn) return;
+  const t = state.queue[state.queueIndex];
+  if (t && (lyricsState.trackId !== t.id || !lyricsState.lines.length)) loadLyrics(t);
+  else pushDeskLyrics(lyricsState.lines.length ? 'ready' : 'empty');
+}
+
+if (deskLyricsBridge) {
+  $('p-desklyrics-btn')?.classList.remove('hidden');
+  if ($('p-desklyrics-btn')) $('p-desklyrics-btn').onclick = () => {
+    deskLyricsBridge.toggle().then(s => setDeskLyricsOn(s?.visible)).catch(() => {});
+  };
+  deskLyricsBridge.onVisible(setDeskLyricsOn);
+  deskLyricsBridge.onCommand(cmd => {
+    if (cmd === 'prev') $('p-prev')?.click();
+    else if (cmd === 'next') $('p-next')?.click();
+    else if (cmd === 'toggle') $('p-play')?.click();
+  });
+  ['playing', 'pause', 'seeked', 'ratechange', 'loadedmetadata', 'ended', 'waiting'].forEach(evt =>
+    audio.addEventListener(evt, pushDeskClock));
+  // timeupdate drifts little; a resync every ~2s keeps long tracks honest
+  let lastSync = 0;
+  audio.addEventListener('timeupdate', () => {
+    const now = Date.now();
+    if (now - lastSync > 2000) { lastSync = now; pushDeskClock(); }
+  });
+  deskLyricsBridge.status().then(s => setDeskLyricsOn(s?.visible)).catch(() => {});
+}
 
 window.addEventListener('resize', () => {
   if ($('lyrics-panel').classList.contains('hidden')) return;

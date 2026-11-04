@@ -3,7 +3,8 @@
 // standalone`) and points a BrowserWindow at it. The server module resolves
 // the client install, cache and cookies exactly as it does headless, so the
 // desktop app is a pure presentation shell — no server logic is duplicated.
-import { app, BrowserWindow, shell, Menu, nativeImage, ipcMain } from 'electron';
+import { app, BrowserWindow, shell, Menu, nativeImage, ipcMain, screen } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -34,7 +35,8 @@ if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
   app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows()[0];
+    // mainWindow, not getAllWindows()[0]: that may be the floating lyrics
+    const win = mainWindow;
     if (win) {
       if (win.isMinimized()) win.restore();
       win.show();
@@ -92,8 +94,169 @@ function createWindow() {
     if (!url.startsWith(serverUrl)) { shell.openExternal(url); return { action: 'deny' }; }
     return { action: 'allow' };
   });
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('closed', () => { mainWindow = null; closeDesktopLyrics(false); });
 }
+
+// ------------------------------------------------------------ desktop lyrics
+// A transparent always-on-top window (public/desktop-lyrics.html). The main
+// window owns playback and pushes { state, clock }; this process only relays,
+// remembers geometry, and implements lock: when locked the window ignores the
+// mouse except over the lock button, found by polling the cursor because a
+// click-through window gets no hover events of its own.
+const DL_FILE = () => path.join(app.getPath('userData'), 'desktop-lyrics.json');
+const dl = { win: null, locked: false, hotspot: null, state: null, clock: null, timer: null, hover: null, passThrough: null, saveTimer: null };
+
+function dlPrefs() {
+  try { return JSON.parse(fs.readFileSync(DL_FILE(), 'utf8')) || {}; } catch (_) { return {}; }
+}
+function dlSave(patch) {
+  try { fs.writeFileSync(DL_FILE(), JSON.stringify({ ...dlPrefs(), ...patch })); } catch (_) {}
+}
+function dlSend(channel, value) {
+  if (dl.win && !dl.win.isDestroyed()) dl.win.webContents.send(channel, value);
+}
+function dlNotifyMain() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('qsyy-dl-visible', Boolean(dl.win));
+}
+
+function dlDefaultBounds() {
+  const area = screen.getPrimaryDisplay().workArea;
+  const width = Math.min(900, Math.round(area.width * 0.6));
+  return { width, height: 140, x: Math.round(area.x + (area.width - width) / 2), y: Math.round(area.y + area.height - 140 - 60) };
+}
+
+// saved bounds only count while they still overlap a connected display
+function dlRestoreBounds() {
+  const saved = dlPrefs().bounds;
+  if (!saved || !(saved.width > 0)) return dlDefaultBounds();
+  const visible = screen.getAllDisplays().some(({ workArea: a }) =>
+    saved.x < a.x + a.width - 40 && saved.x + saved.width > a.x + 40 && saved.y < a.y + a.height - 20 && saved.y + saved.height > a.y);
+  return visible ? saved : dlDefaultBounds();
+}
+
+function dlSetPassThrough(on) {
+  if (!dl.win || dl.passThrough === on) return;
+  dl.passThrough = on;
+  dl.win.setIgnoreMouseEvents(on, { forward: true });
+}
+
+function dlTick() {
+  const win = dl.win;
+  if (!win || win.isDestroyed()) return;
+  const p = screen.getCursorScreenPoint();
+  const b = win.getBounds();
+  const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+  if (inside !== dl.hover) { dl.hover = inside; dlSend('qsyy-dl-hover', inside); }
+  if (!dl.locked) { dlSetPassThrough(false); return; }
+  const h = dl.hotspot;
+  const pad = 6;
+  const overLock = Boolean(h) && inside
+    && p.x >= b.x + h.x - pad && p.x < b.x + h.x + h.width + pad
+    && p.y >= b.y + h.y - pad && p.y < b.y + h.y + h.height + pad;
+  dlSetPassThrough(!overLock);
+}
+
+function openDesktopLyrics() {
+  if (dl.win && !dl.win.isDestroyed()) { dl.win.showInactive(); return; }
+  const bounds = dlRestoreBounds();
+  const win = new BrowserWindow({
+    ...bounds,
+    minWidth: 360,
+    minHeight: 80,
+    frame: false,
+    transparent: true,
+    hasShadow: false,
+    resizable: true,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: path.join(root, 'preload.cjs'),
+    },
+  });
+  dl.win = win;
+  dl.hover = null;
+  dl.passThrough = null;
+  dl.locked = Boolean(dlPrefs().locked);
+  win.setAlwaysOnTop(true, 'screen-saver');
+  if (process.platform === 'darwin') win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  const persist = () => {
+    clearTimeout(dl.saveTimer);
+    dl.saveTimer = setTimeout(() => { if (!win.isDestroyed()) dlSave({ bounds: win.getBounds() }); }, 300);
+  };
+  win.on('moved', persist);
+  win.on('resized', persist);
+  win.on('closed', () => {
+    if (dl.win === win) { dl.win = null; clearInterval(dl.timer); dl.timer = null; }
+    dlNotifyMain();
+  });
+  win.webContents.on('did-finish-load', () => {
+    dlSend('qsyy-dl-locked', dl.locked);
+    if (dl.state) dlSend('qsyy-dl-state', dl.state);
+    if (dl.clock) dlSend('qsyy-dl-clock', dl.clock);
+    win.showInactive();
+  });
+  win.loadURL(`${verifiedUrl || serverUrl}/desktop-lyrics.html`);
+  clearInterval(dl.timer);
+  dl.timer = setInterval(dlTick, 80);
+  dlSave({ enabled: true });
+  dlNotifyMain();
+}
+
+// remember=false: closing because the app/main window goes away, so the
+// lyrics come back next launch; an explicit close turns them off for good.
+function closeDesktopLyrics(remember = true) {
+  if (remember) dlSave({ enabled: false });
+  const win = dl.win;
+  dl.win = null;
+  clearInterval(dl.timer);
+  dl.timer = null;
+  if (win && !win.isDestroyed()) {
+    dlSave({ bounds: win.getBounds() });
+    win.close();
+  }
+  dlNotifyMain();
+}
+
+ipcMain.handle('qsyy-dl-toggle', (_event, want) => {
+  const open = typeof want === 'boolean' ? want : !dl.win;
+  if (open) openDesktopLyrics(); else closeDesktopLyrics();
+  return { visible: Boolean(dl.win), locked: dl.locked };
+});
+ipcMain.handle('qsyy-dl-status', () => ({ visible: Boolean(dl.win), locked: dl.locked }));
+ipcMain.on('qsyy-dl-state', (_event, state) => { dl.state = state; dlSend('qsyy-dl-state', state); });
+ipcMain.on('qsyy-dl-clock', (_event, clock) => { dl.clock = clock; dlSend('qsyy-dl-clock', clock); });
+ipcMain.on('qsyy-dl-hotspot', (_event, rect) => {
+  if (rect && Number.isFinite(rect.x) && Number.isFinite(rect.width)) dl.hotspot = rect;
+});
+ipcMain.on('qsyy-dl-fit', (_event, height) => {
+  const win = dl.win;
+  if (!win || win.isDestroyed() || !(height > 0)) return;
+  const b = win.getBounds();
+  const h = Math.max(80, Math.min(400, Math.round(height)));
+  // grow upward from the bottom edge: lyrics usually sit near the dock/taskbar
+  if (h !== b.height) win.setBounds({ x: b.x, y: b.y + b.height - h, width: b.width, height: h });
+});
+ipcMain.on('qsyy-dl-lock', (_event, locked) => {
+  dl.locked = Boolean(locked);
+  dlSave({ locked: dl.locked });
+  dlSend('qsyy-dl-locked', dl.locked);
+  dlTick();
+});
+ipcMain.on('qsyy-dl-cmd', (_event, cmd) => {
+  if (cmd === 'close') { closeDesktopLyrics(); return; }
+  if (cmd === 'show-main' && mainWindow) { mainWindow.show(); mainWindow.focus(); return; }
+  if (['prev', 'next', 'toggle'].includes(cmd) && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('qsyy-dl-command', cmd);
+  }
+});
 
 // Probe + identity check: the window must only ever load OUR embedded server.
 // The old probe hit `/`, which any HTTP service answers — a stale standalone
@@ -140,6 +303,7 @@ async function boot() {
       serverUrl = verified;
       verifiedUrl = verified;
       mainWindow.loadURL(serverUrl);
+      if (dlPrefs().enabled) openDesktopLyrics();
       return;
     }
     await new Promise(resolve => setTimeout(resolve, 250));
@@ -243,6 +407,7 @@ ipcMain.handle('qsyy-qr-stop', async (_event, token) => {
 app.whenReady().then(boot);
 app.on('before-quit', () => {
   for (const token of [...qrSigners.keys()]) closeQrSigner(token);
+  closeDesktopLyrics(false);
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => {
@@ -250,8 +415,13 @@ app.on('activate', () => {
   // let repeated Dock clicks stack extra windows. loadURL moved out of
   // createWindow (boot only loads after the probe verifies our own server),
   // so a re-created window must re-load the verified address itself.
-  if (BrowserWindow.getAllWindows().length === 0) {
+  // mainWindow, not a window count: the floating lyrics window must not stop
+  // a Dock click from bringing the main window back.
+  if (!mainWindow) {
     createWindow();
-    if (mainWindow && verifiedUrl) mainWindow.loadURL(verifiedUrl);
+    if (mainWindow && verifiedUrl) {
+      mainWindow.loadURL(verifiedUrl);
+      if (dlPrefs().enabled) openDesktopLyrics();
+    }
   }
 });
