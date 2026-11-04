@@ -474,6 +474,7 @@ function startCurrent(autoplay = true) {
   $('p-queue-count').textContent = state.queue.length > 0 ? `${state.queueIndex + 1}/${state.queue.length}` : '';
   renderQueuePanel();
   updateMediaSession(t);
+  if (npOpen) syncNowPlaying(true);
   if (!$('lyrics-panel').classList.contains('hidden') || ls.get('lyrics-open', false) || deskLyricsOn) loadLyrics(t);
   ls.set('lastTrack', { playlistId: state.current?.id, trackId: t.id, position: 0, context: state.queueContext || 'playlist' });
   // 库限定流(?set=):本地 m4a 直取,免登录免在线解析
@@ -579,6 +580,7 @@ function prefetchNext() {
 }
 audio.onplaying = () => {
   $('p-play').innerHTML = ICONS.pause;
+  setNpPlayIcon();
   decoratePlayingRow();
   updateHeroPlayback();
   const t = state.queue[state.queueIndex];
@@ -586,13 +588,18 @@ audio.onplaying = () => {
   prefetchNext();
   startEqLoop();
 };
-audio.onpause = () => { $('p-title').textContent = $('p-title').textContent.replace(' — 点 ▶ 开始', ''); $('p-play').innerHTML = ICONS.play; decoratePlayingRow(); updateHeroPlayback(); stopEqLoop(); };
+audio.onpause = () => { $('p-title').textContent = $('p-title').textContent.replace(' — 点 ▶ 开始', ''); $('p-play').innerHTML = ICONS.play; setNpPlayIcon(); decoratePlayingRow(); updateHeroPlayback(); stopEqLoop(); };
 audio.ontimeupdate = () => {
   highlightLyric();
   if (!audio.duration || seeking) return;
   setSeekUI(audio.currentTime / audio.duration);
   $('p-cur').textContent = fmtTime(audio.currentTime * 1000);
   $('p-dur').textContent = fmtTime(audio.duration * 1000);
+  if (npOpen) {
+    setNpSeekUI(audio.currentTime / audio.duration);
+    $('np-cur').textContent = fmtTime(audio.currentTime * 1000);
+    $('np-dur').textContent = fmtTime(audio.duration * 1000);
+  }
   const track = state.queue[state.queueIndex];
   if (track && Math.floor(audio.currentTime) % 5 === 0) {
     ls.set('lastTrack', { playlistId: state.current?.id, trackId: track.id, position: audio.currentTime, context: state.queueContext || 'playlist' });
@@ -601,51 +608,60 @@ audio.ontimeupdate = () => {
 audio.onprogress = () => {
   try {
     if (audio.buffered.length && audio.duration) {
-      seekBuffer.style.width = `${(audio.buffered.end(audio.buffered.length - 1) / audio.duration * 100).toFixed(1)}%`;
+      const width = `${(audio.buffered.end(audio.buffered.length - 1) / audio.duration * 100).toFixed(1)}%`;
+      if ($('p-buffer')) $('p-buffer').style.width = width;
+      if ($('np-buffer')) $('np-buffer').style.width = width;
     }
   } catch (_) {}
 };
 // ------------------------------------------------------------------ seekbar (custom, draggable)
-
-const seekbar = $('p-seekbar');
-const seekFill = $('p-fill');
-const seekThumb = $('p-thumb');
-const seekBuffer = $('p-buffer');
+// 播放栏与全屏页各有一条进度条，共用同一套拖拽逻辑；seeking 在拖动期间
+// 抑制 ontimeupdate 回写，避免手指和播放进度打架。
 let seeking = false;
+function bindSeekbar(root, fill, thumb, scrub) {
+  if (!root || !fill || !thumb) return () => {};
+  const ratioOf = event => {
+    const rect = root.getBoundingClientRect();
+    return rect.width ? (event.clientX - rect.left) / rect.width : 0;
+  };
+  const paint = r => {
+    const v = Math.max(0, Math.min(1, r));
+    fill.style.width = `${(v * 100).toFixed(2)}%`;
+    thumb.style.left = `${(v * 100).toFixed(2)}%`;
+  };
+  root.addEventListener('pointerdown', event => {
+    if (!audio.duration) return;
+    seeking = true;
+    root.classList.add('dragging');
+    root.setPointerCapture(event.pointerId);
+    const r = ratioOf(event);
+    paint(r);
+    scrub(r);
+  });
+  root.addEventListener('pointermove', event => {
+    if (!seeking || !audio.duration) return;
+    const r = ratioOf(event);
+    paint(r);
+    scrub(r);
+  });
+  root.addEventListener('pointerup', event => {
+    if (!seeking) return;
+    seeking = false;
+    root.classList.remove('dragging');
+    if (audio.duration) audio.currentTime = ratioOf(event) * audio.duration;
+  });
+  root.addEventListener('pointercancel', () => {
+    seeking = false;
+    root.classList.remove('dragging');
+  });
+  return paint;
+}
 
-function setSeekUI(ratio) {
-  const r = Math.max(0, Math.min(1, ratio));
-  seekFill.style.width = `${(r * 100).toFixed(2)}%`;
-  seekThumb.style.left = `${(r * 100).toFixed(2)}%`;
-}
-function seekRatio(event) {
-  const rect = seekbar.getBoundingClientRect();
-  return rect.width ? (event.clientX - rect.left) / rect.width : 0;
-}
-seekbar.addEventListener('pointerdown', event => {
-  if (!audio.duration) return;
-  seeking = true;
-  seekbar.classList.add('dragging');
-  seekbar.setPointerCapture(event.pointerId);
-  const r = seekRatio(event);
-  setSeekUI(r);
+const setSeekUI = bindSeekbar($('p-seekbar'), $('p-fill'), $('p-thumb'), r => {
   $('p-cur').textContent = fmtTime(r * audio.duration * 1000);
 });
-seekbar.addEventListener('pointermove', event => {
-  if (!seeking || !audio.duration) return;
-  const r = seekRatio(event);
-  setSeekUI(r);
-  $('p-cur').textContent = fmtTime(r * audio.duration * 1000);
-});
-seekbar.addEventListener('pointerup', event => {
-  if (!seeking) return;
-  seeking = false;
-  seekbar.classList.remove('dragging');
-  if (audio.duration) audio.currentTime = seekRatio(event) * audio.duration;
-});
-seekbar.addEventListener('pointercancel', () => {
-  seeking = false;
-  seekbar.classList.remove('dragging');
+const setNpSeekUI = bindSeekbar($('np-seek'), $('np-fill'), $('np-thumb'), r => {
+  $('np-cur').textContent = fmtTime(r * audio.duration * 1000);
 });
 $('p-vol').value = String(Math.round(state.volume * 100));
 audio.volume = state.volume;
@@ -670,29 +686,35 @@ if ($('p-play')) $('p-play').onclick = () => { ensureGraph(); if (!audio.src) { 
 if ($('p-prev')) $('p-prev').onclick = () => { ensureGraph(); playNextIndex(-1); };
 if ($('p-next')) $('p-next').onclick = () => { ensureGraph(); playNextIndex(1); };
 
-// 播放栏封面:常驻淡入(src 每次切歌都换,once 不够),点开看大图
+// 播放栏封面:常驻淡入(src 每次切歌都换,once 不够)。点封面打开全屏播放页
 if ($('p-cover')) {
   $('p-cover').addEventListener('load', () => $('p-cover').classList.add('loaded'));
-  $('p-cover').addEventListener('click', () => {
-    const t = state.queue[state.queueIndex];
-    const src = trackCoverUrl(t, 720);
-    if (!src) return;
-    $('ce-art').src = src;
-    $('ce-title').textContent = t.name;
-    $('ce-artist').textContent = t.artists.join(' / ');
-    $('cover-expander').classList.add('open');
-  });
+  $('p-cover').addEventListener('click', openNowPlaying);
 }
+document.querySelector('.now .meta')?.addEventListener('click', openNowPlaying);
 const coverExpander = $('cover-expander');
+function openCoverExpander() {
+  const t = state.queue[state.queueIndex];
+  const src = trackCoverUrl(t, 900);
+  if (!src) return;
+  $('ce-art').src = src;
+  $('ce-title').textContent = t.name;
+  $('ce-artist').textContent = t.artists.join(' / ');
+  coverExpander.classList.add('open');
+}
 function closeCoverExpander() { coverExpander?.classList.remove('open'); }
 if ($('ce-close')) $('ce-close').onclick = closeCoverExpander;
 if (coverExpander) coverExpander.addEventListener('click', e => { if (e.target === coverExpander) closeCoverExpander(); });
 
 const REPEAT_SVG = '<svg class="ic" viewBox="0 0 24 24"><path d="M4 12V9a3 3 0 0 1 3-3h13m0 0l-3-3m3 3l-3 3M20 12v3a3 3 0 0 1-3 3H4m0 0l3 3m-3-3l3-3"/></svg>';
 function updateModeButtons() {
-  $('p-shuffle').classList.toggle('active', state.shuffle);
-  $('p-repeat').classList.toggle('active', state.repeat !== 'off');
-  $('p-repeat').innerHTML = state.repeat === 'one' ? ICONS.repeatOne : REPEAT_SVG;
+  for (const id of ['p-shuffle', 'np-shuffle']) $(id)?.classList.toggle('active', state.shuffle);
+  for (const id of ['p-repeat', 'np-repeat']) {
+    const el = $(id);
+    if (!el) continue;
+    el.classList.toggle('active', state.repeat !== 'off');
+    el.innerHTML = state.repeat === 'one' ? ICONS.repeatOne : REPEAT_SVG;
+  }
 }
 if ($('p-shuffle')) $('p-shuffle').onclick = () => { state.shuffle = !state.shuffle; ls.set('shuffle', state.shuffle); updateModeButtons(); toast(state.shuffle ? '随机播放开' : '随机播放关'); };
 if ($('p-repeat')) $('p-repeat').onclick = () => {
@@ -717,6 +739,98 @@ function updateMediaSession(t) {
     navigator.mediaSession.setActionHandler('nexttrack', () => playNextIndex(1));
     navigator.mediaSession.setActionHandler('seekto', d => { if (d.seekTime != null && audio.duration) audio.currentTime = d.seekTime; });
   } catch (_) {}
+}
+
+// ------------------------------------------------------------------ now playing (full screen)
+// 全屏播放页复用播放栏的状态与歌词面板：打开时把 #lyrics-panel 移进来，
+// 关闭时放回原位，避免维护第二套歌词 DOM 和高亮循环。
+const npEl = $('np');
+const npHost = $('np-lyrics-host');
+let npOpen = false;
+let npLyricsWasOpen = false;
+
+function setNpPlayIcon() {
+  const el = $('np-play');
+  if (el) el.innerHTML = audio.paused ? ICONS.play : ICONS.pause;
+}
+
+function syncNowPlaying(resetProgress) {
+  const t = state.queue[state.queueIndex];
+  if (!t) return;
+  const cover = trackCoverUrl(t, 640);
+  const art = $('np-cover');
+  if (art && art.dataset.src !== cover) { art.dataset.src = cover; art.src = cover; }
+  const bg = $('np-bg');
+  if (bg && bg.dataset.src !== cover) {
+    bg.dataset.src = cover;
+    bg.classList.remove('loaded');
+    bg.style.backgroundImage = cover ? `url("${cover}")` : '';
+    requestAnimationFrame(() => bg.classList.add('loaded'));
+  }
+  $('np-title').textContent = t.name;
+  $('np-artist').textContent = t.artists.join(' / ');
+  setNpPlayIcon();
+  updateModeButtons();
+  if (resetProgress) {
+    setNpSeekUI(0);
+    $('np-cur').textContent = '0:00';
+    $('np-dur').textContent = '0:00';
+  } else if (audio.duration) {
+    setNpSeekUI(audio.currentTime / audio.duration);
+    $('np-cur').textContent = fmtTime(audio.currentTime * 1000);
+    $('np-dur').textContent = fmtTime(audio.duration * 1000);
+  }
+}
+
+function openNowPlaying() {
+  if (!npEl || npOpen) return;
+  if (!state.queue[state.queueIndex]) { toast('先播放一首歌', 'err'); return; }
+  npOpen = true;
+  const panel = $('lyrics-panel');
+  npLyricsWasOpen = !panel.classList.contains('hidden');
+  closePanel($('queue-panel'));
+  closePanel($('downloads-panel'));
+  // 歌词面板移入全屏页；高亮循环与测量都基于面板自身，无需改动
+  panel.classList.remove('hidden', 'closing');
+  panel.classList.add('np-embedded');
+  npHost.appendChild(panel);
+  npEl.classList.add('open');
+  npEl.setAttribute('aria-hidden', 'false');
+  syncNowPlaying();
+  const t = state.queue[state.queueIndex];
+  if (lyricsState.trackId !== t.id || !lyricsState.lines.length) loadLyrics(t);
+  else { lyricsState.measured = false; highlightLyric(true); startLyricsLoop(); }
+}
+
+function closeNowPlaying() {
+  if (!npOpen) return;
+  npOpen = false;
+  npEl.classList.remove('open');
+  npEl.setAttribute('aria-hidden', 'true');
+  const panel = $('lyrics-panel');
+  panel.classList.remove('np-embedded');
+  $('app').insertBefore(panel, $('export-modal'));
+  if (npLyricsWasOpen) {
+    panel.classList.remove('hidden');
+    lyricsState.measured = false;
+    highlightLyric(true);
+    startLyricsLoop();
+  } else {
+    stopLyricsLoop();
+    panel.classList.add('hidden');
+  }
+  syncSideButtons();
+}
+
+if (npEl) {
+  $('np-close').onclick = closeNowPlaying;
+  $('np-open-cover').onclick = openCoverExpander;
+  $('np-cover').onclick = openCoverExpander;
+  $('np-play').onclick = () => $('p-play').click();
+  $('np-prev').onclick = () => $('p-prev').click();
+  $('np-next').onclick = () => $('p-next').click();
+  $('np-shuffle').onclick = () => $('p-shuffle').click();
+  $('np-repeat').onclick = () => $('p-repeat').click();
 }
 
 // ------------------------------------------------------------------ queue panel
@@ -1239,6 +1353,7 @@ if ($('quality-select')) $('quality-select').onchange = e => { state.quality = e
 if ($('format-select')) $('format-select').onchange = e => { state.fmt = e.target.value; ls.set('fmt', state.fmt); toast(`默认格式:${e.target.selectedOptions[0].textContent}`, 'ok'); };
 
 document.addEventListener('keydown', e => {
+  if (e.code === 'Escape' && npOpen) { closeNowPlaying(); return; }
   if (e.code === 'Escape' && cacheMenuEl) { closeCacheMenu(); return; }
   if (e.code === 'Escape' && $('sync-modal') && !$('sync-modal').classList.contains('hidden')) { closeSyncModal(); return; }
   if (e.code === 'Escape' && $('export-modal') && !$('export-modal').classList.contains('hidden')) { expCloseModal(); return; }
