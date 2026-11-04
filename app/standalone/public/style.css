@@ -53,6 +53,19 @@
   --sp-4: 16px;
   --sp-5: 24px;
   --sp-6: 32px;
+  /* 曲目表:表头 / 行 / 骨架共用同一份列定义,增删列只改这里
+     # · 封面 · 标题 · 歌手 · 专辑 · 时长 · 缓存 */
+  --track-cols: 40px 44px minmax(0, 1fr) 150px 150px 52px 34px;
+  /* 窄屏:歌手折到标题下方、专辑隐藏,5 列 */
+  --track-cols-compact: 40px 44px minmax(0, 1fr) 52px 34px;
+  /* 手机:序号/封面/时长/缓存更窄 */
+  --track-cols-phone: 28px 40px minmax(0, 1fr) 38px 26px;
+  --track-gap: 12px;
+  --track-gap-phone: 10px;
+  --track-pad-x: 16px;
+  --track-pad-x-phone: 10px;
+  /* 主区顶部内边距:表头吸顶时按它反向外移,才能贴住主区顶边 */
+  --main-pad-top: 30px;
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
@@ -157,7 +170,7 @@ body.booting #app { opacity: 0; }
 /* min-height:0 — a grid item defaults to min-height:auto, which lets the
    row blow past the viewport and push content (hero) out of view */
 .main {
-  grid-column: 2; overflow-y: auto; padding: 30px 34px 72px; min-height: 0;
+  grid-column: 2; overflow-y: auto; padding: var(--main-pad-top) 34px 72px; min-height: 0;
   position: relative;
 }
 /* 氛围光:顶部一撮柔和的冷光晕,让墨色底"透"起来,不抢内容 */
@@ -243,17 +256,25 @@ body::before {
 
 /* list */
 .list-head {
-  display: grid; grid-template-columns: 40px 1fr 150px 150px 52px 34px; gap: 12px;
-  padding: 8px 16px; margin-top: 6px; color: var(--faint); font-size: var(--fs-sm); font-weight: 400; letter-spacing: .02em;
-  border-bottom: 1px solid var(--line-soft); position: sticky; top: -26px; z-index: 5;
-  background: linear-gradient(180deg, var(--bg1) 78%, transparent);
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  display: grid; grid-template-columns: var(--track-cols); gap: var(--track-gap);
+  align-items: center; padding: 8px var(--track-pad-x); margin-top: 6px;
+  color: var(--faint); font-size: var(--fs-sm); font-weight: 500; letter-spacing: .02em;
+  border-bottom: 1px solid var(--line-soft); position: sticky; top: calc(var(--main-pad-top) * -1); z-index: 5;
+  /* 半透明磨砂:封面主题色从下面透上来;写死深色会在浅色封面下变成一条黑带 */
+  background: color-mix(in srgb, var(--bg1) 78%, transparent);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
 }
-.tracks { display: flex; flex-direction: column; }
+.list-head > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 列头对齐跟随内容:序号居中、时长右对齐、缓存居中 */
+.list-head .h-idx { text-align: center; }
+.list-head .h-dur { text-align: right; }
+.list-head .h-cache { text-align: center; }
+.tracks { display: flex; flex-direction: column; gap: 2px; }
 .track {
-  display: grid; grid-template-columns: 40px 44px 1fr 150px 150px 52px 34px; gap: 12px;
-  align-items: center; min-height: 60px; padding: 8px 16px; border-radius: var(--r-sm); cursor: pointer;
-  position: relative;
+  display: grid; grid-template-columns: var(--track-cols); gap: var(--track-gap);
+  align-items: center; min-height: 60px; padding: 8px var(--track-pad-x); border-radius: var(--r-sm); cursor: pointer;
+  position: relative; scroll-margin-top: 44px;
   transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
   animation: rowIn 320ms var(--ease-out) both;
   animation-delay: calc(min(var(--i, 0), 24) * 18ms);
@@ -330,7 +351,7 @@ body::before {
 .dl-open-folder:hover { color: var(--text); }
 
 /* skeleton + empty + sentinel */
-.skel { display: grid; grid-template-columns: 40px 44px 1fr 150px 150px 52px 34px; gap: 12px; align-items: center; padding: 9px 16px; }
+.skel { display: grid; grid-template-columns: var(--track-cols); gap: var(--track-gap); align-items: center; min-height: 60px; padding: 9px var(--track-pad-x); }
 .skel i { display: block; height: 12px; border-radius: var(--r-sm); background: linear-gradient(90deg, rgba(255,255,255,.04) 25%, rgba(255,255,255,.09) 50%, rgba(255,255,255,.04) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 .empty { text-align: center; color: var(--faint); padding: 70px 0; font-size: 13px; }
@@ -805,7 +826,7 @@ body::before {
 
 /* tablet & below: artist drops under the title instead of vanishing; album hidden */
 @media (max-width: 1020px) {
-  .track, .list-head, .skel { grid-template-columns: 40px 44px minmax(0, 1fr) 52px 34px !important; }
+  .track, .list-head, .skel { grid-template-columns: var(--track-cols-compact); }
   .track { grid-template-rows: auto auto; row-gap: 1px; }
   .track .cell-idx { grid-column: 1; grid-row: 1 / 3; }
   .track img.cover { grid-column: 2; grid-row: 1 / 3; }
@@ -813,13 +834,9 @@ body::before {
   .track .artist { grid-column: 3; grid-row: 2; align-self: start; }
   .track .dur { grid-column: 4; grid-row: 1 / 3; }
   .track .cell-cache { grid-column: 5; grid-row: 1 / 3; }
-  .track .album, .list-head .h-artist, .list-head .h-album { display: none; }
-  .list-head .h-idx { grid-column: 1; }
-  .list-head .h-title { grid-column: 2 / 4; }
-  .list-head .h-dur { grid-column: 4; }
-  .list-head .h-cache { grid-column: 5; }
+  .track .album, .list-head .h-artist, .list-head .h-album, .skel i:nth-child(4), .skel i:nth-child(5) { display: none; }
   .player { grid-template-columns: minmax(0,1.1fr) minmax(0,2fr) minmax(0,1fr); padding: 0 12px; gap: 10px; }
-  .main { padding: 20px 18px 60px; }
+  .main { --main-pad-top: 20px; padding: var(--main-pad-top) 18px 60px; }
 }
 
 /* phone: sidebar becomes an overlay drawer; compact player */
@@ -833,8 +850,8 @@ body::before {
   .sidebar.open { transform: translateX(0); }
   .sidebar-backdrop { background: rgba(3,3,6,.55); }
   .sidebar-toggle { display: grid !important; }
-  .main { grid-column: 1; padding: 14px 12px 40px; }
-  .track, .list-head, .skel { grid-template-columns: 28px 40px minmax(0, 1fr) 38px 22px !important; column-gap: 10px; padding-left: 10px; padding-right: 10px; }
+  .main { grid-column: 1; --main-pad-top: 14px; padding: var(--main-pad-top) 12px 40px; }
+  .track, .list-head, .skel { grid-template-columns: var(--track-cols-phone); column-gap: var(--track-gap-phone); padding-left: var(--track-pad-x-phone); padding-right: var(--track-pad-x-phone); }
   .track img.cover { width: 40px; height: 40px; }
   .cell-idx { height: 40px; }
   .hero { min-height: 0; gap: 14px; margin-bottom: 14px; }
