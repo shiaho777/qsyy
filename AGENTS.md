@@ -70,10 +70,12 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
    | macOS | `qsyy-X.Y.Z-arm64.dmg` + zip(arm64/x64) | `macos-14` |
    | Windows | `qsyy-setup-X.Y.Z.exe`(NSIS) | 维护者本机(见踩坑记录) |
    | Android | `qsyy-X.Y.Z.apk`(debug 签名,开箱即装) | `ubuntu-latest` |
-   | 容器 | `ghcr.io/shiaho777/qsyy:vX.Y.Z`(扫码在线播放) | 维护者本机构建推送 |
+   | 容器 | `ghcr.io/shiaho777/qsyy:vX.Y.Z`(扫码在线播放) | `ubuntu-latest`(`docker.yml`,多架构) |
    三个 job(changelog / desktop-mac / android)汇入 `publish`,
-   由它建 Release 并附产物;Notes 来自 changelog job 的输出。Docker 镜像
-   与 Windows 安装器一样由维护者本机 `docker build && docker push`。
+   由它建 Release 并附产物;Notes 来自 changelog job 的输出。容器镜像由
+   `docker.yml` 随 tag 自动构建并推送 `:vX.Y.Z` 与 `:latest`(amd64 + arm64),
+   不再需要维护者本机 `docker build && docker push`;Windows 安装器仍由维护者
+   本机构建(见踩坑记录)。
 5. **发布失败**:看 Actions 里红掉的矩阵 job 日志,修完重新打 tag
    (删旧 tag 重打:`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`)。
    不手工上传产物——可复现性优先。
