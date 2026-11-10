@@ -94,7 +94,13 @@ function createWindow() {
     if (!url.startsWith(serverUrl)) { shell.openExternal(url); return { action: 'deny' }; }
     return { action: 'allow' };
   });
-  mainWindow.on('closed', () => { mainWindow = null; closeDesktopLyrics(false); });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    closeDesktopLyrics(false);
+    // 扫码隐藏窗口也属于主窗口会话。若主窗口先关而 signer 还开着，它既会
+    // 留下一个无界面的 renderer，也会让 window-all-closed 永远不触发。
+    closeAllQrSigners();
+  });
 }
 
 // ------------------------------------------------------------ desktop lyrics
@@ -340,9 +346,16 @@ function closeQrSigner(token) {
   if (win && !win.isDestroyed()) win.close();
 }
 
+function closeAllQrSigners() {
+  for (const token of [...qrSigners.keys()]) closeQrSigner(token);
+}
+
 async function ensureQrSigner(token) {
   const existing = qrSigners.get(token);
-  if (existing && !existing.isDestroyed()) return existing;
+  if (existing) {
+    if (!existing.isDestroyed()) return existing;
+    qrSigners.delete(token);
+  }
   const win = new BrowserWindow({
     show: false,
     width: 420,
@@ -355,12 +368,19 @@ async function ensureQrSigner(token) {
       partition: `persist:qsyy-qr-${token}`,
     },
   });
-  const base = verifiedUrl || serverUrl;
-  await win.loadURL(`${base}/qr-signer.html`);
-  await win.webContents.executeJavaScript('window.qsyyWhenReady()');
+  // 先登记再加载: loadURL/executeJavaScript 失败时, closeAllQrSigners()
+  // 也必须能找到这个窗口; 原来成功后才 set, 失败就漏一个隐藏 renderer。
   qrSigners.set(token, win);
   win.on('closed', () => { if (qrSigners.get(token) === win) qrSigners.delete(token); });
-  return win;
+  try {
+    const base = verifiedUrl || serverUrl;
+    await win.loadURL(`${base}/qr-signer.html`);
+    await win.webContents.executeJavaScript('window.qsyyWhenReady()');
+    return win;
+  } catch (error) {
+    closeQrSigner(token);
+    throw error;
+  }
 }
 
 ipcMain.handle('qsyy-qr-poll', async (_event, token) => {
@@ -406,7 +426,7 @@ ipcMain.handle('qsyy-qr-stop', async (_event, token) => {
 
 app.whenReady().then(boot);
 app.on('before-quit', () => {
-  for (const token of [...qrSigners.keys()]) closeQrSigner(token);
+  closeAllQrSigners();
   closeDesktopLyrics(false);
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
