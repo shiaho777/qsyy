@@ -64,7 +64,9 @@ qsyy 不做"模拟 EQ",而是**直接解析官方下发的音效配置,在浏览
 
 桌面版另有**桌面歌词**:透明置顶悬浮窗,与主窗口共用同一条时间轴逐字填色,有翻译时第二行显示翻译;悬停出现切歌 / 暂停 / 字号控制条,锁定后鼠标穿透。开关、位置与锁定状态跨启动保留。
 
-侧栏底部的 **OBS** 入口打开 `/obs.html`:歌词覆盖层会从封面取色,并用实时频谱驱动**封面频谱环、极光背景、漂浮粒子和底部波形**,加上逐字渐变歌词、翻译、上一句/下一句、进度和律动条。浏览器里打开是深色预览舞台,OBS 浏览器源里自动透明;支持 `?theme=aurora|neon|mirror`、`?size=`、`?align=left`、`?mode=stage`(居中大舞台)、`?ambient=1`(整屏封面氛围)、`?bg=dark|transparent`、`?fps=30`、`?cover=0`、`?translation=0`、`?eq=0` 等参数。
+侧栏底部的 **OBS** 入口打开 `/obs.html`,是全屏歌词舞台:巨大逐字歌词、上一句/下一句与背景残影、封面取色、抽象线稿、漂浮粒子、实时频谱线和底部播放胶囊。三套主题:`lumi`(衬线大字 + 星轨线稿)、`tilt`(居中大字 + 悬浮几何)、`pendolo`(左侧齿轮与封面窗 + 右侧歌词)。支持 `?theme=lumi|tilt|pendolo`、`?size=`、`?translation=0`、`?pill=0`、`?ghost=0`、`?bg=transparent`、`?accent=hex`、`?fps=30` 等参数。
+
+需要**底部字幕条 / 直播叠加**时用 `/obs-card.html`:封面频谱环、极光/网格背景、玻璃卡片和底部波形,支持 `?theme=aurora|neon|mirror`、`?mode=stage`、`?ambient=1`、`?bg=dark|transparent` 等参数。
 
 ### 睡眠定时器
 

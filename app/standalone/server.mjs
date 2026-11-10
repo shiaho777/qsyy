@@ -2330,7 +2330,7 @@ const serverHandler = async (request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(staticFiles.index);
       return;
     }
-    for (const file of ['style.css', 'manifest.webmanifest', 'qr-signer.html', 'desktop-lyrics.html', 'obs.html']) {
+    for (const file of ['style.css', 'manifest.webmanifest', 'qr-signer.html', 'desktop-lyrics.html', 'obs.html', 'obs-card.html']) {
       if (url.pathname === `/${file}`) {
         const types = {
           'style.css': 'text/css',
@@ -2338,6 +2338,7 @@ const serverHandler = async (request, response) => {
           'qr-signer.html': 'text/html',
           'desktop-lyrics.html': 'text/html',
           'obs.html': 'text/html',
+          'obs-card.html': 'text/html',
         };
         response.writeHead(200, { 'content-type': `${types[file]}; charset=utf-8`, 'cache-control': 'no-store' })
           .end(staticFiles[file]);
@@ -3565,6 +3566,7 @@ const staticFiles = (() => {
     get 'qr-signer.html'() { return load('qr-signer.html'); },
     get 'desktop-lyrics.html'() { return load('desktop-lyrics.html'); },
     get 'obs.html'() { return load('obs.html'); },
+    get 'obs-card.html'() { return load('obs-card.html'); },
     get 'sdk-glue.js'() { return load('security/sdk-glue.js'); },
     icon: name => load(`icons/${name}`),
     js: name => load(`js/${name}`),

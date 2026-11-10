@@ -9,7 +9,7 @@
 ### 新功能
 - 歌词引擎支持本地 `.lrc` / `.vtt` / `.ttml` / `.qrc` / `.yrc` / `.krc` 文件，缓存库同名文件优先于在线歌词；支持 `lyrics/` 子目录、`.t.lrc` 翻译和 `[offset:]` 元数据；歌单包导出/导入会携带歌词 sidecar
 - 歌词面板新增 `−` / `＋` 时间轴微调（0.5 秒一档，`[` / `]` 也可），每首歌单独记住偏移
-- 新增透明背景的 OBS 歌词覆盖层 `/obs.html`：从封面取色，并用主播放器的实时频谱驱动封面频谱环、极光/粒子/网格背景和底部波形；支持 `?theme=aurora|neon|mirror`、`?mode=stage`、`?ambient=1`、`?bg=`、`?fps=` 等参数。浏览器内为深色预览，OBS 内自动透明。同时新增 `GET /api/now-playing`、`POST /api/now-playing`、`GET /api/lyrics/current` 供本地集成使用
+- 新增全屏 OBS 歌词舞台 `/obs.html`：Lumi（衬线大字 + 星轨线稿）、Tilt（居中大字 + 悬浮几何）、Pendolo（齿轮/封面窗 + 右侧歌词）三套主题，带逐字填色、当前字发光、上一句/下一句、背景残影、封面取色、实时频谱线和底部播放胶囊；`/obs-card.html` 保留为底部字幕卡片（Aurora / Neon / Mirror）。同时新增 `GET /api/now-playing`、`POST /api/now-playing`、`GET /api/lyrics/current` 供本地集成使用
 - 播放栏新增睡眠定时器：15/30/45/60/90 分钟，到点音量 30 秒渐出后暂停
 - 新增 `⌘K` / `Ctrl+K` 命令面板：搜索当前歌曲、歌单、缓存库，执行播放、歌词、全屏、下载、睡眠定时器和 OBS 等命令
 

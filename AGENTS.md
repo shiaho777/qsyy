@@ -108,8 +108,9 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
   equalizer → library → export → player → sleep-timer → command-palette → about):加载期执行的语句只能用到
   **本文件或更早文件**声明的名字(跨文件不存在函数提升);事件回调 / 定时器等延迟调用不受限。
   新增文件要同时加进 `index.html`,服务端 `/js/<name>.js` 路由自动提供。`obs.html`
-  是独立的 OBS 歌词覆盖层,由 `GET /api/now-playing` 轮询驱动。
-  改前端后刷新即生效(服务端按 mtime 热读文件),不需要重启。
+  是全屏歌词舞台(Lumi / Tilt / Pendolo),`obs-card.html` 是底部字幕卡片;
+  两者都由 `GET /api/now-playing` 轮询驱动。改前端后刷新即生效(服务端按 mtime
+  热读文件),不需要重启。
 - **三进程结构**:主服务 / `ttnet-helper.mjs`(签名子进程,崩溃自愈)/
   `restore_cache.js` 扫描子进程(fork,对 entries.db 快照)。原生模块只允许在后
   两个进程里加载,主服务崩不起。
