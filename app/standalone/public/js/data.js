@@ -110,8 +110,8 @@ async function openPlaylist(pl, resume = false) {
         state.queueContext = 'playlist';
         startCurrent(false);
         const pos = Number(last.position) || 0;
-        if (pos > 5 && audio.duration) audio.currentTime = Math.min(pos, audio.duration - 2);
-        else audio.addEventListener('loadedmetadata', () => { if (pos > 5) audio.currentTime = pos; }, { once: true });
+        if (pos > 5 && audio.duration) { audio.currentTime = Math.min(pos, audio.duration - 2); pushNowPlaying(true); }
+        else audio.addEventListener('loadedmetadata', () => { if (pos > 5) { audio.currentTime = pos; pushNowPlaying(true); } }, { once: true });
       }
     }
   }

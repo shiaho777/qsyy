@@ -156,7 +156,10 @@ app/
 | `GET /api/stream/:trackId` | 播放出流(缓存直读 / 在线,支持 Range) |
 | `GET /api/online/:trackId` | 查询在线可播性(音质 / 试听判定) |
 | `GET /api/cache-status?ids=` | 批量查询客户端缓存 + 自有增量缓存状态(≤80 ids) |
-| `GET /api/lyrics/:trackId` | 逐字歌词(v2 JSON + 标准 LRC,随解析落盘) |
+| `GET /api/lyrics/:trackId?set=&source=` | 逐字歌词(v2 JSON + 标准 LRC)。`set` 指向缓存库时优先读同目录歌词文件,`source=local|qishui|auto` 控制来源,`fresh=1` 强制在线 |
+| `GET /api/lyrics/current` | 当前播放中的歌词快照(供 OBS / 本地集成) |
+| `GET` / `POST /api/now-playing` | 读取 / 更新当前播放状态(曲目、进度、播放状态、歌词) |
+| `GET /obs.html` | 透明背景歌词覆盖层,可作 OBS 浏览器源 |
 | `GET /api/effects` · `/api/effects/:key` · `/api/effect-config?url=` | 音效目录 / 预置 DSP 链 / 智能音效配置 |
 | `GET /api/cover?url=` | 封面图代理 |
 | `POST /api/download` · `GET /api/downloads` | 下载任务(转码格式 / 音质可选) |
@@ -204,6 +207,22 @@ fork 子进程中对文件快照进行(10 秒 TTL 内并发共享同一快照,�
 不自行推算偏移)。`server.mjs` 解析为 v2 JSON(`lines[].words[]`)与标准
 LRC 双格式,resolve 成功即落盘,面板打开毫秒级命中;部分歌曲只有普通
 `[mm:ss.xx]` LRC,同样支持。
+
+本地歌词文件与在线歌词共用同一套解析器(`lyrics.mjs`),支持普通/增强
+LRC、WebVTT、TTML、QRC、YRC、KRC。缓存库中的同名文件优先于在线结果:
+
+```text
+stores/<库>/<trackId>.lrc
+stores/<库>/lyrics/<trackId>.ttml
+stores/<库>/<trackId>.t.lrc        # 翻译/第二语言
+```
+
+歌单包(ZIP)导出/导入会把这些 sidecar 一起打包;tar 备份因为复制整个
+库目录,也会自然带上。
+
+每首歌的歌词时间轴偏移存在前端 `localStorage`(`qsyy-lyricOffsets`),
+不写回音频或歌词文件。当前播放状态通过 `POST /api/now-playing` 推给服务端,
+`/obs.html` 与 `/api/lyrics/current` 读取同一份快照。
 
 ## 性能设计
 

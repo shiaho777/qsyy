@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+### 新功能
+- 歌词引擎支持本地 `.lrc` / `.vtt` / `.ttml` / `.qrc` / `.yrc` / `.krc` 文件，缓存库同名文件优先于在线歌词；支持 `lyrics/` 子目录、`.t.lrc` 翻译和 `[offset:]` 元数据；歌单包导出/导入会携带歌词 sidecar
+- 歌词面板新增 `−` / `＋` 时间轴微调（0.5 秒一档，`[` / `]` 也可），每首歌单独记住偏移
+- 新增透明背景的 OBS 歌词覆盖层 `/obs.html`，以及 `GET /api/now-playing`、`POST /api/now-playing`、`GET /api/lyrics/current` 供本地集成使用
+- 播放栏新增睡眠定时器：15/30/45/60/90 分钟，到点音量 30 秒渐出后暂停
+- 新增 `⌘K` / `Ctrl+K` 命令面板：搜索当前歌曲、歌单、缓存库，执行播放、歌词、全屏、下载、睡眠定时器和 OBS 等命令
+
+### 安全
+- 封面代理与封面落盘改为精确域名边界白名单，拒绝 `evil-douyinpic.com` 这类后缀伪装、非 HTTPS、带凭据和非默认端口
+- `web-session.json`、`qr-pending.json`、`server.json` 写入时使用 `0600` 权限（Windows 仍依赖用户目录 ACL）
+- 桌面壳 `shell.openExternal` 只允许 `http(s)` 链接，`file://` 与自定义协议不再交给系统处理
+
 ## [1.6.0] - 2026-11-04
 
 ### 新功能

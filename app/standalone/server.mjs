@@ -27,7 +27,8 @@ import {
 } from './qr-login.mjs';
 import { qrSvgDataUrl } from './qr-encode.mjs';
 import { readClientCookies } from './cookies.mjs';
-import { buildLyrics } from './lyrics.mjs';
+import { buildLyrics, parseLyricFile } from './lyrics.mjs';
+import { parseTrustedUrl } from './net-guard.mjs';
 import { zipBuildStream, zipParse } from './zip.mjs';
 
 const require = createRequire(import.meta.url);
@@ -91,6 +92,18 @@ try {
   if (fs.existsSync(legacyDir) && !fs.existsSync(DECRYPT_DIR)) fs.renameSync(legacyDir, DECRYPT_DIR);
 } catch (_) {}
 
+// Session files contain cookies / QR state. Keep them owner-only on POSIX;
+// Windows ignores the mode bits and relies on the per-user profile ACL.
+function writePrivateFile(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, data, { mode: 0o600 });
+  hardenPrivateFile(file);
+}
+function hardenPrivateFile(file) {
+  if (process.platform === 'win32') return;
+  try { fs.chmodSync(file, 0o600); } catch (_) {}
+}
+
 // ---------------------------------------------------------------- instance lock
 // One file under the cache dir records the live instance (pid/port/version/
 // kind). A later instance uses it — together with the /api/version probe — to
@@ -100,8 +113,7 @@ try {
 const INSTANCE_FILE = path.join(DECRYPT_DIR, 'server.json');
 function writeInstanceFile(port) {
   try {
-    fs.mkdirSync(DECRYPT_DIR, { recursive: true });
-    fs.writeFileSync(INSTANCE_FILE, JSON.stringify({
+    writePrivateFile(INSTANCE_FILE, JSON.stringify({
       pid: process.pid,
       port,
       host: HOST,
@@ -578,7 +590,9 @@ function writeLyricsCache(trackId, built) {
 
 // Best-effort lyrics for a download job: reuse the on-disk lyrics cache,
 // otherwise resolve via ttnet once. Returns '' when unavailable.
-async function lyricsForDownload(trackId) {
+async function lyricsForDownload(trackId, setParam = '') {
+  const local = readLocalLyrics(trackId, setParam);
+  if (local?.lrc) return local.lrc;
   const lyricsDir = path.join(DECRYPT_DIR, 'lyrics');
   try {
     const cached = JSON.parse(fs.readFileSync(path.join(lyricsDir, `${trackId}.json`), 'utf8'));
@@ -649,7 +663,7 @@ function exportStoredCopy(job, source, input) {
     const output = restoreService.finalizeOutput(staged, normalized, {}) || staged;
     Object.assign(job, { status: 'completed', progress: 100, phase: '下载完成', output: output || '', error: '' });
     persistJobs();
-    const lyricsText = await lyricsForDownload(String(job.trackId));
+    const lyricsText = await lyricsForDownload(String(job.trackId), input.set || '');
     if (lyricsText) {
       try { restoreService.writeLyrics({ ...normalized, lyricsEnabled: true, lyricsText }, output); } catch (_) {}
     }
@@ -675,10 +689,10 @@ async function startDownload({ trackId, title, artist, album, quality, outputFor
     downloadJobs.set(jobId, job);
     const stored = findStoredM4a(String(trackId), set);
     if (stored) {
-      exportStoredCopy(job, stored, { trackId, title, artist, album, quality, outputFormat, coverData });
+      exportStoredCopy(job, stored, { trackId, title, artist, album, quality, outputFormat, coverData, set });
       return job;
     }
-  const lyricsText = await lyricsForDownload(String(trackId));
+  const lyricsText = await lyricsForDownload(String(trackId), set || '');
   restoreService.restore({
     jobId,
     trackId: String(trackId),
@@ -847,32 +861,25 @@ function serveStream(request, response, file) {
 }
 
 function proxyImage(url, response) {
-  try {
-    const target = new URL(url);
-    if (!/douyinpic\.com|bytedanceapi|snssdk/.test(target.hostname)) {
-      response.writeHead(403).end();
-      return;
-    }
-    https.get(target, { headers: { 'user-agent': 'Mozilla/5.0' }, agent: cdnAgent }, upstreamResponse => {
-      response.writeHead(upstreamResponse.statusCode || 502, {
-        'content-type': upstreamResponse.headers['content-type'] || 'image/jpeg',
-        'cache-control': 'public, max-age=86400',
-      });
-      upstreamResponse.pipe(response);
-    }).on('error', () => response.writeHead(502).end());
-  } catch (_) {
-    response.writeHead(400).end();
+  const target = parseTrustedUrl(url);
+  if (!target) {
+    response.writeHead(403).end();
+    return;
   }
+  https.get(target, { headers: { 'user-agent': 'Mozilla/5.0' }, agent: cdnAgent }, upstreamResponse => {
+    response.writeHead(upstreamResponse.statusCode || 502, {
+      'content-type': upstreamResponse.headers['content-type'] || 'image/jpeg',
+      'cache-control': 'public, max-age=86400',
+    });
+    upstreamResponse.pipe(response);
+  }).on('error', () => response.writeHead(502).end());
 }
 
 // 下载白名单域名的图片到内存(歌曲封面落库/导出用),失败返回 null
 function downloadImage(url, maxBytes = 3 * 1024 * 1024) {
   return new Promise(resolve => {
-    let target;
-    try {
-      target = new URL(url);
-      if (!/douyinpic\.com|bytedanceapi|snssdk/.test(target.hostname)) { resolve(null); return; }
-    } catch (_) { resolve(null); return; }
+    const target = parseTrustedUrl(url);
+    if (!target) { resolve(null); return; }
     const req = https.get(target, { headers: { 'user-agent': 'Mozilla/5.0' }, agent: cdnAgent }, res => {
       if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
       const chunks = [];
@@ -1068,13 +1075,13 @@ if (!fs.existsSync(WEB_SESSION_FILE) && fs.existsSync(LEGACY_WEB_SESSION_FILE)) 
   }
 }
 try { webSession = JSON.parse(fs.readFileSync(WEB_SESSION_FILE, 'utf8')); } catch (_) {}
+hardenPrivateFile(WEB_SESSION_FILE);
 
 function saveWebSession(cookieMap) {
   const filtered = pickWebSessionCookies(cookieMap);
   if (!filtered) return false;
   webSession = { cookie: Object.entries(filtered).map(([k, v]) => `${k}=${v}`).join('; '), savedAt: Date.now() };
-  try { fs.mkdirSync(DECRYPT_DIR, { recursive: true }); } catch (_) {}
-  fs.writeFileSync(WEB_SESSION_FILE, JSON.stringify(webSession, null, 2));
+  writePrivateFile(WEB_SESSION_FILE, JSON.stringify(webSession, null, 2));
   onlineCache.clear();
   cookieCache = { value: '', at: 0 };
   return true;
@@ -1110,8 +1117,7 @@ const QR_STATE_FILE = path.join(DECRYPT_DIR, 'qr-pending.json');
 
 function persistQrState() {
   try {
-    fs.mkdirSync(DECRYPT_DIR, { recursive: true });
-    fs.writeFileSync(QR_STATE_FILE, JSON.stringify(serializeQrPending(qrPending), null, 2));
+    writePrivateFile(QR_STATE_FILE, JSON.stringify(serializeQrPending(qrPending), null, 2));
   } catch (_) {}
 }
 
@@ -1122,6 +1128,7 @@ function loadQrState() {
   } catch (_) {}
 }
 loadQrState();
+hardenPrivateFile(QR_STATE_FILE);
 
 function randomDigits(length) {
   let out = String(1 + Math.floor(Math.random() * 8));
@@ -1452,6 +1459,174 @@ function storeDir(name) {
 }
 function storeExists(name) {
   return setNameOk(name) && fs.existsSync(storeDir(name));
+}
+
+// ---------------------------------------------------------------- local lyrics
+// A cache library may carry lyric files next to its .m4a files. Accepted
+// extensions mirror the parser, and both "<id>.lrc" and "lyrics/<id>.lrc"
+// layouts work so imported packages do not need a converter.
+const LOCAL_LYRIC_EXTS = ['lrc', 'vtt', 'ttml', 'qrc', 'yrc', 'krc', 'txt'];
+const LOCAL_LYRIC_SUBDIRS = ['', 'lyrics', 'Lyrics', 'lrc', 'LRC'];
+
+function localLyricDirs(setParam) {
+  const dirs = [];
+  if (setParam && setNameOk(setParam) && !setParam.startsWith('.')) dirs.push(storeDir(setParam));
+  dirs.push(STORE_DIR);
+  return [...new Set(dirs.map(dir => path.resolve(dir)))];
+}
+
+function readTextIfSmall(file, maxBytes = 2 * 1024 * 1024) {
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size > maxBytes) return '';
+    return fs.readFileSync(file, 'utf8');
+  } catch (_) { return ''; }
+}
+
+function readLocalLyrics(trackId, setParam = '') {
+  const id = String(trackId || '');
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return null;
+  for (const dir of localLyricDirs(setParam)) {
+    for (const sub of LOCAL_LYRIC_SUBDIRS) {
+      const base = sub ? path.join(dir, sub) : dir;
+      for (const ext of LOCAL_LYRIC_EXTS) {
+        for (const name of [`${id}.${ext}`, `${id}.lyrics.${ext}`]) {
+          const file = path.join(base, name);
+          const text = readTextIfSmall(file);
+          if (!text.trim()) continue;
+          // Optional translation sidecar: <id>.t.lrc / <id>.translation.lrc / <id>.zh.lrc
+          let translation = '';
+          for (const suffix of ['t', 'translation', 'zh', 'cn']) {
+            translation ||= readTextIfSmall(path.join(base, `${id}.${suffix}.${ext}`));
+          }
+          let built = null;
+          try { built = parseLyricFile(text, name, { translation }); } catch (_) { built = null; }
+          if (built?.lines?.length) return { ...built, source: 'local' };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function readCachedLyrics(trackId) {
+  try {
+    const cached = JSON.parse(fs.readFileSync(path.join(DECRYPT_DIR, 'lyrics', `${trackId}.json`), 'utf8'));
+    if (cached?.v === 2 && Array.isArray(cached.lines) && cached.lines.length) return cached;
+  } catch (_) {}
+  return null;
+}
+
+// Sidecars that travel with a library package. Local lyrics win over the
+// online cache; translations (`.t.lrc` etc.) ride along as separate entries.
+const LYRIC_EXPORT_EXTS = LOCAL_LYRIC_EXTS;
+const LYRIC_ENTRY_RE = new RegExp(`^\\d+(?:\\.(?:t|translation|zh|cn))?\\.(${LYRIC_EXPORT_EXTS.join('|')})$`, 'i');
+const TAR_ENTRY_RE = new RegExp(`^(\\d+\\.(m4a|json|part|jpg|effect\\.json|(?:t\\.|translation\\.|zh\\.|cn\\.)?(?:${LYRIC_EXPORT_EXTS.join('|')}))|cover\\.(jpg|jpeg|png|webp))$`, 'i');
+function collectLyricEntries(trackId, dir) {
+  const id = String(trackId || '');
+  if (!/^\d+$/.test(id)) return [];
+  const out = [];
+  const seen = new Set();
+  const add = (file, name) => {
+    if (seen.has(name)) return;
+    try {
+      const stat = fs.statSync(file);
+      if (!stat.isFile() || stat.size > 2 * 1024 * 1024) return;
+      seen.add(name);
+      out.push({ name, data: fs.readFileSync(file), deflate: true });
+    } catch (_) {}
+  };
+  for (const sub of LOCAL_LYRIC_SUBDIRS) {
+    const base = sub ? path.join(dir, sub) : dir;
+    for (const ext of LYRIC_EXPORT_EXTS) {
+      add(path.join(base, `${id}.${ext}`), `${id}.${ext}`);
+      for (const suffix of ['t', 'translation', 'zh', 'cn']) {
+        add(path.join(base, `${id}.${suffix}.${ext}`), `${id}.${suffix}.${ext}`);
+      }
+    }
+  }
+  if (!out.length) {
+    add(path.join(DECRYPT_DIR, 'lyrics', `${id}.lrc`), `${id}.lrc`);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- now playing (external API / OBS)
+// The browser owns playback, so it POSTs a small snapshot on track changes,
+// play/pause, seeks and every few seconds. The server keeps the latest state
+// in memory and exposes it read-only for OBS overlays and local integrations.
+const nowPlayingState = {
+  trackId: '', title: '', artist: '', album: '', cover: '',
+  duration: 0, position: 0, playing: false, updatedAt: 0,
+  lyrics: null, lyricsTrackId: '',
+};
+const TEXT_LIMIT = 500;
+const cleanText = value => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, TEXT_LIMIT);
+const cleanNumber = value => {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, n) : 0;
+};
+const cleanCover = value => {
+  const text = cleanText(value);
+  return text.startsWith('/') || /^https:\/\//i.test(text) ? text : '';
+};
+const validLyricsPayload = value => Boolean(
+  value && typeof value === 'object' && Array.isArray(value.lines) && value.lines.length <= 5000
+  && value.lines.every(line => line && typeof line === 'object' && Number.isFinite(Number(line.ms))),
+);
+
+function updateNowPlaying(input = {}) {
+  const trackId = cleanText(input.trackId).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 128);
+  const changed = trackId !== nowPlayingState.trackId;
+  if (changed) {
+    nowPlayingState.trackId = trackId;
+    nowPlayingState.title = '';
+    nowPlayingState.artist = '';
+    nowPlayingState.album = '';
+    nowPlayingState.cover = '';
+    nowPlayingState.duration = 0;
+    nowPlayingState.position = 0;
+    nowPlayingState.lyrics = null;
+    nowPlayingState.lyricsTrackId = '';
+  }
+  if (input.title !== undefined) nowPlayingState.title = cleanText(input.title);
+  if (input.artist !== undefined) nowPlayingState.artist = cleanText(input.artist);
+  if (input.album !== undefined) nowPlayingState.album = cleanText(input.album);
+  if (input.cover !== undefined) nowPlayingState.cover = cleanCover(input.cover);
+  if (input.duration !== undefined) nowPlayingState.duration = cleanNumber(input.duration);
+  if (input.position !== undefined) nowPlayingState.position = cleanNumber(input.position);
+  if (input.playing !== undefined) nowPlayingState.playing = Boolean(input.playing);
+  nowPlayingState.updatedAt = Date.now();
+  if (validLyricsPayload(input.lyrics)) {
+    nowPlayingState.lyrics = input.lyrics;
+    nowPlayingState.lyricsTrackId = trackId;
+  } else if (trackId && nowPlayingState.lyricsTrackId !== trackId) {
+    const local = readLocalLyrics(trackId, cleanText(input.set));
+    const cached = local || readCachedLyrics(trackId);
+    if (cached) {
+      nowPlayingState.lyrics = cached;
+      nowPlayingState.lyricsTrackId = trackId;
+    }
+  }
+}
+
+function nowPlayingPayload(includeLyrics = true) {
+  return {
+    ok: true,
+    track: {
+      id: nowPlayingState.trackId,
+      title: nowPlayingState.title,
+      artist: nowPlayingState.artist,
+      album: nowPlayingState.album,
+      cover: nowPlayingState.cover,
+      duration: nowPlayingState.duration,
+    },
+    position: nowPlayingState.position,
+    playing: nowPlayingState.playing,
+    updatedAt: nowPlayingState.updatedAt,
+    lyricsTrackId: nowPlayingState.lyricsTrackId,
+    lyrics: includeLyrics ? nowPlayingState.lyrics : undefined,
+  };
 }
 // 自定义位置:用户选的是父目录,库按名在其下建子目录。校验:可创建可写、
 // 不能落在已有库内部;指向默认 STORES_ROOT 时回落默认(不写注册表)。
@@ -2132,17 +2307,27 @@ const serverHandler = async (request, response) => {
   const route = `${request.method} ${url.pathname}`;
 
   try {
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-headers': 'content-type',
+        'access-control-max-age': '86400',
+      }).end();
+      return;
+    }
     if (route === 'GET /') {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(staticFiles.index);
       return;
     }
-    for (const file of ['style.css', 'manifest.webmanifest', 'qr-signer.html', 'desktop-lyrics.html']) {
+    for (const file of ['style.css', 'manifest.webmanifest', 'qr-signer.html', 'desktop-lyrics.html', 'obs.html']) {
       if (url.pathname === `/${file}`) {
         const types = {
           'style.css': 'text/css',
           'manifest.webmanifest': 'application/manifest+json',
           'qr-signer.html': 'text/html',
           'desktop-lyrics.html': 'text/html',
+          'obs.html': 'text/html',
         };
         response.writeHead(200, { 'content-type': `${types[file]}; charset=utf-8`, 'cache-control': 'no-store' })
           .end(staticFiles[file]);
@@ -2799,6 +2984,9 @@ const serverHandler = async (request, response) => {
                 packed.add(id);
               }
             } catch (_) {}
+            // Lyrics are tiny and useful even for tracks whose audio was not
+            // cached; carry local sidecars (or the online cache) in the package.
+            for (const lyric of collectLyricEntries(id, STORE_DIR)) entries.push(lyric);
             job.done += 1;
             job.phase = `打包音频 ${job.done}/${job.total}`;
           }
@@ -2983,6 +3171,10 @@ const serverHandler = async (request, response) => {
               // 歌曲封面(播放建档/导出包携带)
               fs.writeFileSync(path.join(targetDir, base), e.data);
               imported += 1;
+            } else if (LYRIC_ENTRY_RE.test(base)) {
+              // 歌词 sidecar: <trackId>.lrc / <trackId>.t.lrc / lyrics 格式
+              fs.writeFileSync(path.join(targetDir, base.toLowerCase()), e.data);
+              imported += 1;
             } else {
               skipped += 1;
             }
@@ -3027,7 +3219,7 @@ const serverHandler = async (request, response) => {
           }
         } else {
           // tar 分支:沿用原流式解析(喂入已缓冲的 body)
-          const validEntry = name => /^(\d+\.(m4a|json|part|jpg|effect\.json)|cover\.(jpg|jpeg|png|webp))$/i.test(name);
+          const validEntry = name => TAR_ENTRY_RE.test(name);
           let buffer = body;
           let mode = 'header';
           let current = null; // { size, taken, out?, need? }
@@ -3154,29 +3346,69 @@ const serverHandler = async (request, response) => {
       });
       return;
     }
+    if (route === 'GET /api/now-playing') {
+      sendJson(response, 200, nowPlayingPayload(url.searchParams.get('lyrics') !== '0'));
+      return;
+    }
+    if (route === 'POST /api/now-playing') {
+      try {
+        updateNowPlaying(await readBody(request));
+        sendJson(response, 200, { ok: true });
+      } catch (error) {
+        sendJson(response, 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+    if (route === 'GET /api/lyrics/current') {
+      const payload = nowPlayingPayload();
+      sendJson(response, 200, {
+        ok: true,
+        track: payload.track,
+        position: payload.position,
+        playing: payload.playing,
+        updatedAt: payload.updatedAt,
+        lyrics: payload.lyrics,
+      });
+      return;
+    }
     if (url.pathname.startsWith('/api/lyrics/') && request.method === 'GET') {
       // Lyrics ride along in the signed track_v2 payload (ttnet path). v2 keeps
       // the per-word timings so the front end can render karaoke highlight; the
       // flat LRC is still produced for file tagging. Cached on disk per track,
       // and a v1 (lrc-only) cache is transparently upgraded on next request.
+      //
+      // A cache library can override the online lyrics with sidecar files
+      // (<id>.lrc / lyrics/<id>.ttml / ...). `?source=local|qishui|auto`
+      // controls precedence; `?fresh=1` forces the network path.
       const trackId = url.pathname.split('/').pop();
-      if (!/^\d+$/.test(trackId)) { sendJson(response, 400, { ok: false, error: 'bad track id' }); return; }
-      const lyricsDir = path.join(DECRYPT_DIR, 'lyrics');
-      let cached = null;
-      try { cached = JSON.parse(fs.readFileSync(path.join(lyricsDir, `${trackId}.json`), 'utf8')); } catch (_) {}
-      if (cached?.v === 2 && Array.isArray(cached.lines) && cached.lines.length) {
-        sendJson(response, 200, { ok: true, ...cached, cached: true });
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(trackId)) { sendJson(response, 400, { ok: false, error: 'bad track id' }); return; }
+      const setParam = url.searchParams.get('set') || '';
+      const source = url.searchParams.get('source') || 'auto';
+      const forceNetwork = source === 'qishui' || url.searchParams.get('fresh') === '1';
+      const localOnly = source === 'local';
+      const local = readLocalLyrics(trackId, setParam);
+      if (local && !forceNetwork) {
+        sendJson(response, 200, { ok: true, ...local, cached: false, source: 'local' });
+        return;
+      }
+      const cached = readCachedLyrics(trackId);
+      if (cached && !forceNetwork) {
+        sendJson(response, 200, { ok: true, ...cached, cached: true, source: 'qishui' });
+        return;
+      }
+      if (localOnly) {
+        sendJson(response, 200, { ok: false, error: 'no-lyric', source: 'local' });
         return;
       }
       const resolved = await ttnetResolve(trackId);
       const built = buildLyrics(resolved);
       if (built) {
         writeLyricsCache(trackId, built);
-        sendJson(response, 200, { ok: true, ...built, cached: false });
+        sendJson(response, 200, { ok: true, ...built, cached: false, source: 'qishui' });
         return;
       }
       if (cached?.lrc) {
-        sendJson(response, 200, { ok: true, v: 1, lrc: cached.lrc, name: cached.name || '', cached: true });
+        sendJson(response, 200, { ok: true, v: 1, lrc: cached.lrc, name: cached.name || '', cached: true, source: 'qishui' });
         return;
       }
       sendJson(response, 200, { ok: false, error: resolved?.ok === false && resolved?.error === 'restricted' ? 'unavailable' : 'no-lyric' });
@@ -3322,6 +3554,7 @@ const staticFiles = (() => {
     get 'manifest.webmanifest'() { return load('manifest.webmanifest'); },
     get 'qr-signer.html'() { return load('qr-signer.html'); },
     get 'desktop-lyrics.html'() { return load('desktop-lyrics.html'); },
+    get 'obs.html'() { return load('obs.html'); },
     get 'sdk-glue.js'() { return load('security/sdk-glue.js'); },
     icon: name => load(`icons/${name}`),
     js: name => load(`js/${name}`),

@@ -13,6 +13,9 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 // main.mjs is inside app.asar and extraResources puts app/ beside it, so
 // ../app/standalone still resolves to a real directory.
 const serverDir = path.join(root, '..', 'app', 'standalone');
+// Reuse the server's URL guard so only http(s) links reach the system handler;
+// file://, ms-settings: and custom protocols stay inside the deny branch.
+const { isSafeExternalUrl, isSameOrigin } = await import(pathToFileURL(path.join(serverDir, 'net-guard.mjs')).href);
 
 // Dev-shell identity: when run from source (`npm start`), Electron otherwise
 // shows the stock Electron icon + "Electron" name in Dock / About. setName
@@ -91,7 +94,13 @@ function createWindow() {
   // External links (roadmap links, GitHub) open in the system browser; the
   // app itself is the only surface allowed inside the window.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(serverUrl)) { shell.openExternal(url); return { action: 'deny' }; }
+    // Compare origins, not string prefixes: `http://host:18790.evil` would
+    // otherwise pass a startsWith(serverUrl) check.
+    const sameServer = isSameOrigin(url, serverUrl);
+    if (!sameServer) {
+      if (isSafeExternalUrl(url)) shell.openExternal(url);
+      return { action: 'deny' };
+    }
     return { action: 'allow' };
   });
   mainWindow.on('closed', () => {

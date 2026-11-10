@@ -95,18 +95,20 @@ Issue(建或复用)→ 分支(自 main)→ 提交 → push → PR(base=main,body
   全部收在 `app/standalone/platform.mjs` 与 `app/bridge/lib/runtime.js`。改平台逻辑
   只动这两个文件 + `runtime.js`,不要在 server 里写 `process.platform` 判断。
 - **纯逻辑模块**与 server 同目录、各配 `*.test.mjs`:`cookies.mjs`、`qr-login.mjs`、
-  `lyrics.mjs`(LRC/逐字歌词解析)、`zip.mjs`(歌单包读写)、`qr-encode.mjs`
+  `lyrics.mjs`(LRC/逐字/本地多格式歌词解析)、`net-guard.mjs`(封面域名与
+  外部链接白名单)、`zip.mjs`(歌单包读写)、`qr-encode.mjs`
   (零依赖二维码编码,扫码登录用)。新抽出的无状态逻辑
   照此放置并补测试,CI 按 `app/standalone/*.test.mjs` 自动收录。
   **新模块还要加进 `android/app/build.gradle.kts` 的 `syncQsyyRuntime` 白名单**
   (桌面与 Docker 整包复制 `app/`,Android 按 `include()` 逐个列),漏了只会在 APK
   运行时报 `ERR_MODULE_NOT_FOUND`;CI 会从 `server.mjs` / `ttnet-helper.mjs`
   追相对 import 校验白名单。
-- **前端零框架**(`public/js/*.js`,9 个经典脚本,共享全局作用域),无构建步骤。
+- **前端零框架**(`public/js/*.js`,11 个经典脚本,共享全局作用域),无构建步骤。
   `index.html` 里的 `<script>` 顺序即依赖顺序(core → data → ordering → effects →
-  equalizer → library → export → player → about):加载期执行的语句只能用到**本文件
-  或更早文件**声明的名字(跨文件不存在函数提升);事件回调 / 定时器等延迟调用不受限。
-  新增文件要同时加进 `index.html`,服务端 `/js/<name>.js` 路由自动提供。
+  equalizer → library → export → player → sleep-timer → command-palette → about):加载期执行的语句只能用到
+  **本文件或更早文件**声明的名字(跨文件不存在函数提升);事件回调 / 定时器等延迟调用不受限。
+  新增文件要同时加进 `index.html`,服务端 `/js/<name>.js` 路由自动提供。`obs.html`
+  是独立的 OBS 歌词覆盖层,由 `GET /api/now-playing` 轮询驱动。
   改前端后刷新即生效(服务端按 mtime 热读文件),不需要重启。
 - **三进程结构**:主服务 / `ttnet-helper.mjs`(签名子进程,崩溃自愈)/
   `restore_cache.js` 扫描子进程(fork,对 entries.db 快照)。原生模块只允许在后
