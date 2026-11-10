@@ -16,6 +16,25 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { decodeSpadeA, decryptMp4 } = require('./lib/cenc');
 
+// Detached children are re-parented to launchd/init when the server dies
+// without running its exit handlers (SIGKILL, native crash). Scans and
+// restore/transcode jobs must not keep running headless after that. Two
+// seconds covers the normal parent-exit race without polling hard.
+const PARENT_PID = process.ppid;
+function parentStillAlive() {
+  if (process.ppid !== PARENT_PID) return false;
+  try { process.kill(PARENT_PID, 0); return true; }
+  catch (error) { return error?.code === 'EPERM'; }
+}
+if (PARENT_PID > 1) {
+  const parentWatchdog = setInterval(() => {
+    if (parentStillAlive()) return;
+    clearInterval(parentWatchdog);
+    process.exit(1);
+  }, 2000);
+  parentWatchdog.unref?.();
+}
+
 function parseArgs(argv) {
   const args = {};
   const push = (key, value) => {
