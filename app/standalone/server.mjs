@@ -1558,7 +1558,7 @@ function collectLyricEntries(trackId, dir) {
 const nowPlayingState = {
   trackId: '', title: '', artist: '', album: '', cover: '',
   duration: 0, position: 0, playing: false, updatedAt: 0,
-  lyrics: null, lyricsTrackId: '',
+  spectrum: null, lyrics: null, lyricsTrackId: '',
 };
 const TEXT_LIMIT = 500;
 const cleanText = value => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, TEXT_LIMIT);
@@ -1586,6 +1586,7 @@ function updateNowPlaying(input = {}) {
     nowPlayingState.cover = '';
     nowPlayingState.duration = 0;
     nowPlayingState.position = 0;
+    nowPlayingState.spectrum = null;
     nowPlayingState.lyrics = null;
     nowPlayingState.lyricsTrackId = '';
   }
@@ -1596,6 +1597,14 @@ function updateNowPlaying(input = {}) {
   if (input.duration !== undefined) nowPlayingState.duration = cleanNumber(input.duration);
   if (input.position !== undefined) nowPlayingState.position = cleanNumber(input.position);
   if (input.playing !== undefined) nowPlayingState.playing = Boolean(input.playing);
+  if (Array.isArray(input.spectrum)) {
+    nowPlayingState.spectrum = input.spectrum.slice(0, 64).map(value => {
+      const n = Number(value);
+      return Number.isFinite(n) ? Math.max(0, Math.min(255, Math.round(n))) : 0;
+    });
+  } else if (input.spectrum === null) {
+    nowPlayingState.spectrum = null;
+  }
   nowPlayingState.updatedAt = Date.now();
   if (validLyricsPayload(input.lyrics)) {
     nowPlayingState.lyrics = input.lyrics;
@@ -1624,6 +1633,7 @@ function nowPlayingPayload(includeLyrics = true) {
     position: nowPlayingState.position,
     playing: nowPlayingState.playing,
     updatedAt: nowPlayingState.updatedAt,
+    spectrum: nowPlayingState.spectrum,
     lyricsTrackId: nowPlayingState.lyricsTrackId,
     lyrics: includeLyrics ? nowPlayingState.lyrics : undefined,
   };

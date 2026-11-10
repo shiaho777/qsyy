@@ -1129,11 +1129,34 @@ function stopLyricsLoop() {
 let nowPlayingPushAt = 0;
 let nowPlayingLyricsTrack = '';
 let nowPlayingTrackId = '';
+const NOW_PLAYING_SPECTRUM_BINS = 32;
+let npSpectrum = new Uint8Array(0);
+
+// 32 log-ish bins for the OBS visualizer. The main equalizer keeps its own
+// three bands; this is a lightweight second read of the same analyser.
+function sampleSpectrum() {
+  if (typeof analyser === 'undefined' || !analyser || typeof eqFreq === 'undefined' || !eqFreq?.length) return null;
+  if (typeof audioCtx === 'undefined' || !audioCtx || audioCtx.state !== 'running' || audio.paused) return null;
+  try {
+    analyser.getByteFrequencyData(eqFreq);
+    if (npSpectrum.length !== NOW_PLAYING_SPECTRUM_BINS) npSpectrum = new Uint8Array(NOW_PLAYING_SPECTRUM_BINS);
+    const n = eqFreq.length;
+    for (let i = 0; i < NOW_PLAYING_SPECTRUM_BINS; i += 1) {
+      const a = Math.floor((i / NOW_PLAYING_SPECTRUM_BINS) * n);
+      const b = Math.max(a + 1, Math.floor(((i + 1) / NOW_PLAYING_SPECTRUM_BINS) * n));
+      let sum = 0;
+      for (let k = a; k < b; k += 1) sum += eqFreq[k] || 0;
+      npSpectrum[i] = Math.round(sum / (b - a));
+    }
+    return Array.from(npSpectrum);
+  } catch (_) { return null; }
+}
+
 function pushNowPlaying(force = false) {
   const t = state.queue[state.queueIndex];
   if (!t) return;
   const now = Date.now();
-  if (!force && now - nowPlayingPushAt < 1800) return;
+  if (!force && now - nowPlayingPushAt < 450) return;
   nowPlayingPushAt = now;
   const trackChanged = nowPlayingTrackId !== t.id;
   nowPlayingTrackId = t.id;
@@ -1152,6 +1175,7 @@ function pushNowPlaying(force = false) {
     // startCurrent() swaps audio.src; send the new track from zero.
     position: trackChanged ? 0 : (Number.isFinite(audio.currentTime) ? audio.currentTime : 0),
     playing: !audio.paused && !audio.ended,
+    spectrum: sampleSpectrum(),
     set: store,
   };
   if (sendLyrics) payload.lyrics = { v: 2, name: t.name, offset: lyricsState.offset, lines: lyricsState.lines };

@@ -17,8 +17,17 @@ function startEqLoop() {
       eq.classList.add('live');
       analyser.getByteFrequencyData(eqFreq);
       const bars = eq.querySelectorAll('i');
-      const band = (a, b) => { let s = 0; for (let k = a; k <= b; k += 1) s += eqFreq[k]; return s / ((b - a + 1) * 255); };
-      const targets = [band(1, 4), band(5, 9), band(10, 15)];
+      const n = eqFreq.length;
+      const band = (a, b) => {
+        let s = 0;
+        for (let k = a; k <= b; k += 1) s += eqFreq[k] || 0;
+        return s / ((b - a + 1) * 255);
+      };
+      // 64 bins: keep the three bars aligned with low / mid / high thirds.
+      const lowEnd = Math.max(2, Math.min(n - 3, Math.floor(n * 0.16)));
+      const midEnd = Math.max(lowEnd + 1, Math.min(n - 2, Math.floor(n * 0.48)));
+      const highEnd = Math.max(midEnd + 1, n - 1);
+      const targets = [band(1, lowEnd), band(lowEnd + 1, midEnd), band(midEnd + 1, highEnd)];
       for (let i = 0; i < 3; i += 1) {
         if (!bars[i]) break;
         const v = Math.min(1, Math.pow(targets[i], 0.75) * 1.15);

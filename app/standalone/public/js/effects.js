@@ -115,7 +115,7 @@ function ensureGraph() {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     mediaSource = audioCtx.createMediaElementSource(audio);
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 32;                 // 16 个频点,够驱动 3 根柱子
+    analyser.fftSize = 128;                // 64 个频点:3 根列表柱 + OBS 频谱
     analyser.smoothingTimeConstant = 0.7;
     eqFreq = new Uint8Array(analyser.frequencyBinCount);
     outputTap = audioCtx.createGain();

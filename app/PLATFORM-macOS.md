@@ -158,7 +158,7 @@ app/
 | `GET /api/cache-status?ids=` | 批量查询客户端缓存 + 自有增量缓存状态(≤80 ids) |
 | `GET /api/lyrics/:trackId?set=&source=` | 逐字歌词(v2 JSON + 标准 LRC)。`set` 指向缓存库时优先读同目录歌词文件,`source=local|qishui|auto` 控制来源,`fresh=1` 强制在线 |
 | `GET /api/lyrics/current` | 当前播放中的歌词快照(供 OBS / 本地集成) |
-| `GET` / `POST /api/now-playing` | 读取 / 更新当前播放状态(曲目、进度、播放状态、歌词) |
+| `GET` / `POST /api/now-playing` | 读取 / 更新当前播放状态(曲目、进度、播放状态、歌词、32 段频谱)；频谱驱动 `/obs.html` 的封面频谱环、粒子和波形 |
 | `GET /obs.html` | 透明背景歌词覆盖层,可作 OBS 浏览器源 |
 | `GET /api/effects` · `/api/effects/:key` · `/api/effect-config?url=` | 音效目录 / 预置 DSP 链 / 智能音效配置 |
 | `GET /api/cover?url=` | 封面图代理 |
