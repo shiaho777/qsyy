@@ -6,133 +6,246 @@
 <title>qsyy · OBS 歌词</title>
 <style>
   :root {
-    --accent: #19a58c;
-    --text: #ffffff;
-    --muted: rgba(255, 255, 255, .62);
-    --faint: rgba(255, 255, 255, .32);
-    --panel: rgba(8, 10, 16, .52);
-    --radius: 18px;
+    --accent: #22d3b6;
+    --accent-rgb: 34, 211, 182;
+    --text: #f8fafc;
+    --muted: rgba(248, 250, 252, .64);
+    --faint: rgba(248, 250, 252, .34);
+    --line: rgba(255, 255, 255, .13);
+    --card: rgba(8, 11, 18, .74);
+    --radius: 24px;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  html, body {
+    margin: 0; width: 100%; height: 100%;
+    background: transparent; overflow: hidden;
+  }
   body {
     font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
     color: var(--text);
     -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
   }
-  #obs {
-    position: fixed;
-    left: 0; right: 0; bottom: 0;
-    display: flex;
-    align-items: flex-end;
-    gap: 18px;
-    padding: 28px 34px 34px;
-    background: linear-gradient(180deg, transparent, rgba(0, 0, 0, .46));
-    opacity: 0;
-    transition: opacity .35s ease;
+
+  /* A normal browser gets a dark preview stage; OBS gets a transparent canvas. */
+  body.preview {
+    background:
+      radial-gradient(90% 70% at 50% 0%, #151d2d 0%, #090c14 48%, #05070b 100%);
   }
-  #obs.ready { opacity: 1; }
-  #obs.center { justify-content: center; text-align: center; }
+  body.preview #stage::after, body.ambient #stage::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(80% 70% at 50% 30%, transparent 0%, rgba(0,0,0,.22) 62%, rgba(0,0,0,.58) 100%);
+  }
+
+  #stage { position: fixed; inset: 0; overflow: hidden; }
+
+  /* Blurred cover wash. Only painted in the browser preview, so an OBS
+     source stays clean over the scene. `?ambient=1` forces it on. */
+  #ambient {
+    position: fixed; inset: -12%;
+    background-position: center; background-size: cover;
+    filter: blur(64px) saturate(1.5) brightness(.62);
+    opacity: 0; transform: scale(1.04);
+    transition: background-image .5s ease, filter .5s ease;
+    pointer-events: none;
+  }
+  body.preview #ambient.has-image, body.ambient #ambient.has-image { opacity: .52 !important; }
+
+  /* Accent glow under the card. This is safe in OBS: it is local, soft and
+     never covers the whole scene. */
+  #glow {
+    position: fixed; left: 50%; bottom: -18vh;
+    width: min(1200px, 110vw); height: 58vh;
+    transform: translateX(-50%);
+    background: radial-gradient(closest-side, rgba(var(--accent-rgb), .22), transparent 72%);
+    filter: blur(18px);
+    pointer-events: none;
+    transition: background .8s ease;
+  }
+
+  #idle {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    color: var(--muted); font-size: 15px; letter-spacing: .02em;
+    opacity: 1; transition: opacity .35s ease;
+  }
+  #idle.hide { opacity: 0; pointer-events: none; }
+  .pulse {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 rgba(var(--accent-rgb), .55);
+    animation: pulse 1.9s ease-out infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), .55); }
+    70% { box-shadow: 0 0 0 14px rgba(var(--accent-rgb), 0); }
+    100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0); }
+  }
+
+  #card {
+    position: fixed; left: 50%; bottom: 5.5vh;
+    width: min(1080px, calc(100vw - 8vw));
+    transform: translateX(-50%);
+    padding: clamp(18px, 2.1vw, 30px) clamp(20px, 2.7vw, 38px);
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    background:
+      linear-gradient(135deg, rgba(var(--accent-rgb), .10), transparent 42%),
+      linear-gradient(180deg, rgba(18, 23, 35, .82), var(--card));
+    box-shadow:
+      0 28px 90px rgba(0, 0, 0, .52),
+      inset 0 1px 0 rgba(255, 255, 255, .08);
+    backdrop-filter: blur(24px) saturate(1.25);
+    -webkit-backdrop-filter: blur(24px) saturate(1.25);
+    opacity: 0; transform: translate(-50%, 12px);
+    transition: opacity .5s ease, transform .5s cubic-bezier(.2,.8,.2,1);
+  }
+  #card.ready { opacity: 1; transform: translate(-50%, 0); }
+  body.align-left #card { left: 4vw; transform: translate(0, 12px); }
+  body.align-left #card.ready { transform: translate(0, 0); }
+  body.stage-mode #card {
+    left: 50%; bottom: 50%; width: min(1200px, 88vw);
+    transform: translate(-50%, 50%);
+  }
+  body.stage-mode #card.ready { transform: translate(-50%, 50%); }
+  body.stage-mode #lyric { font-size: clamp(32px, 3.9vw, 62px); }
+
+  #top { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
   #cover-wrap {
-    flex: none;
-    width: 92px; height: 92px;
-    border-radius: 14px;
-    overflow: hidden;
-    background: rgba(255, 255, 255, .08);
-    box-shadow: 0 12px 36px rgba(0, 0, 0, .42);
+    width: clamp(48px, 5.2vw, 66px); height: clamp(48px, 5.2vw, 66px);
+    flex: none; position: relative; display: grid; place-items: center;
+    border-radius: 16px; overflow: hidden;
+    background: linear-gradient(135deg, rgba(var(--accent-rgb), .34), rgba(255, 255, 255, .06));
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .34), inset 0 0 0 1px rgba(255,255,255,.10);
   }
   #cover { width: 100%; height: 100%; object-fit: cover; display: none; }
-  #cover-wrap.empty { display: none; }
-  #copy {
-    min-width: 0; flex: 1 1 auto;
-    padding: 14px 18px;
-    border-radius: var(--radius);
-    background: rgba(6, 8, 12, .62);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+  #cover-wrap.has-cover #cover { display: block; }
+  #cover-wrap.has-cover .cover-note { display: none; }
+  .cover-note { font-size: clamp(20px, 2.2vw, 28px); color: rgba(255,255,255,.78); }
+
+  #meta { min-width: 0; flex: 1; }
+  #title {
+    font-size: clamp(16px, 1.45vw, 21px); font-weight: 750; letter-spacing: .01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  #meta { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin-bottom: 8px; }
-  #title { font-size: 20px; font-weight: 700; letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #artist { font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #artist {
+    margin-top: 3px; color: var(--muted); font-size: clamp(12px, 1vw, 14px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  #eq { display: flex; align-items: flex-end; gap: 3px; height: 26px; flex: none; opacity: .9; }
+  #eq i {
+    display: block; width: 3px; border-radius: 99px;
+    background: linear-gradient(180deg, #fff, var(--accent));
+    transform-origin: bottom; transform: scaleY(.25);
+    animation: eq 1.1s ease-in-out infinite;
+    box-shadow: 0 0 10px rgba(var(--accent-rgb), .35);
+  }
+  #eq i:nth-child(1) { height: 10px; animation-delay: -.9s; }
+  #eq i:nth-child(2) { height: 18px; animation-delay: -.45s; }
+  #eq i:nth-child(3) { height: 26px; animation-delay: -.7s; }
+  #eq i:nth-child(4) { height: 14px; animation-delay: -.2s; }
+  #eq.paused i { animation-play-state: paused; opacity: .35; }
+  @keyframes eq {
+    0%, 100% { transform: scaleY(.28); }
+    50% { transform: scaleY(1); }
+  }
+
   #lyric {
-    font-size: 30px;
-    font-weight: 800;
-    line-height: 1.28;
-    letter-spacing: .015em;
-    text-shadow: 0 3px 18px rgba(0, 0, 0, .48);
-    min-height: 1.28em;
+    font-size: clamp(28px, 3.35vw, 50px);
+    font-weight: 850;
+    line-height: 1.2;
+    letter-spacing: .005em;
+    min-height: 1.2em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    text-shadow: 0 4px 28px rgba(0, 0, 0, .58);
+    transition: opacity .2s ease;
+  }
+  #lyric.switching { animation: lyric-in .3s cubic-bezier(.2,.8,.2,1); }
+  @keyframes lyric-in {
+    from { opacity: .12; transform: translateY(9px); filter: blur(2px); }
+    to { opacity: 1; transform: translateY(0); filter: none; }
   }
   #lyric .plain { color: var(--text); }
   #lyric .w {
     --p: 0%;
     color: transparent;
-    background: linear-gradient(90deg, var(--accent) var(--p), rgba(255, 255, 255, .3) var(--p));
+    background: linear-gradient(90deg, var(--accent) var(--p), rgba(255,255,255,.26) var(--p));
     -webkit-background-clip: text;
     background-clip: text;
+    -webkit-text-fill-color: transparent;
   }
+  #lyric .w.active {
+    filter: drop-shadow(0 0 14px rgba(var(--accent-rgb), .42));
+  }
+  #lyric .placeholder { color: var(--faint); font-weight: 600; }
+
   #translation {
-    margin-top: 4px;
-    font-size: 16px;
+    margin-top: 7px; min-height: 1.3em;
+    font-size: clamp(13px, 1.25vw, 17px);
     color: var(--muted);
-    min-height: 1.25em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   #next {
-    margin-top: 8px;
-    font-size: 15px;
+    margin-top: 5px; min-height: 1.2em;
+    font-size: clamp(12px, 1.05vw, 15px);
     color: var(--faint);
-    min-height: 1.2em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+
   #progress {
-    margin-top: 14px;
-    height: 3px;
-    border-radius: 99px;
-    background: rgba(255, 255, 255, .14);
-    overflow: hidden;
+    margin-top: 16px; height: 4px; border-radius: 99px;
+    background: rgba(255, 255, 255, .12); overflow: hidden;
   }
   #progress-fill {
-    height: 100%; width: 0%;
-    border-radius: inherit;
-    background: var(--accent);
+    height: 100%; width: 0%; border-radius: inherit;
+    background: linear-gradient(90deg, var(--accent), rgba(var(--accent-rgb), .48));
+    box-shadow: 0 0 14px rgba(var(--accent-rgb), .5);
     transition: width .25s linear;
   }
+
   #brand {
-    position: fixed; right: 16px; bottom: 12px;
-    font-size: 11px; letter-spacing: .12em;
-    color: rgba(255, 255, 255, .26);
+    position: fixed; right: 18px; bottom: 12px;
+    font-size: 10px; letter-spacing: .16em;
+    color: rgba(255, 255, 255, .24);
+    pointer-events: none;
   }
-  #idle {
-    position: fixed; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px; color: rgba(255, 255, 255, .5);
-    background: transparent;
-  }
-  #obs.hide, #brand.hide, #idle.hide { display: none; }
-  body.cover-off #cover-wrap { display: none; }
   body.brand-off #brand { display: none; }
+  body.cover-off #cover-wrap { display: none; }
+  body.translation-off #translation { display: none; }
+  body.eq-off #eq { display: none; }
+
+  @media (max-width: 720px) {
+    #card { width: calc(100vw - 24px); bottom: 3vh; padding: 16px 18px; border-radius: 18px; }
+    #lyric { font-size: clamp(22px, 7vw, 34px); }
+    #top { gap: 10px; margin-bottom: 8px; }
+    #eq { display: none; }
+  }
 </style>
 </head>
 <body>
-  <div id="idle">qsyy 未在播放</div>
-  <div id="obs" aria-live="polite">
-    <div id="cover-wrap" class="empty"><img id="cover" alt=""></div>
-    <div id="copy">
-      <div id="meta"><div id="title"></div><div id="artist"></div></div>
-      <div id="lyric"></div>
+  <div id="stage">
+    <div id="ambient"></div>
+    <div id="glow"></div>
+    <div id="idle"><span class="pulse"></span> qsyy 未在播放</div>
+    <div id="card" role="status" aria-live="polite">
+      <div id="top">
+        <div id="cover-wrap"><img id="cover" alt=""><span class="cover-note">♪</span></div>
+        <div id="meta">
+          <div id="title"></div>
+          <div id="artist"></div>
+        </div>
+        <div id="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      </div>
+      <div id="lyric"><span class="placeholder">等待播放…</span></div>
       <div id="translation"></div>
       <div id="next"></div>
       <div id="progress"><div id="progress-fill"></div></div>
     </div>
+    <div id="brand">qsyy · OBS 歌词</div>
   </div>
-  <div id="brand">qsyy · OBS 歌词</div>
 <script>
 (() => {
   const params = new URLSearchParams(location.search);
@@ -141,25 +254,45 @@
   const showCover = params.get('cover') !== '0';
   const showBrand = params.get('brand') !== '0';
   const showTranslation = params.get('translation') !== '0';
+  const showEq = params.get('eq') !== '0';
   const accent = params.get('accent') || '';
+  const bg = params.get('bg') || '';
+  const inObs = Boolean(window.obsstudio) || /OBS/i.test(navigator.userAgent || '');
+
+  // Browser preview vs OBS transparency. `?bg=dark` forces the stage,
+  // `?bg=transparent` keeps the canvas clear even in a normal browser.
+  if (bg === 'dark' || (!inObs && bg !== 'transparent')) document.body.classList.add('preview');
+  if (params.get('ambient') === '1') document.body.classList.add('ambient');
   if (!showCover) document.body.classList.add('cover-off');
   if (!showBrand) document.body.classList.add('brand-off');
-  if (accent) document.documentElement.style.setProperty('--accent', accent);
+  if (!showTranslation) document.body.classList.add('translation-off');
+  if (!showEq) document.body.classList.add('eq-off');
+  if (align === 'left') document.body.classList.add('align-left');
+  if (params.get('mode') === 'stage') document.body.classList.add('stage-mode');
+  if (accent) {
+    document.documentElement.style.setProperty('--accent', accent);
+    const rgb = accent.match(/^#?([0-9a-f]{6})$/i)?.[1];
+    if (rgb) document.documentElement.style.setProperty('--accent-rgb',
+      `${parseInt(rgb.slice(0, 2), 16)}, ${parseInt(rgb.slice(2, 4), 16)}, ${parseInt(rgb.slice(4, 6), 16)}`);
+  }
 
   const $ = id => document.getElementById(id);
-  const obs = $('obs');
   const idle = $('idle');
+  const card = $('card');
   const cover = $('cover');
   const coverWrap = $('cover-wrap');
+  const ambient = $('ambient');
   const title = $('title');
   const artist = $('artist');
   const lyric = $('lyric');
   const translation = $('translation');
   const next = $('next');
   const progressFill = $('progress-fill');
-  if (align === 'left') obs.classList.remove('center');
-  else obs.classList.add('center');
-  lyric.style.fontSize = `${Math.round(30 * Math.max(0.6, Math.min(2.4, size)))}px`;
+  const eq = $('eq');
+  if (size !== 1) {
+    const scale = Math.max(0.58, Math.min(2.2, size));
+    lyric.style.fontSize = `clamp(${Math.round(22 * scale)}px, ${(3.35 * scale).toFixed(2)}vw, ${Math.round(50 * scale)}px)`;
+  }
 
   let state = null;
   let lastLineKey = '';
@@ -168,11 +301,7 @@
   let pollTimer = 0;
   let lyricsTrack = '';
   let lyricsData = null;
-
-  const fmt = ms => {
-    const total = Math.max(0, Math.round(Number(ms) || 0));
-    return `${Math.floor(total / 60000)}:${String(Math.floor((total % 60000) / 1000)).padStart(2, '0')}`;
-  };
+  let lastCover = '';
 
   const setText = (el, value) => {
     const text = String(value || '');
@@ -200,16 +329,72 @@
     return idx;
   };
 
-  const renderLineWords = (line) => {
+  // Pull a saturated accent out of the cover. The image is same-origin
+  // (/api/cover), so canvas reading is allowed; external covers fail silently.
+  const extractAccent = img => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 16;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, 16, 16);
+      const { data } = ctx.getImageData(0, 0, 16, 16);
+      let r = 0, g = 0, b = 0, weight = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const rr = data[i], gg = data[i + 1], bb = data[i + 2];
+        const mx = Math.max(rr, gg, bb), mn = Math.min(rr, gg, bb);
+        if (mx < 36) continue;
+        const sat = mx - mn;
+        if (sat < 10) continue;
+        const w = sat * (0.5 + mx / 255);
+        r += rr * w; g += gg * w; b += bb * w; weight += w;
+      }
+      if (!weight) return;
+      r = Math.round(r / weight); g = Math.round(g / weight); b = Math.round(b / weight);
+      const root = document.documentElement.style;
+      root.setProperty('--accent', `rgb(${r}, ${g}, ${b})`);
+      root.setProperty('--accent-rgb', `${r}, ${g}, ${b}`);
+    } catch (_) {}
+  };
+
+  const setCover = url => {
+    if (!url) {
+      cover.removeAttribute('src');
+      coverWrap.classList.remove('has-cover');
+      ambient.classList.remove('has-image');
+      ambient.style.opacity = '0';
+      lastCover = '';
+      return;
+    }
+    if (url === lastCover) return;
+    lastCover = url;
+    coverWrap.classList.add('has-cover');
+    cover.onload = () => {
+      if (lastCover !== url) return;
+      extractAccent(cover);
+      ambient.style.backgroundImage = `url("${url.replace(/"/g, '\\"')}")`;
+      ambient.classList.add('has-image');
+      if (document.body.classList.contains('preview') || document.body.classList.contains('ambient')) {
+        ambient.style.opacity = '0.52';
+      }
+    };
+    cover.src = url;
+  };
+
+  const renderLineWords = line => {
     if (lastWordLine === line) return;
     lastWordLine = line;
     lastWordSpans = [];
     lyric.textContent = '';
-    const words = Array.isArray(line?.words) ? line.words : null;
+    lyric.classList.remove('switching');
+    if (!line) {
+      lyric.innerHTML = '<span class="placeholder">等待播放…</span>';
+      return;
+    }
+    const words = Array.isArray(line.words) ? line.words : null;
     if (!words || !words.length) {
       const span = document.createElement('span');
       span.className = 'plain';
-      span.textContent = line?.text || '';
+      span.textContent = line.text || '';
       lyric.appendChild(span);
       return;
     }
@@ -232,7 +417,9 @@
       const progress = duration > 0
         ? (positionMs - (Number(word.t) || 0)) / duration
         : (positionMs >= (Number(word.t) || 0) ? 1 : 0);
-      lastWordSpans[i].style.setProperty('--p', `${Math.max(0, Math.min(1, progress)) * 100}%`);
+      const clamped = Math.max(0, Math.min(1, progress));
+      lastWordSpans[i].style.setProperty('--p', `${clamped * 100}%`);
+      lastWordSpans[i].classList.toggle('active', clamped > 0 && clamped < 1);
     }
   };
 
@@ -244,15 +431,14 @@
     const idx = lines.length ? lineIndexAt(lines, positionMs) : -1;
 
     const hasTrack = Boolean(track.title || track.id);
-    obs.classList.toggle('ready', hasTrack);
+    card.classList.toggle('ready', hasTrack);
     idle.classList.toggle('hide', hasTrack);
     if (!hasTrack) return;
 
     setText(title, track.title || '');
     setText(artist, track.artist || '');
-    coverWrap.classList.toggle('empty', !track.cover);
-    if (track.cover && cover.getAttribute('src') !== track.cover) cover.src = track.cover;
-    if (!track.cover) cover.removeAttribute('src');
+    setCover(track.cover || '');
+    eq.classList.toggle('paused', !state.playing);
 
     const line = idx >= 0 ? lines[idx] : null;
     const nextLine = idx + 1 < lines.length ? lines[idx + 1] : null;
@@ -261,9 +447,12 @@
       lastLineKey = key;
       lastWordLine = null;
       renderLineWords(line);
+      // Re-trigger the entrance animation for the new line.
+      void lyric.offsetWidth;
+      lyric.classList.add('switching');
     }
     if (line) paintWords(line, positionMs);
-    setText(translation, showTranslation ? (line?.cn || '') : '');
+    setText(translation, line?.cn || '');
     setText(next, nextLine ? nextLine.text : '');
 
     const duration = Number(track.duration) || 0;
@@ -277,13 +466,13 @@
       // Progress is polled often; the (potentially large) lyric document is
       // fetched only when the server says a different track's lyrics are live.
       const response = await fetch('/api/now-playing?lyrics=0', { cache: 'no-store' });
-      const next = await response.json();
-      const lyricsId = String(next.lyricsTrackId || '');
+      const nextState = await response.json();
+      const lyricsId = String(nextState.lyricsTrackId || '');
       if (lyricsId && lyricsId !== lyricsTrack) {
         try {
           const lyricResponse = await fetch('/api/lyrics/current', { cache: 'no-store' });
           const lyricPayload = await lyricResponse.json();
-          if (String(lyricPayload.track?.id || '') === String(next.track?.id || '')) {
+          if (String(lyricPayload.track?.id || '') === String(nextState.track?.id || '')) {
             lyricsData = lyricPayload.lyrics || null;
             lyricsTrack = lyricsId;
           } else {
@@ -298,11 +487,11 @@
         lyricsTrack = '';
         lyricsData = null;
       }
-      next.lyrics = next.lyrics || lyricsData;
-      state = next;
+      nextState.lyrics = nextState.lyrics || lyricsData;
+      state = nextState;
     } catch (_) {
       state = null;
-      obs.classList.remove('ready');
+      card.classList.remove('ready');
       idle.classList.remove('hide');
     }
     render();
