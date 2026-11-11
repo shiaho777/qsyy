@@ -2,12 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { motionValue } from 'framer-motion';
 import VisualizerTilt from './VisualizerTilt';
+import FluidBackground from './FluidBackground';
 import { DEFAULT_TILT_TUNING, type Line, type Theme } from './types';
-import { standingWave, waterline } from './waves';
-import { buildThemeIconArt } from './themeIcons';
-import { ICON_NAMES } from './icons';
-import { createRng } from './rng';
-import type { LineArtSpec } from './lineart';
 import './obs.css';
 
 const params = new URLSearchParams(location.search);
@@ -89,129 +85,6 @@ const currentLineIndexAt = (lines: Line[], seconds: number) => {
     else break;
   }
   return index;
-};
-
-// ---------------------------------------------------------------- backdrop
-// Folia line-art background: standing waves + a waterline + Lucide icon
-// polylines. The geometry (standingWave/waterline/themeIcons) is ported from
-// Folia's lumiere lineart, not hand-drawn here.
-const Backdrop: React.FC<{ accent: string; seed: string }> = ({ accent, seed }) => {
-  const ref = useRef<HTMLCanvasElement | null>(null);
-  const startedAt = useRef(performance.now());
-  useEffect(() => { startedAt.current = performance.now(); }, [seed]);
-
-  useEffect(() => {
-    const canvas = ref.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) return;
-    let raf = 0;
-    let width = 0;
-    let height = 0;
-    let dpr = 1;
-    let iconArt: LineArtSpec | null = null;
-    const rgb = (() => {
-      const match = accent.match(/^#?([0-9a-f]{6})$/i);
-      if (!match) return [125, 211, 252];
-      return [0, 2, 4].map(i => parseInt(match[1].slice(i, i + 2), 16));
-    })();
-    const rgba = alpha => `rgba(${rgb.join(',')}, ${alpha})`;
-
-    const resize = () => {
-      width = innerWidth; height = innerHeight;
-      dpr = Math.min(devicePixelRatio || 1, 1.5);
-      canvas.width = Math.round(width * dpr);
-      canvas.height = Math.round(height * dpr);
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const aspect = width / Math.max(1, height);
-      iconArt = buildThemeIconArt({
-        names: ICON_NAMES,
-        aspect,
-        avoid: { cx: aspect * .5, cy: .46, w: Math.min(.86, aspect * .8), h: .38 },
-        random: createRng(seed || 'tilt'),
-        offset: 0,
-        delay: .18,
-        alpha: .46,
-      });
-    };
-
-    const drawSpec = (spec: LineArtSpec, progress: number, time: number, alphaScale = 1) => {
-      if (!spec) return;
-      const scale = height;
-      for (const path of spec.paths) {
-        const local = Math.max(0, Math.min(1, (progress - path.delay) / Math.max(0.001, path.span)));
-        if (local <= 0) continue;
-        const points = path.points;
-        let total = 0;
-        const lengths = [0];
-        for (let i = 1; i < points.length; i += 1) {
-          total += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
-          lengths.push(total);
-        }
-        if (total <= 0) continue;
-        const target = total * local;
-        ctx.beginPath();
-        ctx.moveTo(points[0][0] * scale, points[0][1] * scale);
-        let drawn = 0;
-        for (let i = 1; i < points.length; i += 1) {
-          const segment = lengths[i] - lengths[i - 1];
-          if (drawn + segment > target) {
-            const f = (target - drawn) / segment;
-            ctx.lineTo(
-              (points[i - 1][0] + (points[i][0] - points[i - 1][0]) * f) * scale,
-              (points[i - 1][1] + (points[i][1] - points[i - 1][1]) * f) * scale,
-            );
-            break;
-          }
-          ctx.lineTo(points[i][0] * scale, points[i][1] * scale);
-          drawn += segment;
-        }
-        ctx.strokeStyle = rgba(path.alpha * alphaScale);
-        ctx.lineWidth = Math.max(0.6, path.width * scale);
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.stroke();
-      }
-      for (const node of spec.nodes) {
-        if (progress < node.delay) continue;
-        const twinkle = 0.55 + 0.45 * Math.sin(time * 1.7 + node.twinklePhase);
-        ctx.fillStyle = rgba((node.size * 18) * twinkle * alphaScale);
-        ctx.beginPath();
-        ctx.arc(node.at[0] * scale, node.at[1] * scale, Math.max(1, node.size * scale * .55), 0, Math.PI * 2);
-        ctx.fill();
-      }
-    };
-
-    const draw = (now: number) => {
-      raf = requestAnimationFrame(draw);
-      if (document.hidden) return;
-      const time = (now - startedAt.current) / 1000;
-      const aspect = width / Math.max(1, height);
-      const waveProgress = Math.min(1, time / 1.2);
-      const iconProgress = Math.min(1, time / 2.2);
-
-      ctx.clearRect(0, 0, width, height);
-      const glow = ctx.createRadialGradient(width * .5, height * .28, 0, width * .5, height * .5, Math.max(width, height) * .72);
-      glow.addColorStop(0, rgba(.11));
-      glow.addColorStop(.55, rgba(.035));
-      glow.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = glow;
-      ctx.fillRect(0, 0, width, height);
-
-      const waves = standingWave(aspect * .08, aspect * .92, .37, .065, 6, time * .35);
-      drawSpec(waves, waveProgress, time, 1);
-      drawSpec(waterline(aspect, .76, .018, 7, time * .22), waveProgress, time, .9);
-      if (iconArt) drawSpec(iconArt, iconProgress, time, 1.15);
-    };
-
-    resize();
-    window.addEventListener('resize', resize);
-    raf = requestAnimationFrame(draw);
-    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', resize); };
-  }, [accent, seed]);
-
-  return <canvas ref={ref} className="folio-backdrop" />;
 };
 
 // ---------------------------------------------------------------- player
@@ -320,7 +193,6 @@ const App: React.FC = () => {
     document.body.classList.toggle('transparent', transparent);
   }, []);
 
-  const accent = theme.accentColor;
   const activeLine = lineIndex >= 0 ? lines[lineIndex] : null;
   const nextLines = lineIndex >= 0 ? lines.slice(lineIndex + 1, lineIndex + 3) : lines.slice(0, 2);
   const seconds = currentTime.get();
@@ -329,7 +201,7 @@ const App: React.FC = () => {
 
   return (
     <>
-      {!transparent && <Backdrop accent={accent} seed={snapshot.track.id} />}
+      {!transparent && <FluidBackground coverUrl={snapshot.track.cover} theme={theme} />}
       <div className="folio-vignette" />
       <VisualizerTilt
         currentTime={currentTime}

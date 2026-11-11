@@ -120,3 +120,12 @@ body.transparent .folio-vignette { display: none; }
   .folio-meta { width: 120px; }
   .folio-subtitles { bottom: 11vh; }
 }
+.inset-0 { inset: 0; }
+.h-full { height: 100%; }
+.overflow-hidden { overflow: hidden; }
+.pointer-events-none { pointer-events: none; }
+.z-0 { z-index: 0; }
+.object-cover { object-fit: cover; }
+.transition-opacity { transition-property: opacity; }
+.duration-700 { transition-duration: 700ms; }
+.ease-out { transition-timing-function: ease-out; }
