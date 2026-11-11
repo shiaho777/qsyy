@@ -138,6 +138,38 @@
   }
   #lyric-main .placeholder { color: var(--faint); font-weight: 500; }
 
+  /* Tilt port: normal segments are horizontal, one randomly chosen segment is
+     italic and its graphemes alternate above/below the baseline. */
+  #tilt-lines { display: none; }
+  body.theme-tilt #tilt-lines { display: flex; }
+  body.theme-tilt #lyric-main { display: none; }
+  .tilt-lines {
+    flex-direction: column; align-items: center;
+    width: 100%; gap: clamp(2px, .45vw, 10px);
+    font-family: var(--lyric-font);
+  }
+  .tilt-seg {
+    white-space: nowrap; line-height: 1.3;
+    opacity: 0; transform: translateY(18px);
+    transition: opacity .5s ease, transform .6s cubic-bezier(.2,.8,.2,1);
+  }
+  .tilt-seg.visible { opacity: 1; transform: translateY(0); }
+  .tilt-seg.normal {
+    font-weight: 400; letter-spacing: .08em; color: var(--text);
+  }
+  .tilt-seg.tilt {
+    font-style: italic; font-weight: 300; letter-spacing: .15em; color: var(--accent);
+  }
+  .tilt-char {
+    display: inline-block;
+    opacity: 0;
+    transform: translateY(var(--y, 0)) scale(var(--s, 1));
+    transition: opacity .22s ease, transform .06s ease-out;
+    will-change: transform, opacity;
+  }
+  .tilt-char.visible { opacity: 1; }
+  .tilt-char.space { min-width: .28em; }
+
   #lyric-translation {
     margin-top: .45em; min-height: 1.35em;
     font-family: var(--sans);
@@ -259,6 +291,7 @@
   <main id="lyric-panel">
     <div id="lyric-prev"></div>
     <div id="lyric-main"><span class="placeholder">等待播放…</span></div>
+    <div id="tilt-lines" class="tilt-lines"></div>
     <div id="lyric-translation"></div>
     <div id="lyric-next"></div>
   </main>
@@ -302,6 +335,7 @@
   const lyricPanel = $('lyric-panel');
   const lyricPrev = $('lyric-prev');
   const lyricMain = $('lyric-main');
+  const tiltLines = $('tilt-lines');
   const lyricTranslation = $('lyric-translation');
   const lyricNext = $('lyric-next');
   const ghostPrev = $('ghost-prev');
@@ -413,6 +447,234 @@
     if (len > 22) return `clamp(42px, ${5.2 * size}vw, ${Math.round(96 * size)}px)`;
     return `clamp(52px, ${7 * size}vw, ${Math.round(126 * size)}px)`;
   };
+  // ------------------------------------------------------------ Tilt port
+  // The layout / char timing / tilt-pulse logic below is a direct port of
+  // Folia's VisualizerTilt: sentence splitting, one italic "tilt" segment,
+  // alternating grapheme offsets, sequential segment reveal and the per-char
+  // sine pulse. It is reimplemented in vanilla JS for qsyy's no-build page.
+  const TILT_SPLIT_PROBABILITY = 0.75;
+  const TILT_STYLE_PROBABILITY = 0.35;
+  const TILT_CHAR_REF_LENGTH = 20;
+  const TILT_LOG_OFFSET = 4;
+  const TILT_LINE_THRESHOLDS = [0.45, 1.05, 1.7];
+  const tiltSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const measureCanvas = document.createElement('canvas');
+  const measureCtx = measureCanvas.getContext('2d');
+  let tiltState = null;
+
+  const seededRandom = (seed, offset) => {
+    const x = Math.sin(seed * 1000 + offset) * 10000;
+    return x - Math.floor(x);
+  };
+  const tiltCharCount = text => Array.from(String(text || '').replace(/\s/g, '')).length;
+  const determineTiltLineCount = (charCount, seed) => {
+    const normalized = Math.log(charCount + TILT_LOG_OFFSET) / Math.log(TILT_CHAR_REF_LENGTH + TILT_LOG_OFFSET);
+    const jitter = seededRandom(seed, 1) * 0.6 + 0.7;
+    const score = normalized * jitter * TILT_SPLIT_PROBABILITY;
+    if (score < TILT_LINE_THRESHOLDS[0]) return 1;
+    if (score < TILT_LINE_THRESHOLDS[1]) return 2;
+    if (score < TILT_LINE_THRESHOLDS[2]) return 3;
+    return 4;
+  };
+  const splitTiltPunctuation = text => {
+    const parts = [];
+    const re = /[，。；！？、…·.,;!?]+/g;
+    let start = 0;
+    let match;
+    while ((match = re.exec(text))) {
+      let end = match.index + match[0].length;
+      while (text[end] === ' ') end += 1;
+      parts.push(text.slice(start, end));
+      start = end;
+    }
+    if (start < text.length) parts.push(text.slice(start));
+    return parts.map(part => part.trim()).filter(Boolean);
+  };
+  const partitionTiltParts = (parts, target, spaced) => {
+    if (parts.length <= target) return parts;
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const groups = Array.from({ length: target }, () => []);
+    let group = 0;
+    let consumed = 0;
+    for (const part of parts) {
+      if (group < target - 1 && consumed + part.length > (total * (group + 1)) / target) group += 1;
+      groups[group].push(part);
+      consumed += part.length;
+    }
+    return groups
+      .map(partsInGroup => partsInGroup.join(spaced ? ' ' : '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+  };
+  const splitTiltSentences = (text, target) => {
+    if (target <= 1) return [text];
+    const spaced = /\s/.test(text);
+    let parts = splitTiltPunctuation(text);
+    if (parts.length < target) {
+      const words = text.split(/\s+/).filter(Boolean);
+      if (words.length > parts.length) parts = words;
+    }
+    if (parts.length < target) {
+      const chars = Array.from(text);
+      const chunk = Math.max(1, Math.ceil(chars.length / target));
+      const chunks = [];
+      for (let i = 0; i < chars.length; i += chunk) chunks.push(chars.slice(i, i + chunk).join('').trim());
+      parts = chunks.filter(Boolean);
+    }
+    if (parts.length > target) parts = partitionTiltParts(parts, target, spaced);
+    return parts.length ? parts : [text];
+  };
+  const measureTiltText = (text, fontPx, italic = false) => {
+    const chars = Array.from(String(text || ''));
+    if (!measureCtx) return chars.length * fontPx * 0.72;
+    const family = getComputedStyle(tiltLines).fontFamily || 'sans-serif';
+    // Include the tracking used by .tilt-seg: normal 0.08em, tilt 0.15em.
+    measureCtx.font = `${italic ? 'italic ' : ''}${italic ? 300 : 400} ${fontPx}px ${family}`;
+    const tracking = fontPx * (italic ? 0.15 : 0.08);
+    return measureCtx.measureText(text).width + Math.max(0, chars.length - 1) * tracking;
+  };
+  const buildTiltLayout = line => {
+    const text = String(line?.text || '');
+    const seed = (Number(line?.ms) || 0) / 1000;
+    const count = determineTiltLineCount(tiltCharCount(text), seed);
+    const parts = splitTiltSentences(text, count);
+    const totalChars = Math.max(1, text.length);
+    let cursor = 0;
+    const segments = parts.map((part, index) => {
+      const found = text.indexOf(part, cursor);
+      const offset = found >= 0 ? found : cursor;
+      cursor = offset + part.length;
+      return { text: part, offset, tilt: false, short: false };
+    });
+    const candidates = segments.map((_, index) => index)
+      .filter(index => seededRandom(seed, 100 + index) < TILT_STYLE_PROBABILITY);
+    if (candidates.length) {
+      const pick = candidates[Math.floor(seededRandom(seed, 200) * candidates.length)];
+      if (segments[pick]) segments[pick].tilt = true;
+    }
+    if (segments.length > 1) {
+      const last = segments[segments.length - 1];
+      const before = segments[segments.length - 2];
+      if (!last.tilt && last.text.trim().length <= 2 && last.text.trim().length * 2 <= before.text.length) last.short = true;
+    }
+    const basePx = Math.min(window.innerWidth * 0.06875, 90) * Math.min(1.3, Math.max(0.8, size));
+    const widest = Math.max(...segments.map(segment => measureTiltText(segment.text, basePx, segment.tilt)));
+    const available = Math.max(320, window.innerWidth) * 0.85;
+    const scale = widest > available ? Math.max(0.5, available / widest) : 1;
+    const fontSize = basePx * scale;
+    return { segments, fontSize, yOffset: fontSize / 6, totalChars };
+  };
+  const buildLineCharTimings = line => {
+    const text = String(line?.text || '');
+    const graphemes = [...tiltSegmenter.segment(text)];
+    const timings = new Array(graphemes.length).fill(null);
+    const lineStart = Number(line?.ms) || 0;
+    const lineDur = Math.max(300, Number(line?.dur) || 3000);
+    let cursor = 0;
+    for (const word of (line?.words || [])) {
+      const wordText = String(word.w || '');
+      if (!wordText) continue;
+      const at = text.indexOf(wordText, cursor);
+      if (at < 0) continue;
+      const wordGraphemes = [...tiltSegmenter.segment(wordText)];
+      const chars = wordGraphemes.filter(g => !/^\s+$/.test(g.segment));
+      const duration = Math.max(50, Number(word.d) || 0);
+      let charIndex = 0;
+      for (let i = 0; i < wordGraphemes.length; i += 1) {
+        if (/^\s+$/.test(wordGraphemes[i].segment)) continue;
+        const index = at + i;
+        if (index < timings.length) {
+          timings[index] = {
+            start: (Number(word.t) || 0) + (charIndex / Math.max(1, chars.length)) * duration,
+            end: (Number(word.t) || 0) + ((charIndex + 1) / Math.max(1, chars.length)) * duration,
+          };
+        }
+        charIndex += 1;
+      }
+      cursor = at + wordText.length;
+    }
+    let lastKnown = lineStart;
+    for (let i = 0; i < timings.length; i += 1) {
+      if (timings[i]) { lastKnown = timings[i].end; continue; }
+      const ratio = i / Math.max(1, timings.length);
+      timings[i] = {
+        start: lineStart + lineDur * ratio,
+        end: lineStart + lineDur * (i + 1) / Math.max(1, timings.length),
+      };
+    }
+    return timings;
+  };
+  const getCharPulseIntensity = (currentTime, startTime, endTime) => {
+    const rawDuration = Math.max(endTime - startTime, 0.05);
+    const duration = Math.min(Math.max(rawDuration, 0.2), 0.9);
+    const elapsed = currentTime - startTime;
+    if (elapsed < 0) return 0;
+    if (elapsed <= duration) return Math.sin((elapsed / duration) * Math.PI);
+    const after = elapsed - duration;
+    const afterglow = duration * 1.2;
+    if (after >= afterglow) return 0.25;
+    return 0.25 * (after / afterglow);
+  };
+  const renderTiltLine = line => {
+    if (!line) {
+      tiltState = null;
+      tiltLines.innerHTML = '';
+      return;
+    }
+    const layout = buildTiltLayout(line);
+    const timings = buildLineCharTimings(line);
+    tiltLines.innerHTML = '';
+    const chars = [];
+    layout.segments.forEach((segment, segmentIndex) => {
+      const segmentEl = document.createElement('div');
+      segmentEl.className = `tilt-seg ${segment.tilt ? 'tilt' : 'normal'}${segment.short ? ' short' : ''}`;
+      segmentEl.style.fontSize = `${layout.fontSize * (segment.short ? 1.18 : 1)}px`;
+      const graphemes = [...tiltSegmenter.segment(segment.text)];
+      let visualIndex = 0;
+      graphemes.forEach((grapheme, graphemeIndex) => {
+        const isSpace = /^\s+$/.test(grapheme.segment);
+        const el = document.createElement('span');
+        el.className = `tilt-char${isSpace ? ' space' : ''}`;
+        el.textContent = isSpace ? '\u00A0' : grapheme.segment;
+        const y = segment.tilt && !isSpace ? (visualIndex % 2 === 0 ? -layout.yOffset : layout.yOffset) : 0;
+        el.style.setProperty('--y', `${y}px`);
+        const timing = timings[segment.offset + graphemeIndex] || null;
+        segmentEl.appendChild(el);
+        chars.push({ el, timing, tilt: segment.tilt, isSpace, segmentIndex });
+        if (!isSpace) visualIndex += 1;
+      });
+      tiltLines.appendChild(segmentEl);
+    });
+    tiltState = { line, layout, chars, segments: [...tiltLines.children] };
+  };
+  const paintTilt = (line, positionMs) => {
+    if (!tiltState || tiltState.line !== line) renderTiltLine(line);
+    if (!tiltState) return;
+    let visibleSegments = -1;
+    tiltState.chars.forEach(char => {
+      if (char.timing && positionMs >= char.timing.start - 250) visibleSegments = Math.max(visibleSegments, char.segmentIndex);
+    });
+    if (!state?.playing) visibleSegments = tiltState.segments.length - 1;
+    if (positionMs < (Number(line.ms) || 0) - 100) visibleSegments = -1;
+    tiltState.segments.forEach((segmentEl, index) => {
+      segmentEl.classList.toggle('visible', index <= visibleSegments);
+    });
+    for (const char of tiltState.chars) {
+      if (char.isSpace) { char.el.style.opacity = '1'; continue; }
+      if (!char.timing) {
+        char.el.style.opacity = '1';
+        char.el.style.setProperty('--s', '1');
+        continue;
+      }
+      const elapsed = positionMs - char.timing.start;
+      // Paused / paused-at-zero must still show the current line; while playing,
+      // unsung graphemes stay faintly readable and then fill in.
+      const alpha = !state?.playing ? 1 : (elapsed < 0 ? 0.14 : Math.min(1, elapsed / 220));
+      char.el.style.opacity = String(alpha);
+      const intensity = getCharPulseIntensity(positionMs / 1000, char.timing.start / 1000, char.timing.end / 1000);
+      char.el.style.setProperty('--s', String(1 + intensity * (char.tilt ? 0.18 : 0.15)));
+    }
+  };
+
   const renderWords = line => {
     if (lastWordLine === line) return;
     lastWordLine = line;
@@ -484,6 +746,19 @@
     const previous = idx > 0 ? lines[idx - 1] : null;
     const following = idx + 1 < lines.length ? lines[idx + 1] : null;
     const key = line ? `${line.ms}:${line.text}` : 'none';
+
+    if (theme === 'tilt') {
+      if (key !== lastLineKey) {
+        lastLineKey = key;
+        renderTiltLine(line);
+        setText(lyricPrev, previous ? previous.text : '');
+        setText(lyricNext, following ? following.text : '');
+      }
+      if (line) paintTilt(line, positionMs);
+      setText(lyricTranslation, line?.cn || '');
+      return;
+    }
+
     if (key !== lastLineKey) {
       lastLineKey = key;
       lastWordLine = null;
