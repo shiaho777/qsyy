@@ -10,7 +10,7 @@ const transparent = params.get('bg') === 'transparent';
 const showPill = params.get('pill') !== '0';
 
 const tiltParam = params.get('tilt');
-const tiltProbability = tiltParam === '1' ? 1 : (tiltParam == null ? 1 : Number(tiltParam));
+const tiltProbability = tiltParam === '1' ? 1 : (tiltParam == null ? 0.35 : Number(tiltParam));
 const tiltTuning = {
   ...DEFAULT_TILT_TUNING,
   ...(Number.isFinite(tiltProbability) ? { tiltStyleProbability: Math.max(0, Math.min(1, tiltProbability as number)) } : {}),
@@ -311,7 +311,6 @@ const App: React.FC = () => {
       {!transparent && <Backdrop accent={accent} />}
       <div className="folio-vignette" />
       <VisualizerTilt
-        key={`tilt-${lineIndex}`}
         currentTime={currentTime}
         currentLineIndex={lineIndex}
         lines={lines}

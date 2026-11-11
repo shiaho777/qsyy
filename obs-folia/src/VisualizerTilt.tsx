@@ -1,5 +1,3 @@
-// Ported from Folia (https://github.com/chthollyphile/folia-major)
-// AGPL-3.0. See ../NOTICE.md and ../LICENSE.
 import React, { useMemo, useState, useRef, useInsertionEffect, useLayoutEffect } from 'react';
 import { motion, AnimatePresence, MotionValue, motionValue } from 'framer-motion';
 import { useTranslation } from './i18n';
@@ -432,11 +430,10 @@ const TiltLine: React.FC<{
 
     if (!segment.isTilt) {
         return (
-            <div className="tilt-fade" style={{ opacity: visible ? 1 : 0 }}>
             <motion.div
-                initial={false}
-                animate={visible ? { y: 0 } : { y: 20 }}
-                exit={{ y: -12 }}
+                initial={{ opacity: 0, y: 20 }}
+                animate={visible ? { opacity: 1, y: 0 } : { opacity: 0, y: 20 }}
+                exit={{ opacity: 0, y: -12 }}
                 transition={{ duration: 0.55, ease: [0.25, 0.46, 0.45, 0.94] }}
                 className="whitespace-nowrap"
                 style={{
@@ -456,7 +453,17 @@ const TiltLine: React.FC<{
                     return (
                         <motion.span
                             key={ti}
-                            initial={false}
+                            initial={{ opacity: 0 }}
+                            animate={visible ? {
+                                opacity: 1,
+                            } : {
+                                opacity: 0,
+                            }}
+                            transition={{
+                                duration: 0.5,
+                                delay: visible && !isSpace ? ci * 0.04 : 0,
+                                ease: [0.25, 0.46, 0.45, 0.94],
+                            }}
                             className="inline-block"
                             style={{
                                 scale: charScaleMvs.current[ti],
@@ -469,16 +476,14 @@ const TiltLine: React.FC<{
                     );
                 })}
             </motion.div>
-            </div>
         );
     }
 
     return (
-        <div className="tilt-fade" style={{ opacity: visible ? 1 : 0 }}>
         <motion.div
-            initial={false}
-            animate={visible ? { y: 0, scale: 1 } : { y: 24, scale: 0.92 }}
-            exit={{ y: -16, scale: 0.95 }}
+            initial={{ opacity: 0, y: 24, scale: 0.92 }}
+            animate={visible ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 24, scale: 0.92 }}
+            exit={{ opacity: 0, y: -16, scale: 0.95 }}
             transition={{ duration: 0.6, ease: [0.25, 0.46, 0.45, 0.94] }}
             className="whitespace-nowrap"
             style={{
@@ -501,9 +506,22 @@ const TiltLine: React.FC<{
                 return (
                     <motion.span
                         key={ti}
-                        initial={false}
-                        animate={{ y: isSpace ? 0 : (visible ? yStagger * yOffset : yStagger * yOffset * 2) }}
-                        transition={{ duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}
+                        initial={{
+                            opacity: 0,
+                            y: isSpace ? 0 : yStagger * yOffset * 2,
+                        }}
+                        animate={visible ? {
+                            opacity: 1,
+                            y: isSpace ? 0 : yStagger * yOffset,
+                        } : {
+                            opacity: 0,
+                            y: isSpace ? 0 : yStagger * yOffset * 2,
+                        }}
+                        transition={{
+                            duration: 0.5,
+                            delay: visible && !isSpace ? ci * 0.05 : 0,
+                            ease: [0.25, 0.46, 0.45, 0.94],
+                        }}
                         className="inline-block"
                         style={{
                             scale: charScaleMvs.current[ti],
@@ -516,7 +534,6 @@ const TiltLine: React.FC<{
                 );
             })}
         </motion.div>
-        </div>
     );
 };
 
@@ -598,7 +615,7 @@ const VisualizerTilt: React.FC<VisualizerTiltProps & { staticMode?: boolean; }> 
                 }
             }
 
-            if (latest < activeLine.startTime - 0.1 || latest > getLineRenderEndTime(activeLine)) {
+            if (latest < activeLine.startTime - 0.1) {
                 targetIndex = -1;
             }
 
@@ -623,7 +640,7 @@ const VisualizerTilt: React.FC<VisualizerTiltProps & { staticMode?: boolean; }> 
                     {showText && activeLine && layout ? (
                         <motion.div
                             key={`tilt-${activeLine.startTime}`}
-                            initial={false}
+                            initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0, transition: { duration: 0.45, ease: 'easeInOut' } }}
                             className="flex flex-col items-center justify-center gap-y-3 sm:gap-y-4"
@@ -647,7 +664,7 @@ const VisualizerTilt: React.FC<VisualizerTiltProps & { staticMode?: boolean; }> 
                     ) : showText && !activeLine ? (
                         <motion.div
                             key="tilt-empty"
-                            initial={false}
+                            initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
                             className="text-2xl opacity-50 absolute"
