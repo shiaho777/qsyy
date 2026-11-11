@@ -3,6 +3,11 @@ import { createRoot } from 'react-dom/client';
 import { motionValue } from 'framer-motion';
 import VisualizerTilt from './VisualizerTilt';
 import { DEFAULT_TILT_TUNING, type Line, type Theme } from './types';
+import { standingWave, waterline } from './waves';
+import { buildThemeIconArt } from './themeIcons';
+import { ICON_NAMES } from './icons';
+import { createRng } from './rng';
+import type { LineArtSpec } from './lineart';
 import './obs.css';
 
 const params = new URLSearchParams(location.search);
@@ -87,8 +92,14 @@ const currentLineIndexAt = (lines: Line[], seconds: number) => {
 };
 
 // ---------------------------------------------------------------- backdrop
-const Backdrop: React.FC<{ accent: string }> = ({ accent }) => {
+// Folia line-art background: standing waves + a waterline + Lucide icon
+// polylines. The geometry (standingWave/waterline/themeIcons) is ported from
+// Folia's lumiere lineart, not hand-drawn here.
+const Backdrop: React.FC<{ accent: string; seed: string }> = ({ accent, seed }) => {
   const ref = useRef<HTMLCanvasElement | null>(null);
+  const startedAt = useRef(performance.now());
+  useEffect(() => { startedAt.current = performance.now(); }, [seed]);
+
   useEffect(() => {
     const canvas = ref.current;
     const ctx = canvas?.getContext('2d');
@@ -97,13 +108,14 @@ const Backdrop: React.FC<{ accent: string }> = ({ accent }) => {
     let width = 0;
     let height = 0;
     let dpr = 1;
-    const particles = Array.from({ length: 80 }, () => ({
-      x: Math.random(), y: Math.random(),
-      r: .7 + Math.random() * 2.2,
-      vy: -.01 - Math.random() * .03,
-      vx: -.01 + Math.random() * .02,
-      phase: Math.random() * Math.PI * 2,
-    }));
+    let iconArt: LineArtSpec | null = null;
+    const rgb = (() => {
+      const match = accent.match(/^#?([0-9a-f]{6})$/i);
+      if (!match) return [125, 211, 252];
+      return [0, 2, 4].map(i => parseInt(match[1].slice(i, i + 2), 16));
+    })();
+    const rgba = alpha => `rgba(${rgb.join(',')}, ${alpha})`;
+
     const resize = () => {
       width = innerWidth; height = innerHeight;
       dpr = Math.min(devicePixelRatio || 1, 1.5);
@@ -112,84 +124,93 @@ const Backdrop: React.FC<{ accent: string }> = ({ accent }) => {
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const aspect = width / Math.max(1, height);
+      iconArt = buildThemeIconArt({
+        names: ICON_NAMES,
+        aspect,
+        avoid: { cx: aspect * .5, cy: .46, w: Math.min(.86, aspect * .8), h: .38 },
+        random: createRng(seed || 'tilt'),
+        offset: 0,
+        delay: .18,
+        alpha: .46,
+      });
     };
-    const star = (x: number, y: number, r: number, rotation: number, alpha: number) => {
-      ctx.beginPath();
-      for (let i = 0; i < 10; i += 1) {
-        const radius = i % 2 ? r * .42 : r;
-        const angle = rotation + (i / 10) * Math.PI * 2 - Math.PI / 2;
-        if (i === 0) ctx.moveTo(x + Math.cos(angle) * radius, y + Math.sin(angle) * radius);
-        else ctx.lineTo(x + Math.cos(angle) * radius, y + Math.sin(angle) * radius);
+
+    const drawSpec = (spec: LineArtSpec, progress: number, time: number, alphaScale = 1) => {
+      if (!spec) return;
+      const scale = height;
+      for (const path of spec.paths) {
+        const local = Math.max(0, Math.min(1, (progress - path.delay) / Math.max(0.001, path.span)));
+        if (local <= 0) continue;
+        const points = path.points;
+        let total = 0;
+        const lengths = [0];
+        for (let i = 1; i < points.length; i += 1) {
+          total += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+          lengths.push(total);
+        }
+        if (total <= 0) continue;
+        const target = total * local;
+        ctx.beginPath();
+        ctx.moveTo(points[0][0] * scale, points[0][1] * scale);
+        let drawn = 0;
+        for (let i = 1; i < points.length; i += 1) {
+          const segment = lengths[i] - lengths[i - 1];
+          if (drawn + segment > target) {
+            const f = (target - drawn) / segment;
+            ctx.lineTo(
+              (points[i - 1][0] + (points[i][0] - points[i - 1][0]) * f) * scale,
+              (points[i - 1][1] + (points[i][1] - points[i - 1][1]) * f) * scale,
+            );
+            break;
+          }
+          ctx.lineTo(points[i][0] * scale, points[i][1] * scale);
+          drawn += segment;
+        }
+        ctx.strokeStyle = rgba(path.alpha * alphaScale);
+        ctx.lineWidth = Math.max(0.6, path.width * scale);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke();
       }
-      ctx.closePath();
-      ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
-    };
-    const cross = (x: number, y: number, size: number, rotation: number, alpha: number) => {
-      ctx.save(); ctx.translate(x, y); ctx.rotate(rotation);
-      ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
-      ctx.lineWidth = Math.max(4, size * .18);
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(-size / 2, 0); ctx.lineTo(size / 2, 0);
-      ctx.moveTo(0, -size / 2); ctx.lineTo(0, size / 2);
-      ctx.stroke(); ctx.restore();
-    };
-    const circle = (x: number, y: number, r: number, alpha: number) => {
-      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(255,255,255,${alpha})`; ctx.lineWidth = 1.1; ctx.stroke();
-    };
-    const squiggle = (x: number, y: number, w: number, amp: number, phase: number, alpha: number) => {
-      ctx.beginPath();
-      for (let i = 0; i <= 26; i += 1) {
-        const px = x + (i / 26 - .5) * w;
-        const py = y + Math.sin(i * .62 + phase) * amp;
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      for (const node of spec.nodes) {
+        if (progress < node.delay) continue;
+        const twinkle = 0.55 + 0.45 * Math.sin(time * 1.7 + node.twinklePhase);
+        ctx.fillStyle = rgba((node.size * 18) * twinkle * alphaScale);
+        ctx.beginPath();
+        ctx.arc(node.at[0] * scale, node.at[1] * scale, Math.max(1, node.size * scale * .55), 0, Math.PI * 2);
+        ctx.fill();
       }
-      ctx.strokeStyle = `rgba(255,255,255,${alpha})`; ctx.lineWidth = 1.1; ctx.stroke();
     };
+
     const draw = (now: number) => {
       raf = requestAnimationFrame(draw);
       if (document.hidden) return;
-      const t = now / 1000;
+      const time = (now - startedAt.current) / 1000;
+      const aspect = width / Math.max(1, height);
+      const waveProgress = Math.min(1, time / 1.2);
+      const iconProgress = Math.min(1, time / 2.2);
+
       ctx.clearRect(0, 0, width, height);
-      // faint lyric-sized triangle, like the Tilt/Folia stage
-      ctx.beginPath();
-      ctx.moveTo(width * .5, height * .1);
-      ctx.lineTo(width * .76, height * .92);
-      ctx.lineTo(width * .24, height * .92);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(125, 211, 252, .025)';
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255,255,255,.055)';
-      ctx.stroke();
-      cross(width * .88, height * .14, 54, .18, .09);
-      cross(width * .91, height * .36, 40, -.3, .065);
-      cross(width * .08, height * .58, 36, -.2, .055);
-      cross(width * .73, height * .78, 42, .4, .05);
-      circle(width * .17, height * .9, 90, .07);
-      circle(width * .80, height * .8, 120, .05);
-      star(width * .14, height * .9, 38, t * .02, .06);
-      star(width * .87, height * .26, 30, -t * .03, .055);
-      squiggle(width * .5, height * .12, width * .18, 16, t * .2, .06);
-      squiggle(width * .9, height * .55, width * .12, 12, -t * .2, .05);
-      ctx.globalCompositeOperation = 'lighter';
-      for (const p of particles) {
-        p.x += p.vx / 60 * 6; p.y += p.vy / 60 * 6;
-        if (p.y < -.05) p.y = 1.05;
-        if (p.x < -.05) p.x = 1.05;
-        if (p.x > 1.05) p.x = -.05;
-        ctx.fillStyle = `rgba(190, 225, 255, ${.10 + .18 * (0.5 + 0.5 * Math.sin(t + p.phase))})`;
-        ctx.beginPath(); ctx.arc(p.x * width, p.y * height, p.r, 0, Math.PI * 2); ctx.fill();
-      }
-      ctx.globalCompositeOperation = 'source-over';
+      const glow = ctx.createRadialGradient(width * .5, height * .28, 0, width * .5, height * .5, Math.max(width, height) * .72);
+      glow.addColorStop(0, rgba(.11));
+      glow.addColorStop(.55, rgba(.035));
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, width, height);
+
+      const waves = standingWave(aspect * .08, aspect * .92, .37, .065, 6, time * .35);
+      drawSpec(waves, waveProgress, time, 1);
+      drawSpec(waterline(aspect, .76, .018, 7, time * .22), waveProgress, time, .9);
+      if (iconArt) drawSpec(iconArt, iconProgress, time, 1.15);
     };
+
     resize();
     window.addEventListener('resize', resize);
     raf = requestAnimationFrame(draw);
     return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', resize); };
-  }, [accent]);
+  }, [accent, seed]);
+
   return <canvas ref={ref} className="folio-backdrop" />;
 };
 
@@ -308,7 +329,7 @@ const App: React.FC = () => {
 
   return (
     <>
-      {!transparent && <Backdrop accent={accent} />}
+      {!transparent && <Backdrop accent={accent} seed={snapshot.track.id} />}
       <div className="folio-vignette" />
       <VisualizerTilt
         currentTime={currentTime}
