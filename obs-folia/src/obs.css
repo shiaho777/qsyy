@@ -1,0 +1,122 @@
+:root {
+  --accent: #7dd3fc;
+  --text: #f8fafc;
+  --muted: rgba(226, 238, 255, .62);
+  --faint: rgba(226, 238, 255, .3);
+}
+* { box-sizing: border-box; }
+html, body, #root {
+  margin: 0; width: 100%; height: 100%; overflow: hidden;
+  background: #050914;
+}
+body {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+body.transparent { background: transparent; }
+
+.folio-backdrop { position: fixed; inset: 0; z-index: 0; width: 100%; height: 100%; pointer-events: none; }
+.folio-vignette {
+  position: fixed; inset: 0; z-index: 1; pointer-events: none;
+  background:
+    radial-gradient(90% 80% at 50% 40%, transparent 0%, rgba(0,0,0,.12) 60%, rgba(0,0,0,.58) 100%),
+    linear-gradient(180deg, rgba(0,0,0,.28), transparent 22%, transparent 72%, rgba(0,0,0,.52));
+}
+body.transparent .folio-vignette { display: none; }
+.folio-shell {
+  position: fixed; inset: 0; z-index: 2;
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+}
+
+.folio-subtitles {
+  position: fixed; left: 0; right: 0; bottom: 10vh; z-index: 4;
+  text-align: center; pointer-events: none;
+  padding: 0 5vw;
+}
+.folio-translation {
+  font-size: 18px;
+  text-shadow: 0 2px 18px rgba(0,0,0,.6);
+  line-height: 1.4;
+}
+.folio-upcoming {
+  margin-top: 6px;
+  color: var(--faint);
+  filter: blur(.4px);
+  text-shadow: 0 2px 14px rgba(0,0,0,.5);
+}
+
+.folio-player {
+  position: fixed; left: 50%; bottom: 2.6vh; z-index: 5;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 11px;
+  width: min(720px, 68vw);
+  padding: 9px 15px 9px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.13);
+  background: rgba(6, 10, 18, .76);
+  box-shadow: 0 16px 50px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.08);
+  backdrop-filter: blur(22px) saturate(1.2);
+}
+.folio-play {
+  width: 30px; height: 30px; border-radius: 50%; flex: none;
+  background: #f8fafc; display: grid; place-items: center;
+}
+.folio-play::before {
+  content: ""; width: 0; height: 0;
+  border-left: 8px solid #071018; border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+  margin-left: 2px;
+}
+.folio-play.playing::before {
+  width: 4px; height: 10px; border: 0; margin-left: 0;
+  background: #071018; box-shadow: 7px 0 0 #071018;
+}
+.folio-cover {
+  width: 34px; height: 34px; flex: none; position: relative; overflow: hidden;
+  border-radius: 50%; display: grid; place-items: center;
+  background: linear-gradient(135deg, rgba(125,211,252,.42), rgba(255,255,255,.08));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+  color: rgba(255,255,255,.76); font-size: 14px;
+}
+.folio-cover img { width: 100%; height: 100%; object-fit: cover; }
+.folio-meta { min-width: 0; width: 168px; flex: none; display: flex; flex-direction: column; }
+.folio-title { font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folio-artist { margin-top: 1px; font-size: 9px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folio-progress { flex: 1; height: 3px; border-radius: 99px; background: rgba(255,255,255,.13); overflow: hidden; }
+.folio-progress i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), rgba(125,211,252,.4)); box-shadow: 0 0 10px rgba(125,211,252,.5); transition: width .25s linear; }
+.folio-time { flex: none; color: var(--faint); font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.folio-idle {
+  position: fixed; inset: 0; z-index: 6; display: grid; place-items: center;
+  color: var(--muted); font-size: 15px; letter-spacing: .02em;
+}
+.folio-brand {
+  position: fixed; right: 18px; bottom: 12px; z-index: 5;
+  color: rgba(255,255,255,.24); font-size: 10px; letter-spacing: .15em;
+  pointer-events: none;
+}
+
+/* Tailwind utilities used by the kept-original Tilt component. */
+.whitespace-nowrap { white-space: nowrap; }
+.inline-block { display: inline-block; }
+.relative { position: relative; }
+.z-10 { z-index: 10; }
+.w-full { width: 100%; }
+.h-\[70vh\] { height: 70vh; }
+.flex { display: flex; }
+.items-center { align-items: center; }
+.justify-center { justify-content: center; }
+.p-8 { padding: 2rem; }
+.pointer-events-none { pointer-events: none; }
+.flex-col { flex-direction: column; }
+.gap-y-3 { row-gap: .75rem; }
+.text-2xl { font-size: 1.5rem; }
+.opacity-50 { opacity: .5; }
+.absolute { position: absolute; }
+@media (min-width: 640px) { .sm\:gap-y-4 { row-gap: 1rem; } }
+@media (max-width: 760px) {
+  .folio-player { width: calc(100vw - 24px); bottom: 2vh; }
+  .folio-meta { width: 120px; }
+  .folio-subtitles { bottom: 11vh; }
+}

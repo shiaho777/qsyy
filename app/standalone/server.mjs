@@ -2330,7 +2330,7 @@ const serverHandler = async (request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(staticFiles.index);
       return;
     }
-    for (const file of ['style.css', 'manifest.webmanifest', 'qr-signer.html', 'desktop-lyrics.html', 'obs.html', 'obs-card.html']) {
+    for (const file of ['style.css', 'manifest.webmanifest', 'qr-signer.html', 'desktop-lyrics.html', 'obs.html', 'obs-stage.html', 'obs-card.html']) {
       if (url.pathname === `/${file}`) {
         const types = {
           'style.css': 'text/css',
@@ -2338,6 +2338,7 @@ const serverHandler = async (request, response) => {
           'qr-signer.html': 'text/html',
           'desktop-lyrics.html': 'text/html',
           'obs.html': 'text/html',
+          'obs-stage.html': 'text/html',
           'obs-card.html': 'text/html',
         };
         response.writeHead(200, { 'content-type': `${types[file]}; charset=utf-8`, 'cache-control': 'no-store' })
@@ -2382,6 +2383,48 @@ const serverHandler = async (request, response) => {
         }
       }
       response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
+      return;
+    }
+
+    // Standalone Folia Tilt port (AGPL-3.0, see obs-folia/NOTICE.md).
+    if (url.pathname === '/obs-folia' || url.pathname === '/obs-folia/') {
+      try {
+        const html = fs.readFileSync(path.join(publicDir, 'obs-folia', 'index.html'));
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
+      } catch (_) {
+        response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('obs-folia build missing');
+      }
+      return;
+    }
+    if (url.pathname.startsWith('/obs-folia/')) {
+      const base = path.resolve(publicDir, 'obs-folia');
+      const rel = decodeURIComponent(url.pathname.slice('/obs-folia/'.length));
+      const file = path.resolve(base, rel);
+      const types = {
+        html: 'text/html; charset=utf-8',
+        js: 'text/javascript; charset=utf-8',
+        css: 'text/css; charset=utf-8',
+        json: 'application/json; charset=utf-8',
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        svg: 'image/svg+xml',
+        woff2: 'font/woff2',
+      };
+      const ext = path.extname(file).slice(1).toLowerCase();
+      if (!file.startsWith(base + path.sep) || !types[ext]) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        const data = fs.readFileSync(file);
+        response.writeHead(200, {
+          'content-type': types[ext],
+          'cache-control': ext === 'html' ? 'no-store' : 'public, max-age=3600',
+        }).end(data);
+      } catch (_) {
+        response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
+      }
       return;
     }
 
@@ -3566,6 +3609,7 @@ const staticFiles = (() => {
     get 'qr-signer.html'() { return load('qr-signer.html'); },
     get 'desktop-lyrics.html'() { return load('desktop-lyrics.html'); },
     get 'obs.html'() { return load('obs.html'); },
+    get 'obs-stage.html'() { return load('obs-stage.html'); },
     get 'obs-card.html'() { return load('obs-card.html'); },
     get 'sdk-glue.js'() { return load('security/sdk-glue.js'); },
     icon: name => load(`icons/${name}`),

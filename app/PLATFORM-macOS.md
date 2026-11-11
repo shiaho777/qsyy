@@ -159,7 +159,9 @@ app/
 | `GET /api/lyrics/:trackId?set=&source=` | 逐字歌词(v2 JSON + 标准 LRC)。`set` 指向缓存库时优先读同目录歌词文件,`source=local|qishui|auto` 控制来源,`fresh=1` 强制在线 |
 | `GET /api/lyrics/current` | 当前播放中的歌词快照(供 OBS / 本地集成) |
 | `GET` / `POST /api/now-playing` | 读取 / 更新当前播放状态(曲目、进度、播放状态、歌词、32 段频谱)；频谱驱动 OBS 页面的封面频谱环、粒子和波形 |
-| `GET /obs.html` | 全屏歌词舞台(Lumi / Tilt / Pendolo),可作 OBS 浏览器源 |
+| `GET /obs.html` | 重定向到 `/obs-folia/`(Folia Tilt 移植版,独立 AGPL-3.0 模块) |
+| `GET /obs-folia/` | Folia Tilt 全屏歌词舞台,可作 OBS 浏览器源 |
+| `GET /obs-stage.html` | qsyy 自研全屏舞台(Lumi / Tilt / Pendolo) |
 | `GET /obs-card.html` | 底部字幕卡片 / 透明叠加版(Aurora / Neon / Mirror) |
 | `GET /api/effects` · `/api/effects/:key` · `/api/effect-config?url=` | 音效目录 / 预置 DSP 链 / 智能音效配置 |
 | `GET /api/cover?url=` | 封面图代理 |
@@ -223,7 +225,7 @@ stores/<库>/<trackId>.t.lrc        # 翻译/第二语言
 
 每首歌的歌词时间轴偏移存在前端 `localStorage`(`qsyy-lyricOffsets`),
 不写回音频或歌词文件。当前播放状态通过 `POST /api/now-playing` 推给服务端,
-`/obs.html`、`/obs-card.html` 与 `/api/lyrics/current` 读取同一份快照。
+`/obs.html`、`/obs-stage.html`、`/obs-card.html` 与 `/api/lyrics/current` 读取同一份快照。
 
 ## 性能设计
 

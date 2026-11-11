@@ -1,0 +1,21 @@
+{
+  "name": "qsyy-obs-folia",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AGPL-3.0 standalone port of Folia's Tilt lyric visualizer for qsyy OBS",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "0.0.9",
+    "framer-motion": "13.4.3",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.1.1",
+    "vite": "8.3.1"
+  }
+}

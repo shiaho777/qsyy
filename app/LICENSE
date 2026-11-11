@@ -23,3 +23,11 @@ standard GPL.
 This notice does not grant permission to use QiShui (Soda Music) trademarks, servers,
 accounts, or copyrighted media. Use the plugin only with appropriate
 authorization and do not commit or distribute cached audio data.
+
+Third-party AGPL component
+--------------------------
+The optional OBS visualizer under `obs-folia/` (and its build output under
+`app/standalone/public/obs-folia/`) is copied/adapted from Folia
+(https://github.com/chthollyphile/folia-major) and is licensed separately
+under AGPL-3.0. See `obs-folia/LICENSE` and `obs-folia/NOTICE.md`. It is a
+separate page/module and is not part of the GPL-3.0 + non-commercial core.
