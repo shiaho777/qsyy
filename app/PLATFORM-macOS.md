@@ -158,9 +158,12 @@ app/
 | `GET /api/cache-status?ids=` | 批量查询客户端缓存 + 自有增量缓存状态(≤80 ids) |
 | `GET /api/lyrics/:trackId?set=&source=` | 逐字歌词(v2 JSON + 标准 LRC)。`set` 指向缓存库时优先读同目录歌词文件,`source=local|qishui|auto` 控制来源,`fresh=1` 强制在线 |
 | `GET /api/lyrics/current` | 当前播放中的歌词快照(供 OBS / 本地集成) |
-| `GET` / `POST /api/now-playing` | 读取 / 更新当前播放状态(曲目、进度、播放状态、歌词、32 段频谱)；频谱驱动 OBS 页面的封面频谱环、粒子和波形 |
+| `GET` / `POST /api/now-playing` | 读取 / 更新当前播放状态(曲目、进度、播放状态、随机/循环/音量、歌词、32 段频谱)；频谱驱动 OBS 页面的封面频谱环、粒子和波形 |
+| `GET` / `POST /api/player/control` | OBS 播放器控件 → 主页面的短期命令队列(播放/暂停、切歌、拖动进度、随机/循环、音量、跳队列;15 秒过期,同源写入) |
+| `GET /api/player/control/stream` | 同一命令队列的 SSE 推送(主页面订阅;后台标签页也能即时响应) |
+| `GET` / `POST /api/player/queue` | 当前播放队列快照(供 OBS 队列抽屉显示与跳转) |
 | `GET /obs.html` | 重定向到 `/obs-folia/`(Folia Tilt 移植版,独立 AGPL-3.0 模块) |
-| `GET /obs-folia/` | Folia Tilt 全屏歌词舞台,可作 OBS 浏览器源 |
+| `GET /obs-folia/` | Folia Tilt 全屏歌词舞台 + Folia 悬浮播放器胶囊(可作 OBS 浏览器源;`?controls=0` 隐藏控件) |
 | `GET /obs-stage.html` | qsyy 自研全屏舞台(Lumi / Tilt / Pendolo) |
 | `GET /obs-card.html` | 底部字幕卡片 / 透明叠加版(Aurora / Neon / Mirror) |
 | `GET /api/effects` · `/api/effects/:key` · `/api/effect-config?url=` | 音效目录 / 预置 DSP 链 / 智能音效配置 |

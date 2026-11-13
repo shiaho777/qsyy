@@ -64,7 +64,7 @@ qsyy 不做"模拟 EQ",而是**直接解析官方下发的音效配置,在浏览
 
 桌面版另有**桌面歌词**:透明置顶悬浮窗,与主窗口共用同一条时间轴逐字填色,有翻译时第二行显示翻译;悬停出现切歌 / 暂停 / 字号控制条,锁定后鼠标穿透。开关、位置与锁定状态跨启动保留。
 
-侧栏底部的 **OBS** 入口打开 `/obs.html`,现在指向 **Folia Tilt 移植版**:独立 AGPL-3.0 模块 `obs-folia/`,按 Folia 的 Tilt 源码逻辑保留 1–4 行概率切分、随机倾斜段、字符上下交替、逐段显示和逐字 sine 脉冲;背景直接移植 Folia 的 `FluidBackground`:封面解码后模糊、叠加主题色渐变与封面色调,不再自己画三角/十字/粒子/波浪;歌词层保留 Folia Tilt 原动画。源码与构建产物在 `obs-folia/` 和 `public/obs-folia/`,构建:`cd obs-folia && npm install && npm run build`。参数:`?tilt=1`(强制每行都有倾斜段)、`?tilt=0.35`(Folia 默认概率)、`?bg=transparent`、`?pill=0`、`?accent=hex`。
+侧栏底部的 **OBS** 入口打开 `/obs.html`,现在指向 **Folia Tilt 移植版**:独立 AGPL-3.0 模块 `obs-folia/`,按 Folia 的 Tilt 源码逻辑保留 1–4 行概率切分、随机倾斜段、字符上下交替、逐段显示和逐字 sine 脉冲;背景直接移植 Folia 的 `FluidBackground`:封面解码后模糊、叠加主题色渐变与封面色调,不再自己画三角/十字/粒子/波浪;歌词层保留 Folia Tilt 原动画;底部播放器按 Folia 的悬浮胶囊移植:悬停展开、点击固定,含播放/暂停、上一首/下一首、进度拖动、随机/循环、音量与播放队列,控件通过 `POST /api/player/control` 驱动主页面里真正持有 `<audio>` 的播放器。源码与构建产物在 `obs-folia/` 和 `public/obs-folia/`,构建:`cd obs-folia && npm install && npm run build`。参数:`?tilt=1`(强制每行都有倾斜段)、`?tilt=0.35`(Folia 默认概率)、`?bg=transparent`、`?pill=0`(隐藏播放器)、`?controls=open`(默认展开)、`?controls=0`(隐藏控件)、`?accent=hex`。
 
 需要 qsyy 自研的全屏舞台时用 `/obs-stage.html`(Lumi / Tilt / Pendolo 三套主题);需要底部字幕条 / 直播叠加时用 `/obs-card.html`(Aurora / Neon / Mirror)。`/obs.html` 会自动跳到 `/obs-folia/`。
 

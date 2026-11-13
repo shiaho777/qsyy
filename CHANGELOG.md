@@ -9,7 +9,7 @@
 ### 新功能
 - 歌词引擎支持本地 `.lrc` / `.vtt` / `.ttml` / `.qrc` / `.yrc` / `.krc` 文件，缓存库同名文件优先于在线歌词；支持 `lyrics/` 子目录、`.t.lrc` 翻译和 `[offset:]` 元数据；歌单包导出/导入会携带歌词 sidecar
 - 歌词面板新增 `−` / `＋` 时间轴微调（0.5 秒一档，`[` / `]` 也可），每首歌单独记住偏移
-- 新增 `/obs.html`：重定向到独立的 **AGPL-3.0 Folia Tilt 移植模块** `obs-folia/`，原样保留 Folia 的 1–4 行概率切分、随机倾斜段、字符上下交替、逐段显示和逐字 sine 脉冲，并直接移植 Folia 的 `FluidBackground`（封面模糊 + 主题色渐变 + 封面色调）作为背景，删除全部自绘装饰；`/obs-stage.html` 保留 qsyy 自研的 Lumi / Tilt / Pendolo 舞台，`/obs-card.html` 保留底部字幕卡片。同时新增 `GET /api/now-playing`、`POST /api/now-playing`、`GET /api/lyrics/current` 供本地集成使用
+- 新增 `/obs.html`：重定向到独立的 **AGPL-3.0 Folia Tilt 移植模块** `obs-folia/`，原样保留 Folia 的 1–4 行概率切分、随机倾斜段、字符上下交替、逐段显示和逐字 sine 脉冲，并直接移植 Folia 的 `FluidBackground`（封面模糊 + 主题色渐变 + 封面色调）作为背景，删除全部自绘装饰；底部播放器按 Folia 的悬浮胶囊移植，支持播放/暂停、上一首/下一首、拖动进度、随机/循环、音量、队列跳转与悬停展开，控件经 `POST /api/player/control` 驱动主页面播放器；`/obs-stage.html` 保留 qsyy 自研的 Lumi / Tilt / Pendolo 舞台，`/obs-card.html` 保留底部字幕卡片。同时新增 `GET /api/now-playing`、`POST /api/now-playing`、`GET /api/lyrics/current`、`GET` / `POST /api/player/control`、`GET` / `POST /api/player/queue` 供本地集成使用
 - 播放栏新增睡眠定时器：15/30/45/60/90 分钟，到点音量 30 秒渐出后暂停
 - 新增 `⌘K` / `Ctrl+K` 命令面板：搜索当前歌曲、歌单、缓存库，执行播放、歌词、全屏、下载、睡眠定时器和 OBS 等命令
 

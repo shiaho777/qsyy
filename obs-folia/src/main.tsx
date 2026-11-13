@@ -1,14 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { motionValue } from 'framer-motion';
 import VisualizerTilt from './VisualizerTilt';
 import FluidBackground from './FluidBackground';
+import PlayerControls from './PlayerControls';
 import { DEFAULT_TILT_TUNING, type Line, type Theme } from './types';
 import './obs.css';
 
 const params = new URLSearchParams(location.search);
 const transparent = params.get('bg') === 'transparent';
-const showPill = params.get('pill') !== '0';
+const showControls = params.get('pill') !== '0' && params.get('controls') !== '0';
 
 const tiltParam = params.get('tilt');
 const tiltProbability = tiltParam === '1' ? 1 : (tiltParam == null ? 0.35 : Number(tiltParam));
@@ -27,15 +28,15 @@ const theme: Theme = {
   animationIntensity: 'normal',
 };
 
-const fmt = (ms: number) => {
-  const total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-};
-
 type Snapshot = {
-  track: { id: string; title: string; artist: string; cover: string; duration: number };
+  track: { id: string; title: string; artist: string; album: string; cover: string; duration: number };
   position: number;
   playing: boolean;
+  shuffle: boolean;
+  repeat: 'off' | 'all' | 'one';
+  volume: number;
+  queueIndex: number;
+  queueLength: number;
   updatedAt: number;
   spectrum: number[] | null;
   lyricsTrackId: string;
@@ -43,9 +44,14 @@ type Snapshot = {
 };
 
 const emptySnapshot: Snapshot = {
-  track: { id: '', title: '', artist: '', cover: '', duration: 0 },
+  track: { id: '', title: '', artist: '', album: '', cover: '', duration: 0 },
   position: 0,
   playing: false,
+  shuffle: false,
+  repeat: 'off',
+  volume: 0.9,
+  queueIndex: 0,
+  queueLength: 0,
   updatedAt: 0,
   spectrum: null,
   lyricsTrackId: '',
@@ -87,27 +93,6 @@ const currentLineIndexAt = (lines: Line[], seconds: number) => {
   return index;
 };
 
-// ---------------------------------------------------------------- player
-const PlayerBar: React.FC<{ track: Snapshot['track']; position: number; playing: boolean }> = ({ track, position, playing }) => {
-  if (!showPill || !track.title) return null;
-  const duration = Number(track.duration) || 0;
-  const progress = duration > 0 ? Math.min(1, position / duration) : 0;
-  return (
-    <div className="folio-player">
-      <span className={`folio-play${playing ? ' playing' : ''}`} />
-      <span className="folio-cover">
-        {track.cover ? <img src={track.cover} alt="" /> : <span>♪</span>}
-      </span>
-      <span className="folio-meta">
-        <span className="folio-title">{track.title}</span>
-        <span className="folio-artist">{track.artist}</span>
-      </span>
-      <span className="folio-progress"><i style={{ width: `${(progress * 100).toFixed(2)}%` }} /></span>
-      <span className="folio-time">{fmt(position * 1000)} / {fmt(duration * 1000)}</span>
-    </div>
-  );
-};
-
 // ---------------------------------------------------------------- app
 const App: React.FC = () => {
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot);
@@ -122,6 +107,14 @@ const App: React.FC = () => {
   const lyricsTrackRef = useRef('');
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
+
+  const sendCommand = useCallback((action: string, value?: unknown) => {
+    fetch('/api/player/control', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action, value }),
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     let stopped = false;
@@ -150,11 +143,17 @@ const App: React.FC = () => {
             id: String(next.track?.id || ''),
             title: String(next.track?.title || ''),
             artist: String(next.track?.artist || ''),
+            album: String(next.track?.album || ''),
             cover: String(next.track?.cover || ''),
             duration: Number(next.track?.duration) || 0,
           },
           position: Number(next.position) || 0,
           playing: Boolean(next.playing),
+          shuffle: Boolean(next.shuffle),
+          repeat: next.repeat === 'all' || next.repeat === 'one' ? next.repeat : 'off',
+          volume: Number.isFinite(Number(next.volume)) ? Math.max(0, Math.min(1, Number(next.volume))) : 0.9,
+          queueIndex: Math.max(0, Number(next.queueIndex) || 0),
+          queueLength: Math.max(0, Number(next.queueLength) || 0),
           updatedAt: Number(next.updatedAt) || Date.now(),
           spectrum: Array.isArray(next.spectrum) ? next.spectrum : null,
           lyricsTrackId: lyricsId,
@@ -193,10 +192,7 @@ const App: React.FC = () => {
     document.body.classList.toggle('transparent', transparent);
   }, []);
 
-  const activeLine = lineIndex >= 0 ? lines[lineIndex] : null;
-  const nextLines = lineIndex >= 0 ? lines.slice(lineIndex + 1, lineIndex + 3) : lines.slice(0, 2);
   const seconds = currentTime.get();
-  const duration = Number(snapshot.track.duration) || 0;
   const playing = snapshot.playing;
 
   return (
@@ -225,7 +221,21 @@ const App: React.FC = () => {
         coverUrl={snapshot.track.cover}
         paused={!playing}
       />
-      <PlayerBar track={snapshot.track} position={seconds} playing={playing} />
+      {showControls && (
+        <PlayerControls
+          track={snapshot.track}
+          position={seconds}
+          status={{
+            playing,
+            shuffle: snapshot.shuffle,
+            repeat: snapshot.repeat,
+            volume: snapshot.volume,
+            queueIndex: snapshot.queueIndex,
+            queueLength: snapshot.queueLength,
+          }}
+          onCommand={sendCommand}
+        />
+      )}
       <div className="folio-brand">qsyy · TILT · Folia port</div>
     </>
   );

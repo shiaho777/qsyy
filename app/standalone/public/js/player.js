@@ -433,6 +433,24 @@ function persistQueue() {
       index: state.queueIndex,
     });
   } catch (_) {}
+  pushPlayerQueue();
+}
+
+// OBS / external overlays read the queue from the server. Send a compact copy
+// only when the queue actually changes (set + track switch), not per tick.
+function pushPlayerQueue() {
+  const items = state.queue.slice(0, 1000).map(t => ({
+    id: t.id,
+    title: t.name,
+    artist: (t.artists || []).join(' / '),
+    cover: trackCoverUrl(t, 140),
+    duration: (Number(t.duration) || 0) / 1000,
+  }));
+  fetch('/api/player/queue', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ index: state.queueIndex, items }),
+  }).catch(() => {});
 }
 
 function restoreQueue() {
@@ -728,6 +746,135 @@ if ($('p-repeat')) $('p-repeat').onclick = () => {
   ls.set('repeat', state.repeat); updateModeButtons();
   toast(state.repeat === 'off' ? '循环关' : state.repeat === 'all' ? '列表循环' : '单曲循环');
 };
+
+// ------------------------------------------------------------------ remote control (OBS overlay)
+// The overlay page is a separate browser context, so its transport buttons
+// write POST /api/player/control and this page executes them. Polling is
+// enough (sub-second latency, no extra SSE connection); commands expire after
+// 15 s server-side so a reloaded tab never replays stale presses.
+function setPlayerVolume(value) {
+  state.volume = Math.max(0, Math.min(1, Number(value) || 0));
+  audio.volume = state.volume;
+  ls.set('volume', state.volume);
+  if ($('p-vol')) {
+    $('p-vol').value = String(Math.round(state.volume * 100));
+    $('p-vol').style.setProperty('--fill', `${Math.round(state.volume * 100)}%`);
+  }
+  setVolIcon();
+  pushNowPlaying(true);
+}
+
+function applyPlayerCommand(command) {
+  const action = command?.action;
+  const value = command?.value;
+  if (action === 'toggle' || action === 'play' || action === 'pause') {
+    ensureGraph();
+    if (!audio.src) {
+      const visible = visibleTracks();
+      if (visible.length) setQueue(visible.slice(), 0);
+      return;
+    }
+    if (action === 'play') audio.play().catch(() => {});
+    else if (action === 'pause') audio.pause();
+    else if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+    return;
+  }
+  if (action === 'next') { ensureGraph(); playNextIndex(1); return; }
+  if (action === 'prev') { ensureGraph(); playNextIndex(-1); return; }
+  if (action === 'seek') {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && Number.isFinite(audio.duration) && audio.duration > 0) {
+      audio.currentTime = Math.max(0, Math.min(audio.duration, seconds));
+      pushNowPlaying(true);
+    }
+    return;
+  }
+  if (action === 'volume') { setPlayerVolume(value); return; }
+  if (action === 'shuffle') {
+    state.shuffle = Boolean(value);
+    ls.set('shuffle', state.shuffle);
+    updateModeButtons();
+    pushNowPlaying(true);
+    return;
+  }
+  if (action === 'repeat') {
+    if (value !== 'off' && value !== 'all' && value !== 'one') return;
+    state.repeat = value;
+    ls.set('repeat', state.repeat);
+    updateModeButtons();
+    pushNowPlaying(true);
+    return;
+  }
+  if (action === 'jump') {
+    const index = Number(value);
+    if (Number.isInteger(index) && index >= 0 && index < state.queue.length) {
+      state.queueIndex = index;
+      startCurrent();
+    }
+  }
+}
+
+let playerCommandSeq = null;
+let playerCommandApplied = 0;
+let playerControlStream = null;
+let playerCommandBusy = false;
+
+function applyPlayerCommands(commands) {
+  for (const command of Array.isArray(commands) ? commands : []) {
+    const seq = Number(command?.seq);
+    if (!Number.isFinite(seq) || seq <= playerCommandApplied) continue;
+    playerCommandApplied = seq;
+    applyPlayerCommand(command);
+  }
+}
+
+// SSE keeps controls responsive while the player tab is in the background
+// (background tabs throttle setInterval). The plain poll below is the
+// fallback and also covers commands sent while the stream is reconnecting;
+// both share playerCommandApplied so a command is never executed twice.
+function startPlayerControlStream() {
+  if (typeof EventSource !== 'function' || playerControlStream) return;
+  try {
+    playerControlStream = new EventSource('/api/player/control/stream');
+    playerControlStream.onmessage = event => {
+      try {
+        const data = JSON.parse(event.data);
+        const seq = Number(data.seq) || 0;
+        if (playerCommandSeq === null) playerCommandSeq = seq;
+        else playerCommandSeq = Math.max(playerCommandSeq, seq);
+        applyPlayerCommands(data.commands);
+      } catch (_) {}
+    };
+    playerControlStream.onerror = () => {
+      // EventSource reconnects on its own; polling continues meanwhile. If it
+      // gives up entirely, retry on a slow timer so background tabs recover.
+      if (playerControlStream?.readyState === EventSource.CLOSED) {
+        playerControlStream = null;
+        setTimeout(startPlayerControlStream, 5000);
+      }
+    };
+  } catch (_) { playerControlStream = null; }
+}
+
+async function pollPlayerCommands() {
+  if (playerCommandBusy) return;
+  playerCommandBusy = true;
+  try {
+    const query = playerCommandSeq === null ? '' : `?since=${playerCommandSeq}`;
+    const response = await fetch(`/api/player/control${query}`, { cache: 'no-store' });
+    if (!response.ok) return;
+    const data = await response.json();
+    const seq = Number(data.seq) || 0;
+    if (playerCommandSeq === null) { playerCommandSeq = seq; return; }
+    playerCommandSeq = Math.max(playerCommandSeq, seq);
+    applyPlayerCommands(data.commands);
+  } catch (_) {}
+  finally { playerCommandBusy = false; }
+}
+startPlayerControlStream();
+setInterval(pollPlayerCommands, 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { startPlayerControlStream(); pollPlayerCommands(); } });
+pollPlayerCommands();
 
 // ------------------------------------------------------------------ MediaSession (system media keys / Now Playing)
 
@@ -1167,7 +1314,7 @@ function pushNowPlaying(force = false) {
   const payload = {
     trackId: t.id,
     title: t.name,
-    artist: t.artists.join(' / '),
+    artist: (t.artists || []).join(' / '),
     album: t.album || '',
     cover: trackCoverUrl(t, 360),
     duration,
@@ -1175,6 +1322,11 @@ function pushNowPlaying(force = false) {
     // startCurrent() swaps audio.src; send the new track from zero.
     position: trackChanged ? 0 : (Number.isFinite(audio.currentTime) ? audio.currentTime : 0),
     playing: !audio.paused && !audio.ended,
+    shuffle: state.shuffle,
+    repeat: state.repeat,
+    volume: state.volume,
+    queueIndex: state.queueIndex,
+    queueLength: state.queue.length,
     spectrum: sampleSpectrum(),
     set: store,
   };

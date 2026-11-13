@@ -30,6 +30,7 @@ import { readClientCookies } from './cookies.mjs';
 import { buildLyrics, parseLyricFile } from './lyrics.mjs';
 import { parseTrustedUrl } from './net-guard.mjs';
 import { zipBuildStream, zipParse } from './zip.mjs';
+import { createPlayerControlHub } from './player-control.mjs';
 
 const require = createRequire(import.meta.url);
 const { RestoreService } = require('../bridge/lib/restore-service.js');
@@ -1558,6 +1559,7 @@ function collectLyricEntries(trackId, dir) {
 const nowPlayingState = {
   trackId: '', title: '', artist: '', album: '', cover: '',
   duration: 0, position: 0, playing: false, updatedAt: 0,
+  shuffle: false, repeat: 'off', volume: 0.9, queueIndex: 0, queueLength: 0,
   spectrum: null, lyrics: null, lyricsTrackId: '',
 };
 const TEXT_LIMIT = 500;
@@ -1597,6 +1599,11 @@ function updateNowPlaying(input = {}) {
   if (input.duration !== undefined) nowPlayingState.duration = cleanNumber(input.duration);
   if (input.position !== undefined) nowPlayingState.position = cleanNumber(input.position);
   if (input.playing !== undefined) nowPlayingState.playing = Boolean(input.playing);
+  if (input.shuffle !== undefined) nowPlayingState.shuffle = Boolean(input.shuffle);
+  if (input.repeat === 'off' || input.repeat === 'all' || input.repeat === 'one') nowPlayingState.repeat = input.repeat;
+  if (input.volume !== undefined) nowPlayingState.volume = Math.max(0, Math.min(1, cleanNumber(input.volume)));
+  if (input.queueIndex !== undefined) nowPlayingState.queueIndex = Math.round(cleanNumber(input.queueIndex));
+  if (input.queueLength !== undefined) nowPlayingState.queueLength = Math.round(cleanNumber(input.queueLength));
   if (Array.isArray(input.spectrum)) {
     nowPlayingState.spectrum = input.spectrum.slice(0, 64).map(value => {
       const n = Number(value);
@@ -1632,12 +1639,64 @@ function nowPlayingPayload(includeLyrics = true) {
     },
     position: nowPlayingState.position,
     playing: nowPlayingState.playing,
+    shuffle: nowPlayingState.shuffle,
+    repeat: nowPlayingState.repeat,
+    volume: nowPlayingState.volume,
+    queueIndex: nowPlayingState.queueIndex,
+    queueLength: nowPlayingState.queueLength,
     updatedAt: nowPlayingState.updatedAt,
     spectrum: nowPlayingState.spectrum,
     lyricsTrackId: nowPlayingState.lyricsTrackId,
     lyrics: includeLyrics ? nowPlayingState.lyrics : undefined,
   };
 }
+
+// ---------------------------------------------------------------- player control (OBS → main app)
+// The browser page owns the audio element, so the OBS overlay cannot drive it
+// directly. It POSTs an action here; the page polls a small, expiring log and
+// executes it. Commands are intentionally ephemeral: an OBS scene left open
+// overnight must not replay yesterday's pause press when the page reloads.
+const playerControl = createPlayerControlHub({ ttl: 15000, limit: 64 });
+const playerControlClients = new Set();
+
+function broadcastPlayerCommand(command) {
+  const payload = `data: ${JSON.stringify({ ok: true, seq: playerControl.seq, commands: [command] })}\n\n`;
+  for (const client of playerControlClients) {
+    try { client.write(payload); } catch (_) { playerControlClients.delete(client); }
+  }
+}
+
+function sameOriginControl(request) {
+  const origin = request.headers.origin;
+  if (!origin) return true; // curl / native shells
+  try {
+    return new URL(origin).host === (request.headers.host || '');
+  } catch (_) {
+    return false;
+  }
+}
+
+const playerQueueState = { index: 0, items: [], updatedAt: 0 };
+const cleanQueueItem = item => ({
+  id: cleanText(item?.id).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 128),
+  title: cleanText(item?.title),
+  artist: cleanText(item?.artist),
+  cover: cleanCover(item?.cover),
+  duration: cleanNumber(item?.duration),
+});
+const updatePlayerQueue = input => {
+  const items = (Array.isArray(input?.items) ? input.items : [])
+    .slice(0, 1000)
+    .map(cleanQueueItem)
+    .filter(item => item.title);
+  playerQueueState.items = items;
+  playerQueueState.index = Math.max(0, Math.min(items.length - 1, Math.round(cleanNumber(input?.index))));
+  playerQueueState.updatedAt = Date.now();
+  // Keep the read-only now-playing snapshot in step even if the page has not
+  // sent its next progress tick yet.
+  nowPlayingState.queueIndex = playerQueueState.index;
+  nowPlayingState.queueLength = items.length;
+};
 // 自定义位置:用户选的是父目录,库按名在其下建子目录。校验:可创建可写、
 // 不能落在已有库内部;指向默认 STORES_ROOT 时回落默认(不写注册表)。
 function resolveStoreParent(rawDir) {
@@ -3407,6 +3466,67 @@ const serverHandler = async (request, response) => {
     if (route === 'POST /api/now-playing') {
       try {
         updateNowPlaying(await readBody(request));
+        sendJson(response, 200, { ok: true });
+      } catch (error) {
+        sendJson(response, 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+    if (route === 'GET /api/player/control/stream') {
+      response.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        'access-control-allow-origin': '*',
+      });
+      response.write(`data: ${JSON.stringify({ ok: true, seq: playerControl.seq, commands: [] })}\n\n`);
+      playerControlClients.add(response);
+      const keepAlive = setInterval(() => {
+        try { response.write(':ping\n\n'); } catch (_) { clearInterval(keepAlive); playerControlClients.delete(response); }
+      }, 25000);
+      request.on('close', () => { clearInterval(keepAlive); playerControlClients.delete(response); });
+      return;
+    }
+    if (route === 'GET /api/player/control') {
+      const sinceParam = url.searchParams.get('since');
+      const since = Number(sinceParam);
+      sendJson(response, 200, {
+        ok: true,
+        seq: playerControl.seq,
+        commands: sinceParam === null || !Number.isFinite(since) ? [] : playerControl.pending(since),
+      });
+      return;
+    }
+    if (route === 'POST /api/player/control') {
+      if (!sameOriginControl(request)) {
+        sendJson(response, 403, { ok: false, error: 'forbidden' });
+        return;
+      }
+      try {
+        const input = await readBody(request);
+        const command = playerControl.push(input.action, input.value);
+        if (!command) {
+          sendJson(response, 400, { ok: false, error: 'unknown action' });
+          return;
+        }
+        broadcastPlayerCommand(command);
+        sendJson(response, 200, { ok: true, command });
+      } catch (error) {
+        sendJson(response, 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+    if (route === 'GET /api/player/queue') {
+      sendJson(response, 200, { ok: true, ...playerQueueState });
+      return;
+    }
+    if (route === 'POST /api/player/queue') {
+      if (!sameOriginControl(request)) {
+        sendJson(response, 403, { ok: false, error: 'forbidden' });
+        return;
+      }
+      try {
+        updatePlayerQueue(await readBody(request));
         sendJson(response, 200, { ok: true });
       } catch (error) {
         sendJson(response, 400, { ok: false, error: error.message });
