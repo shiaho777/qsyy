@@ -164,7 +164,11 @@ body.locked #lock { background: rgba(0,0,0,.55); color: #fff; }
         ? line.words.map(w => `<span class="w">${esc(w.w)}</span>`).join('')
         : `<span class="w">${esc(line.text)}</span>`;
       const next = lines[idx + 1];
-      sub = line.cn ? esc(line.cn) : next ? esc(next.text) : '';
+      // 副行优先级:翻译 > 背景人声(带自己的翻译) > 罗马音 > 下一句预览
+      if (line.cn) sub = esc(line.cn);
+      else if (line.bg && line.bg.text) sub = esc(line.bg.text) + (line.bg.cn ? ` · ${esc(line.bg.cn)}` : '');
+      else if (line.roman) sub = esc(line.roman);
+      else sub = next ? esc(next.text) : '';
     }
     setLine(l1, main, true);
     setLine(l2, sub, true);

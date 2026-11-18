@@ -49,6 +49,9 @@
         <a id="gh-link" href="https://github.com/shiaho777/qsyy" target="_blank" rel="noopener" title="在 GitHub 上查看 qsyy"><svg class="ic solid" viewBox="0 0 24 24"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg></a>
         <span id="app-version" class="app-version"></span>
         <button id="check-update" class="update-btn" title="对比 GitHub 最新 Release 检查更新">检查更新</button>
+        <label class="auto-upd" title="启动后自动静默检查新版本"><input id="update-auto" type="checkbox" checked><span class="auto-upd-track" aria-hidden="true"></span><span class="auto-upd-text">自动</span></label>
+        <button id="ob-replay" class="foot-mini-btn" type="button" title="重新查看首次使用引导">引导</button>
+        <a id="obs-link" class="obs-link" href="/obs.html" target="_blank" rel="noopener" title="OBS 歌词覆盖层（透明背景）">OBS</a>
       </div>
     </div>
   </aside>
@@ -136,10 +139,24 @@
       <button id="p-lyrics-btn" class="side-btn" title="歌词"><svg class="ic" viewBox="0 0 24 24"><path d="M5 5h14M5 9.5h14M5 14h9M5 18.5h6"/></svg></button>
       <button id="p-queue-btn" class="side-btn" title="播放队列"><svg class="ic" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span id="p-queue-count" class="count"></span></button>
       <span class="vol-wrap"><span id="p-vol-icon" title="静音切换"></span><input id="p-vol" type="range" min="0" max="100" value="90" title="音量"></span>
+      <button id="p-sleep-btn" class="side-btn" title="睡眠定时器"><svg class="ic" viewBox="0 0 24 24"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7z"/></svg><span id="p-sleep-count" class="count"></span></button>
       <button id="p-downloads-btn" class="side-btn" title="下载任务"><svg class="ic" viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19.5h14"/></svg></button>
     </div>
     <audio id="audio" preload="none"></audio>
   </footer>
+
+  <div id="sleep-pop" class="sleep-pop hidden" aria-hidden="true">
+    <div class="sleep-title">睡眠定时器</div>
+    <div class="sleep-options">
+      <button type="button" data-min="15">15 分钟</button>
+      <button type="button" data-min="30">30 分钟</button>
+      <button type="button" data-min="45">45 分钟</button>
+      <button type="button" data-min="60">60 分钟</button>
+      <button type="button" data-min="90">90 分钟</button>
+    </div>
+    <button id="sleep-off" class="sleep-off" type="button">关闭定时器</button>
+    <div id="sleep-hint" class="sleep-hint">到点后音量渐出并暂停</div>
+  </div>
 
   <div id="queue-panel" class="panel hidden">
     <header>播放队列 <button id="close-queue" class="panel-close"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
@@ -152,7 +169,25 @@
   </div>
 
   <div id="lyrics-panel" class="panel lyrics-panel hidden">
-    <header><span id="lyrics-title">歌词</span> <button id="lyrics-close" class="panel-close"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
+    <header>
+      <span id="lyrics-title">歌词</span>
+      <span class="lyrics-tools" title="歌词时间轴偏移；只影响这首歌">
+        <button id="lyric-offset-down" class="lyric-offset-btn" type="button" title="歌词提前 0.5 秒">−</button>
+        <span id="lyric-offset-label" class="lyric-offset-label">0.0s</span>
+        <button id="lyric-offset-up" class="lyric-offset-btn" type="button" title="歌词延后 0.5 秒">＋</button>
+        <button id="lyric-offset-reset" class="lyric-offset-reset" type="button" title="恢复这首歌的默认偏移">重置</button>
+        <button id="lyric-match-btn" class="lyric-offset-reset" type="button" title="从社区 TTML 库手动匹配这首歌的逐字歌词">匹配歌词</button>
+      </span>
+      <button id="lyrics-close" class="panel-close"><svg class="ic" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </header>
+    <div id="lyric-match-pop" class="lyric-match-pop hidden">
+      <div class="lyric-match-head">
+        <input id="lyric-match-input" type="text" placeholder="歌名（可加歌手）…" autocomplete="off">
+        <button id="lyric-match-go" type="button">搜索</button>
+      </div>
+      <div id="lyric-match-list" class="lyric-match-list"></div>
+      <div class="lyric-match-foot">来自 amll-ttml-db 社区库（CC0）· 选中后覆盖这首歌的歌词缓存</div>
+    </div>
     <div id="lyrics-body" class="panel-body lyrics-body">
       <div id="lyrics-empty" class="lyrics-empty">播放一首歌来查看歌词</div>
       <div id="lyrics-lines" class="lyrics-lines"></div>
@@ -321,9 +356,96 @@
     <button id="ce-close" class="ce-close" title="关闭 (Esc)">✕</button>
   </div>
 
+  <div id="cmdk" class="cmdk hidden" aria-hidden="true">
+    <div class="cmdk-card" role="dialog" aria-modal="true" aria-label="命令面板">
+      <div class="cmdk-search">
+        <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <input id="cmdk-input" type="text" placeholder="搜索歌曲、歌单、缓存库或命令…" autocomplete="off" spellcheck="false">
+        <kbd>Esc</kbd>
+      </div>
+      <div id="cmdk-results" class="cmdk-results" role="listbox"></div>
+      <div class="cmdk-foot"><span>↑↓ 选择</span><span>↵ 执行</span><span>⌘K / Ctrl+K 打开</span></div>
+    </div>
+  </div>
+
+  <div id="update-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card update-card" role="dialog" aria-modal="true" aria-labelledby="upd-title">
+      <div id="upd-title" class="modal-title"></div>
+      <div id="upd-sub" class="modal-sub"></div>
+      <div id="upd-changelog" class="upd-changelog"></div>
+      <div id="upd-actions" class="modal-actions">
+        <button id="upd-download" class="btn primary" type="button">前往下载</button>
+        <button id="upd-skip" class="btn ghost" type="button">跳过此版本</button>
+        <button id="upd-later" class="btn ghost" type="button">稍后</button>
+      </div>
+      <div id="upd-done-actions" class="modal-actions hidden">
+        <a id="upd-changelog-link" class="btn primary" href="https://github.com/shiaho777/qsyy/blob/main/CHANGELOG.md" target="_blank" rel="noopener">查看更新日志</a>
+        <button id="upd-done-ok" class="btn ghost" type="button">知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="onboarding" class="onboarding hidden" aria-hidden="true">
+    <div class="ob-card" role="dialog" aria-modal="true" aria-label="首次使用引导">
+      <button id="ob-skip" class="ob-skip" type="button">跳过</button>
+      <div class="ob-screens">
+        <section class="ob-screen active" data-ob="0">
+          <img class="ob-logo" src="/icons/favicon.svg" alt="qsyy">
+          <h1 class="ob-name">qsyy</h1>
+          <p class="ob-line">复用汽水音乐客户端的登录与缓存，在浏览器里听你的歌</p>
+          <p class="ob-wish">初次使用，希望你玩得开心</p>
+        </section>
+        <section class="ob-screen" data-ob="1">
+          <h2 class="ob-heading">它能做什么</h2>
+          <div class="ob-cards">
+            <div class="ob-feat">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M5 5h14M5 9.5h14M5 14h9M5 18.5h6"/></svg>
+              <div class="ob-feat-t">逐字歌词 · 官方音效</div>
+              <div class="ob-feat-d">逐字时间轴歌词与汽水官方音效还原，听感与客户端一致</div>
+            </div>
+            <div class="ob-feat">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19.5h14"/></svg>
+              <div class="ob-feat-t">缓存直读 · 下载转码</div>
+              <div class="ob-feat-d">直接读取客户端缓存，可下载并转码为 M4A / MP3 / FLAC 等格式</div>
+            </div>
+            <div class="ob-feat">
+              <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M7 10h10M9 13.5h6M9 20.5h6"/></svg>
+              <div class="ob-feat-t">OBS 歌词舞台</div>
+              <div class="ob-feat-d">透明背景歌词覆盖层与全屏舞台，直播录屏即插即用</div>
+            </div>
+          </div>
+        </section>
+        <section class="ob-screen" data-ob="2">
+          <h2 class="ob-heading">社区与作者</h2>
+          <p class="ob-line">qsyy 是开源项目，欢迎来看看、提问题、动手改进</p>
+          <div class="ob-links">
+            <a class="ob-link" href="https://github.com/shiaho777/qsyy" target="_blank" rel="noopener">
+              <svg class="ic solid" viewBox="0 0 24 24"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+              GitHub 仓库</a>
+            <a class="ob-link" href="https://github.com/shiaho777/qsyy/issues" target="_blank" rel="noopener">
+              <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v5"/><circle cx="12" cy="16" r=".4"/></svg>
+              反馈问题</a>
+            <a class="ob-link" href="https://github.com/shiaho777/qsyy/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M14 5l-4 14"/></svg>
+              参与贡献</a>
+          </div>
+        </section>
+      </div>
+      <div class="ob-foot">
+        <div id="ob-dots" class="ob-dots">
+          <button class="ob-dot active" type="button" data-ob-dot="0" aria-label="第 1 屏"></button>
+          <button class="ob-dot" type="button" data-ob-dot="1" aria-label="第 2 屏"></button>
+          <button class="ob-dot" type="button" data-ob-dot="2" aria-label="第 3 屏"></button>
+        </div>
+        <button id="ob-next" class="btn primary" type="button">下一屏</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toasts" class="toasts"></div>
 </div>
 <script src="/js/core.js"></script>
+<script src="/js/cover-theme.js"></script>
 <script src="/js/data.js"></script>
 <script src="/js/ordering.js"></script>
 <script src="/js/effects.js"></script>
@@ -331,6 +453,9 @@
 <script src="/js/library.js"></script>
 <script src="/js/export.js"></script>
 <script src="/js/player.js"></script>
+<script src="/js/sleep-timer.js"></script>
+<script src="/js/command-palette.js"></script>
+<script src="/js/onboarding.js"></script>
 <script src="/js/about.js"></script>
 </body>
 </html>

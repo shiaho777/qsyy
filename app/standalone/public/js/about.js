@@ -1,12 +1,125 @@
 // ------------------------------------------------------------------ about/update
 
-function cmpVersion(a, b) {
-  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+// 纯函数:三段 semver 比较,容忍 v 前缀与缺段(1.2 视为 1.2.0);a>b → 1,a<b → -1
+function compareVersions(a, b) {
+  const norm = v => String(v ?? '').trim().replace(/^v/i, '').split('.').map(x => parseInt(x, 10) || 0);
+  const pa = norm(a), pb = norm(b);
+  for (let i = 0; i < 3; i += 1) {
     const d = (pa[i] || 0) - (pb[i] || 0);
     if (d) return d > 0 ? 1 : -1;
   }
   return 0;
+}
+
+// 服务端聚合的最新 release(带缓存);失败/ok:false 返回 null,调用方自行回退
+async function fetchLatestRelease() {
+  try {
+    const r = await api('/api/release/latest');
+    if (r?.ok && (r.version || r.tag)) return r;
+  } catch (_) {}
+  return null;
+}
+
+// ---- 极简安全 Markdown 渲染:先 esc() 再做受限替换,只产出白名单标签 ----
+// 支持:#/##/### 标题、- 无序列表、1. 有序列表、**粗体**、`行内代码`、
+// [文字](http/https 链接)、段落;其余一律按纯文本处理。
+function mdInline(text) {
+  let s = esc(text);
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // 链接最后替换;URL 只允许 http/https,且排除 < 与空白,防止属性逃逸
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)<]+)\)/g,
+    (_, label, url) => `<a href="${url}" target="_blank" rel="noopener">${label}</a>`);
+  return s;
+}
+function renderReleaseNotes(md) {
+  const out = [];
+  let list = null, para = [];
+  const flushPara = () => { if (para.length) { out.push(`<p>${mdInline(para.join(' '))}</p>`); para = []; } };
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (const raw of String(md ?? '').split(/\r?\n/)) {
+    const t = raw.trim();
+    if (!t) { flushPara(); closeList(); continue; }
+    const h = /^(#{1,3})\s+(.*)$/.exec(t);
+    if (h) { flushPara(); closeList(); out.push(`<h${h[1].length}>${mdInline(h[2])}</h${h[1].length}>`); continue; }
+    if (/^-\s+/.test(t)) {
+      flushPara();
+      if (list !== 'ul') { closeList(); out.push('<ul>'); list = 'ul'; }
+      out.push(`<li>${mdInline(t.replace(/^-\s+/, ''))}</li>`);
+      continue;
+    }
+    const ol = /^\d+[.)]\s+(.*)$/.exec(t);
+    if (ol) {
+      flushPara();
+      if (list !== 'ol') { closeList(); out.push('<ol>'); list = 'ol'; }
+      out.push(`<li>${mdInline(ol[1])}</li>`);
+      continue;
+    }
+    closeList();
+    para.push(t);
+  }
+  flushPara(); closeList();
+  return out.join('');
+}
+
+// ---- 更新弹窗(新版本 / 已更新 两种形态共用一个 modal) ----
+let updCurrent = null; // 当前展示的新版本 release(前往下载 / 跳过此版本用)
+function openUpdateModalEl() {
+  const m = $('update-modal');
+  if (!m) return;
+  m.classList.remove('hidden');
+  requestAnimationFrame(() => m.classList.add('open'));
+}
+function closeUpdateModal() {
+  const m = $('update-modal');
+  if (!m) return;
+  m.classList.remove('open');
+  setTimeout(() => m.classList.add('hidden'), 220);
+}
+function showReleaseModal(rel, local) {
+  updCurrent = rel;
+  const ver = rel.version || String(rel.tag || '').replace(/^v/, '');
+  $('upd-title').textContent = `发现新版本 v${ver}`;
+  $('upd-sub').textContent = [rel.name || '', local && local !== 'dev' ? `当前 v${local}` : ''].filter(Boolean).join(' · ');
+  const cl = $('upd-changelog');
+  cl.innerHTML = renderReleaseNotes(rel.body); // 外部内容只经安全渲染器进入 DOM
+  cl.classList.remove('hidden');
+  $('upd-actions').classList.remove('hidden');
+  $('upd-done-actions').classList.add('hidden');
+  openUpdateModalEl();
+}
+function showUpdatedModal(version) {
+  updCurrent = null;
+  $('upd-title').textContent = `已更新到 v${version}`;
+  $('upd-sub').textContent = '感谢使用 qsyy，看看这一版都改了什么';
+  $('upd-changelog').classList.add('hidden');
+  $('upd-actions').classList.add('hidden');
+  $('upd-done-actions').classList.remove('hidden');
+  openUpdateModalEl();
+}
+
+// 启动时的更新提示:同一次启动最多弹一个更新相关弹窗;首启引导显示过则全不弹
+async function initUpdateNotices(local) {
+  if (!local || local === 'dev') return;
+  const seen = ls.get('last-seen-version', null);
+  let justUpdated = false;
+  if (seen === null) ls.set('last-seen-version', local); // 首次安装:只写键,不弹
+  else if (seen !== local) { justUpdated = true; ls.set('last-seen-version', local); }
+  const blocked = () => window.qsyyOnboardingShown === true || !!window.qsyyOnboardingVisible?.();
+  if (justUpdated) {
+    if (!blocked()) showUpdatedModal(local);
+    return;
+  }
+  if (ls.get('update-auto', true) === false) return;
+  setTimeout(async () => {
+    if (blocked()) return;
+    const rel = await fetchLatestRelease();
+    if (!rel || blocked()) return;
+    const ver = rel.version || String(rel.tag || '').replace(/^v/, '');
+    if (compareVersions(ver, local) <= 0) return;
+    if (ls.get('update-skip', '') === ver) return; // 跳过此版本:不再自动弹
+    showReleaseModal(rel, local);
+  }, 8000);
 }
 
 async function loadAppVersion() {
@@ -14,7 +127,8 @@ async function loadAppVersion() {
     const v = await api('/api/version');
     if (v?.version && v.version !== 'dev') $('app-version').textContent = `v${v.version}`;
     if (v?.shell) state.shell = v.shell;
-  } catch (_) {}
+    return v?.version || '';
+  } catch (_) { return ''; }
 }
 
 async function checkUpdate() {
@@ -25,10 +139,21 @@ async function checkUpdate() {
   try {
     const info = await api('/api/version').catch(() => ({}));
     const local = info?.version || 'dev';
+    // 主通道:服务端聚合的 release(带缓存与 changelog),弹更新弹窗
+    const rel = await fetchLatestRelease();
+    if (rel) {
+      const ver = rel.version || String(rel.tag || '').replace(/^v/, '');
+      if (local !== 'dev' && compareVersions(ver, local) <= 0) {
+        toast(`已是最新 v${local}`, 'ok');
+        return;
+      }
+      showReleaseModal(rel, local);
+      return;
+    }
+    // 回退:现有 GitHub 直连逻辑。共享出口 IP 撞未登录限流(403)是常态,
+    // 失败不报错,静默走服务端网页跳转兜底。
     const repoPath = new URL($('gh-link').href).pathname; // 单一来源:页面的仓库链接
     let tag = '';
-    // 主通道:GitHub API(快)。共享出口 IP 撞上未登录限流(403)是常态，
-    // 失败不报错，静默走服务端兜底。
     try {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), 8000);
@@ -37,7 +162,6 @@ async function checkUpdate() {
         if (r.ok) tag = (await r.json()).tag_name || '';
       } finally { clearTimeout(timer); }
     } catch (_) {}
-    // 兜底:服务端读 github.com 网页跳转拿 tag(不受 API 限流影响)
     if (!tag) {
       try { tag = (await api('/api/latest-release')).tag || ''; } catch (_) {}
     }
@@ -46,8 +170,8 @@ async function checkUpdate() {
       window.open(`${$('gh-link').href}/releases`, '_blank');
       return;
     }
-    if (local !== 'dev' && cmpVersion(tag.replace(/^v/, ''), local) <= 0) {
-      toast(`已是最新版 v${local}`, 'ok');
+    if (local !== 'dev' && compareVersions(tag.replace(/^v/, ''), local) <= 0) {
+      toast(`已是最新 v${local}`, 'ok');
       return;
     }
     toast(`发现新版 ${tag}(当前 ${local === 'dev' ? 'dev' : `v${local}`})，正在打开…`, 'ok');
@@ -104,6 +228,28 @@ setInterval(loadStats, 10 * 60 * 1000);
     else toast('还没有缓存库 — 点「我的缓存」的 ＋ 同步或导入', 'err');
   };
   if ($('check-update')) $('check-update').onclick = checkUpdate;
+  // 自动检查更新开关(默认开)
+  const autoChk = $('update-auto');
+  if (autoChk) {
+    autoChk.checked = ls.get('update-auto', true) !== false;
+    autoChk.onchange = () => ls.set('update-auto', autoChk.checked);
+  }
+  // 更新弹窗按钮
+  const updModal = $('update-modal');
+  if (updModal) updModal.addEventListener('click', e => { if (e.target === updModal) closeUpdateModal(); });
+  if ($('upd-download')) $('upd-download').onclick = () => {
+    const url = updCurrent?.url;
+    if (/^https?:\/\//.test(url || '')) window.open(url, '_blank', 'noopener');
+    else window.open(`${$('gh-link').href}/releases`, '_blank', 'noopener');
+    closeUpdateModal();
+  };
+  if ($('upd-skip')) $('upd-skip').onclick = () => {
+    const ver = updCurrent?.version || String(updCurrent?.tag || '').replace(/^v/, '');
+    if (ver) { ls.set('update-skip', ver); toast(`已跳过 v${ver}，下个新版本再提醒`); }
+    closeUpdateModal();
+  };
+  if ($('upd-later')) $('upd-later').onclick = closeUpdateModal;
+  if ($('upd-done-ok')) $('upd-done-ok').onclick = closeUpdateModal;
   // 选完文件 → 弹窗里问 合并/替换(单入口导入);＋ 的"导入压缩包"走自动取名建新库
   if ($('restore-file')) $('restore-file').onchange = async e => {
     const file = e.target.files?.[0];
@@ -288,7 +434,7 @@ setInterval(loadStats, 10 * 60 * 1000);
     // loadPlaylists may fail without 汽水 login — that must not block the
     // library-first path: local store import/browse/play work logged-out.
     loadStats();
-    loadAppVersion();
+    loadAppVersion().then(v => initUpdateNotices(v));
     loadMe().catch(() => {});
     // 首页是汽水歌单,成员来自歌单接口。缓存库是同一套界面的另一种打开方式,
     // 不在启动时新建,也不用磁盘文件代替歌单。

@@ -97,58 +97,8 @@ function armImgs(root) { root.querySelectorAll('img').forEach(armImg); }
 // 左下深 → 右上浅)。官方色值来自接口 cover_color.base_five_color,此处用 canvas
 // 自采样:16x16 抽样,饱和度加权取主色,再按官方截图实测(底 L≈18-29%,顶 L≈30-48%,
 // 顶≈底x1.7)派生深/中/浅三档写进 @property 注册的颜色变量,渐变随切歌平滑过渡。
-const glowCanvas = document.createElement('canvas');
-const clamp01 = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-const hslStr = (h, s, l) =>
-  `hsl(${Math.round(h)},${Math.round(clamp01(s, 0, 1) * 100)}%,${Math.round(clamp01(l, 0, 1) * 100)}%)`;
-function applyCoverGlow(url) {
-  if (!url) return;
-  const img = new Image();
-  img.onload = () => {
-    try {
-      const sz = 16;
-      glowCanvas.width = glowCanvas.height = sz;
-      const ctx = glowCanvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0, sz, sz);
-      const { data } = ctx.getImageData(0, 0, sz, sz);
-      let r = 0, g = 0, b = 0, wSum = 0;
-      for (let i = 0; i < data.length; i += 4) {
-        const rr = data[i], gg = data[i + 1], bb = data[i + 2];
-        const mx = Math.max(rr, gg, bb), mn = Math.min(rr, gg, bb);
-        if (mx < 36) continue;                    // 跳过近黑
-        const sat = mx - mn;
-        if (sat < 10) continue;                   // 跳过灰白
-        const w = sat * (0.5 + mx / 255);         // 饱和且亮的像素权重大
-        r += rr * w; g += gg * w; b += bb * w; wSum += w;
-      }
-      if (!wSum) return;
-      r /= wSum; g /= wSum; b /= wSum;
-      const rs = document.documentElement.style;
-      rs.setProperty('--glow', `${Math.round(r)},${Math.round(g)},${Math.round(b)}`);
-      // RGB → HSL
-      const rn = r / 255, gn = g / 255, bn = b / 255;
-      const cmax = Math.max(rn, gn, bn), cmin = Math.min(rn, gn, bn);
-      const l = (cmax + cmin) / 2, d = cmax - cmin;
-      const sH = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
-      let h = 0;
-      if (d > 0) {
-        if (cmax === rn) h = 60 * (((gn - bn) / d) % 6);
-        else if (cmax === gn) h = 60 * ((bn - rn) / d + 2);
-        else h = 60 * ((rn - gn) / d + 4);
-      }
-      h = (h + 360) % 360;
-      // 派生三档:底 L≈18-29% → 顶 L≈30-48%(≈1.7 倍),饱和度收拢防艳俗
-      const sB = clamp01(sH * 0.95, 0.10, 0.48);
-      const sT = clamp01(sH * 0.9, 0.08, 0.42);
-      const lB = clamp01(0.13 + 0.24 * l, 0.13, 0.30);
-      const lT = clamp01(lB * (1.25 + 0.5 * l) + 0.03, 0.28, 0.47);
-      rs.setProperty('--th-deep', hslStr(h, sB, lB));
-      rs.setProperty('--th-mid', hslStr(h, (sB + sT) / 2, (lB + lT) * 0.47));
-      rs.setProperty('--th-lite', hslStr(h, sT, lT));
-    } catch (_) {}
-  };
-  img.src = url;
-}
+// 封面取色主题已抽到 cover-theme.js(面积聚类 + OKLCH 强调色),
+// 加载顺序在本文件之后,重定义 applyCoverGlow;调用方签名不变。
 // 封面 CDN 绝对 URL(播放建档落盘/导出打包用);coverUrl 是其代理形态
 function coverCdnUrl(info, size = 300) {
   if (!info?.uri) return '';

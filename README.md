@@ -60,7 +60,17 @@ qsyy 不做"模拟 EQ",而是**直接解析官方下发的音效配置,在浏览
 
 官方 K 歌格式逐字还原:每行 `[startMs,durMs]` 后跟逐字时间标签,前端逐字渐变高亮、平滑滚动居中、点击任意字跳转;翻译行按毫秒与原文对齐同步显示。歌词随播放解析落盘,面板打开即毫秒级命中。
 
+歌词不只来自汽水:缓存库/导入包可以在音频旁放同名的 `.lrc` / `.vtt` / `.ttml` / `.qrc` / `.yrc` / `.krc` 文件(也支持 `lyrics/` 子目录和 `.t.lrc` 翻译),优先于在线歌词;歌单包导出/导入会把这些歌词一起带走。面板里的 `−` / `＋` 可以按 0.5 秒微调时间轴,每首歌单独记住偏移,`[` / `]` 也能调整。
+
 桌面版另有**桌面歌词**:透明置顶悬浮窗,与主窗口共用同一条时间轴逐字填色,有翻译时第二行显示翻译;悬停出现切歌 / 暂停 / 字号控制条,锁定后鼠标穿透。开关、位置与锁定状态跨启动保留。
+
+侧栏底部的 **OBS** 入口打开 `/obs.html`,现在指向 **Folia Tilt 移植版**:独立 AGPL-3.0 模块 `obs-folia/`,按 Folia 的 Tilt 源码逻辑保留 1–4 行概率切分、随机倾斜段、字符上下交替、逐段显示和逐字 sine 脉冲;背景直接移植 Folia 的 `FluidBackground`:封面解码后模糊、叠加主题色渐变与封面色调,不再自己画三角/十字/粒子/波浪;歌词层保留 Folia Tilt 原动画;底部播放器按 Folia 的悬浮胶囊移植:悬停展开、点击固定,含播放/暂停、上一首/下一首、进度拖动、随机/循环、音量与播放队列,控件通过 `POST /api/player/control` 驱动主页面里真正持有 `<audio>` 的播放器。源码与构建产物在 `obs-folia/` 和 `public/obs-folia/`,构建:`cd obs-folia && npm install && npm run build`。参数:`?tilt=1`(强制每行都有倾斜段)、`?tilt=0.35`(Folia 默认概率)、`?bg=transparent`、`?pill=0`(隐藏播放器)、`?controls=open`(默认展开)、`?controls=0`(隐藏控件)、`?accent=hex`。
+
+需要 qsyy 自研的全屏舞台时用 `/obs-stage.html`(Lumi / Tilt / Pendolo 三套主题);需要底部字幕条 / 直播叠加时用 `/obs-card.html`(Aurora / Neon / Mirror)。`/obs.html` 会自动跳到 `/obs-folia/`。
+
+### 睡眠定时器
+
+播放栏的月亮按钮可以设置 15/30/45/60/90 分钟定时器;到点后音量在 30 秒内渐出并暂停,期间手动播放或调音量会取消渐出。适合睡前听歌。
 
 ## 快速开始
 
@@ -125,6 +135,8 @@ docker build -t ghcr.io/shiaho777/qsyy:local .
 | `空格` | 播放 / 暂停 |
 | `←` / `→` | 快退 / 快进 5 秒 |
 | `↑` / `↓` | 音量 ±5% |
+| `⌘K` / `Ctrl+K` | 打开命令面板（搜索歌曲 / 歌单 / 缓存库 / 命令） |
+| `[` / `]` | 歌词提前 / 延后 0.25 秒 |
 
 系统媒体键(播放 / 暂停 / 上一首 / 下一首 / 拖动进度)通过 MediaSession 全端可用;输入框聚焦时快捷键自动让位。
 
@@ -154,7 +166,7 @@ QSYY_HOST=0.0.0.0 npm run standalone
 - [x] Windows 平台适配(客户端自动定位、Cookie 读取、签名库加载)
 - [x] Android 移动端适配(响应式 UI、抽屉侧栏、PWA 安装、LAN 访问)
 - [x] 三端客户端发版(macOS dmg / Windows NSIS / Android apk,tag 自动构建)
-- [ ] 歌单导入 / 导出
+- [x] 歌单导入 / 导出(zip 歌单包,携带歌词 sidecar)
 - [ ] 更多音效与可视化
 
 欢迎通过 Issue / PR 参与共建!
@@ -195,6 +207,29 @@ QSYY_HOST=0.0.0.0 npm run standalone
 
 [![Star History Chart](https://api.star-history.com/svg?repos=shiaho777/qsyy&type=Date)](https://star-history.com/#shiaho777/qsyy&Date)
 
+## 隐私与网络请求
+
+**零遥测、零广告、零账号注册。** 所有数据留在本机,以下是全部出站请求清单:
+
+| 请求目标 | 用途 | 触发时机 |
+|---|---|---|
+| 汽水音乐官方 API / CDN | 歌单、播放直链、歌词、封面、音效配置 | 浏览与播放时(复用你本机客户端的登录态) |
+| `github.com` / `api.github.com` | 检查新版本 | 启动后自动检查(可关)或手动点击 |
+| `raw.githubusercontent.com` 及镜像(ghproxy / jsDelivr) | 社区 TTML 歌词兜底(amll-ttml-db,CC0) | 官方歌词缺逐字时间轴时;索引缓存 24h |
+
+- 客户端 Cookie 仅在本机读取与使用,**不上传到任何第三方**;会话文件以 0600 权限落盘
+- 缓存解密产物、歌词、设置全部存于本机缓存目录,歌单可导出为开放 zip 格式
+- 服务默认只监听回环地址;`--host` 开放局域网是你的显式选择
+- 安全漏洞上报见 [SECURITY.md](./SECURITY.md)
+
+## 下载校验
+
+每个 Release 附 `SHA256SUMS.txt`。下载后在安装包所在目录执行:
+
+```bash
+sha256sum -c SHA256SUMS.txt   # macOS: shasum -a 256 -c SHA256SUMS.txt
+```
+
 ## 许可证
 
-[GPL-3.0 + 非商业附加条款](./app/LICENSE) · 本项目与汽水音乐官方无关,请支持正版音乐。
+[GPL-3.0 + 非商业附加条款](./LICENSE) · [第三方许可清单](./THIRD-PARTY-LICENSES.md) · [贡献指南](./CONTRIBUTING.md) · 本项目与汽水音乐官方无关,请支持正版音乐。

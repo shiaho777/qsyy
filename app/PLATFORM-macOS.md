@@ -156,7 +156,18 @@ app/
 | `GET /api/stream/:trackId` | 播放出流(缓存直读 / 在线,支持 Range) |
 | `GET /api/online/:trackId` | 查询在线可播性(音质 / 试听判定) |
 | `GET /api/cache-status?ids=` | 批量查询客户端缓存 + 自有增量缓存状态(≤80 ids) |
-| `GET /api/lyrics/:trackId` | 逐字歌词(v2 JSON + 标准 LRC,随解析落盘) |
+| `GET /api/lyrics/:trackId?set=&source=&title=&artist=&ttmlFile=` | 逐字歌词(v2 JSON + 标准 LRC)。`set` 指向缓存库时优先读同目录歌词文件,`source=local|qishui|auto` 控制来源,`fresh=1` 强制在线(含重试 TTML 负缓存)。官方歌词缺逐字时间轴时自动兜底社区 TTML 库(amll-ttml-db,CC0,`source:'ttml-db'`,索引磁盘缓存 24h、未命中负缓存 30min);`title`/`artist` 供兜底匹配非当前播放曲目;`ttmlFile` 手动指定社区库文件覆盖(歌词面板"匹配歌词"入口)。所有来源落盘前统一做副歌重复行检测(`chorus:true`),TTML 背景人声/罗马音/对唱歌者分离为 `bg`/`roman`/`agent` 字段 |
+| `GET /api/ttml/search?title=&artist=&limit=` | 社区 TTML 库手动匹配候选(标题精确>前缀>包含,歌手命中加分,同曲取最新);只读,应用走 `ttmlFile` 参数 |
+| `GET /api/lyrics/current` | 当前播放中的歌词快照(供 OBS / 本地集成);脏门控序列化 + ETag/304 |
+| `GET /v1/lyric` | Folia 兼容的只读歌词接口:秒制行/字时间、`offset`(ms,正=延后)、`clipStartMs`、`wordByWord`(逐行源自动合成逐字)、`backgroundVocals`(TTML 背景人声)、`romanization`(TTML 罗马音);无播放/无歌词返回 `null`;脏门控序列化(状态不变零开销)+ ETag/304 + `Cache-Control: no-cache` + CORS `*`,外部歌词组件可直接轮询 |
+| `GET` / `POST /api/now-playing` | 读取 / 更新当前播放状态(曲目、进度、播放状态、随机/循环/音量、歌词、32 段频谱)；频谱驱动 OBS 页面的封面频谱环、粒子和波形。GET 脏门控序列化(按 `lyrics=0` 分变体)+ ETag/304,高频轮询空闲零开销 |
+| `GET` / `POST /api/player/control` | OBS 播放器控件 → 主页面的短期命令队列(播放/暂停、切歌、拖动进度、随机/循环、音量、跳队列;15 秒过期,同源写入) |
+| `GET /api/player/control/stream` | 同一命令队列的 SSE 推送(主页面订阅;后台标签页也能即时响应) |
+| `GET` / `POST /api/player/queue` | 当前播放队列快照(供 OBS 队列抽屉显示与跳转) |
+| `GET /obs.html` | 重定向到 `/obs-folia/`(Folia Tilt 移植版,独立 AGPL-3.0 模块) |
+| `GET /obs-folia/` | Folia 全屏歌词舞台 + 悬浮播放器胶囊(可作 OBS 浏览器源;`?mode=tilt|cappella|fume` 切换动画,默认 tilt,播放器展开后也有模式切换按钮组,切换同步地址栏不刷新;`?controls=0` 隐藏控件;fume 可选 `?fumeBg=1` 原生画布背景;轮询走 ETag/304,状态不变零传输) |
+| `GET /obs-stage.html` | qsyy 自研全屏舞台(Lumi / Tilt / Pendolo) |
+| `GET /obs-card.html` | 底部字幕卡片 / 透明叠加版(Aurora / Neon / Mirror) |
 | `GET /api/effects` · `/api/effects/:key` · `/api/effect-config?url=` | 音效目录 / 预置 DSP 链 / 智能音效配置 |
 | `GET /api/cover?url=` | 封面图代理 |
 | `POST /api/download` · `GET /api/downloads` | 下载任务(转码格式 / 音质可选) |
@@ -171,6 +182,7 @@ app/
 | `GET /api/stats` | 缓存总大小(info.db 快照只读统计) |
 | `GET /api/version` | 应用版本号 + 仓库地址 + pid + shell(侧栏 GitHub 行 / 检查更新 / 实例接管识别) |
 | `GET /api/latest-release` | 最新 Release 的 tag(检查更新兜底：读网页 302 跳转，不受 API 限流影响) |
+| `GET /api/release/latest` | 最新 Release 完整元数据(tag/版本/changelog body/链接，更新弹窗用；API 主通道 30min 缓存，失败回退 302 tag) |
 | `POST /api/open-downloads` · `/api/open-client` | 打开下载目录 / 拉起官方客户端 |
 
 ## 缓存读取与解密原理
@@ -204,6 +216,22 @@ fork 子进程中对文件快照进行(10 秒 TTL 内并发共享同一快照,�
 不自行推算偏移)。`server.mjs` 解析为 v2 JSON(`lines[].words[]`)与标准
 LRC 双格式,resolve 成功即落盘,面板打开毫秒级命中;部分歌曲只有普通
 `[mm:ss.xx]` LRC,同样支持。
+
+本地歌词文件与在线歌词共用同一套解析器(`lyrics.mjs`),支持普通/增强
+LRC、WebVTT、TTML、QRC、YRC、KRC。缓存库中的同名文件优先于在线结果:
+
+```text
+stores/<库>/<trackId>.lrc
+stores/<库>/lyrics/<trackId>.ttml
+stores/<库>/<trackId>.t.lrc        # 翻译/第二语言
+```
+
+歌单包(ZIP)导出/导入会把这些 sidecar 一起打包;tar 备份因为复制整个
+库目录,也会自然带上。
+
+每首歌的歌词时间轴偏移存在前端 `localStorage`(`qsyy-lyricOffsets`),
+不写回音频或歌词文件。当前播放状态通过 `POST /api/now-playing` 推给服务端,
+`/obs.html`、`/obs-stage.html`、`/obs-card.html` 与 `/api/lyrics/current` 读取同一份快照。
 
 ## 性能设计
 

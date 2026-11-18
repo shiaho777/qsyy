@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>qsyy · OBS 歌词卡片</title>
+<style>
+  :root {
+    --accent: #22d3b6;
+    --accent-rgb: 34, 211, 182;
+    --text: #f8fafc;
+    --muted: rgba(248, 250, 252, .66);
+    --faint: rgba(248, 250, 252, .34);
+    --line: rgba(255, 255, 255, .13);
+    --card: rgba(7, 10, 17, .72);
+    --radius: 26px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; width: 100%; height: 100%;
+    background: transparent; overflow: hidden;
+  }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+  }
+
+  /* Browser preview and explicit full-stage modes get a dark canvas.
+     In OBS (default) the body stays transparent. */
+  body.preview, body.bg-dark {
+    background: radial-gradient(95% 80% at 50% 0%, #182238 0%, #0a0e18 46%, #05070b 100%);
+  }
+  body.preview #stage::after, body.ambient #stage::after, body.bg-dark #stage::after {
+    content: ""; position: fixed; inset: 0; z-index: 1; pointer-events: none;
+    background:
+      radial-gradient(90% 80% at 50% 35%, transparent 0%, rgba(0,0,0,.16) 60%, rgba(0,0,0,.62) 100%);
+  }
+  body.theme-neon.preview #stage::before, body.theme-neon.ambient #stage::before, body.theme-neon.bg-dark #stage::before {
+    content: ""; position: fixed; inset: 0; z-index: 1; pointer-events: none;
+    background: repeating-linear-gradient(180deg, rgba(255,255,255,.055) 0 1px, transparent 1px 4px);
+    mix-blend-mode: soft-light; opacity: .55;
+  }
+
+  #stage { position: fixed; inset: 0; overflow: hidden; }
+
+  /* Blurred cover wash, only when the page owns the background. */
+  #ambient {
+    position: fixed; inset: -14%; z-index: 0;
+    background-position: center; background-size: cover;
+    filter: blur(78px) saturate(1.55) brightness(.55);
+    opacity: 0; transform: scale(1.06);
+    transition: background-image .5s ease, filter .5s ease;
+    pointer-events: none;
+  }
+  body.preview #ambient.has-image, body.ambient #ambient.has-image, body.bg-dark #ambient.has-image { opacity: .5; }
+
+  /* Decorative canvas: aurora, particles, spectrum ring and waveform. */
+  #fx {
+    position: fixed; inset: 0; z-index: 2;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+  /* The spectrum ring sits above the glass card, so it is not dimmed by the
+     card's translucent background. It only paints around the cover. */
+  #ringfx {
+    position: fixed; inset: 0; z-index: 4;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+
+  #idle {
+    position: fixed; inset: 0; z-index: 5;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    color: var(--muted); font-size: 15px; letter-spacing: .02em;
+  }
+  #idle.hide { display: none; }
+  .pulse {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 rgba(var(--accent-rgb), .55);
+    animation: pulse 1.9s ease-out infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), .55); }
+    70% { box-shadow: 0 0 0 14px rgba(var(--accent-rgb), 0); }
+    100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0); }
+  }
+
+  #card {
+    position: fixed; left: 50%; bottom: 5.2vh; z-index: 3;
+    width: min(1100px, calc(100vw - 8vw));
+    transform: translateX(-50%);
+    padding: clamp(18px, 2.1vw, 30px) clamp(20px, 2.7vw, 40px);
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    background:
+      linear-gradient(135deg, rgba(var(--accent-rgb), .12), transparent 40%),
+      linear-gradient(180deg, rgba(17, 22, 34, .78), var(--card));
+    box-shadow:
+      0 30px 100px rgba(0, 0, 0, .55),
+      inset 0 1px 0 rgba(255, 255, 255, .09);
+    backdrop-filter: blur(26px) saturate(1.3);
+    -webkit-backdrop-filter: blur(26px) saturate(1.3);
+    display: none; transform: translate(-50%, 0);
+    isolation: isolate;
+  }
+  #card.ready { display: block; }
+  #card::before {
+    content: ""; position: absolute; inset: 0; z-index: -1;
+    border-radius: inherit; padding: 1px; pointer-events: none;
+    background: linear-gradient(135deg, rgba(var(--accent-rgb), .58), transparent 32%, transparent 68%, rgba(var(--accent-rgb), .28));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+  #card::after {
+    content: ""; position: absolute; left: -90px; top: -110px; width: 260px; height: 240px;
+    z-index: -1; pointer-events: none; border-radius: 50%;
+    background: radial-gradient(closest-side, rgba(var(--accent-rgb), .22), transparent 72%);
+    filter: blur(18px);
+  }
+  body.align-left #card { left: 4vw; transform: none; }
+  body.stage-mode #card {
+    left: 50%; bottom: 50%; width: min(1220px, 88vw);
+    transform: translate(-50%, 50%);
+    padding: clamp(24px, 2.8vw, 42px) clamp(28px, 3.4vw, 54px);
+  }
+  body.stage-mode #lyric { font-size: clamp(34px, 4.1vw, 68px); }
+  body.stage-mode #cover-wrap { width: clamp(64px, 6.4vw, 92px); height: clamp(64px, 6.4vw, 92px); }
+
+  #top { display: flex; align-items: center; gap: 15px; margin-bottom: 14px; }
+  #cover-wrap {
+    width: clamp(50px, 5.4vw, 72px); height: clamp(50px, 5.4vw, 72px);
+    flex: none; position: relative; display: grid; place-items: center;
+    border-radius: 18px; overflow: hidden;
+    background:
+      radial-gradient(80% 80% at 30% 20%, rgba(255,255,255,.22), transparent 60%),
+      linear-gradient(135deg, rgba(var(--accent-rgb), .48), rgba(255, 255, 255, .06));
+    box-shadow:
+      0 14px 38px rgba(0, 0, 0, .38),
+      0 0 0 1px rgba(255,255,255,.12) inset,
+      0 0 34px rgba(var(--accent-rgb), .25);
+    transform: perspective(720px) rotateY(-7deg) rotateX(3deg);
+    transition: transform .6s ease;
+  }
+  body.theme-neon #cover-wrap { border-radius: 10px; transform: perspective(720px) rotateY(-12deg) rotateX(5deg) skewY(-1deg); }
+  body.theme-mirror #cover-wrap { border-radius: 50%; transform: none; }
+  #cover { width: 100%; height: 100%; object-fit: cover; display: none; }
+  #cover-wrap.has-cover #cover { display: block; }
+  #cover-wrap.has-cover .cover-note { display: none; }
+  .cover-note { font-size: clamp(22px, 2.4vw, 32px); color: rgba(255,255,255,.8); }
+
+  #meta { min-width: 0; flex: 1; }
+  #title {
+    font-size: clamp(16px, 1.5vw, 22px); font-weight: 780; letter-spacing: .01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    text-shadow: 0 2px 18px rgba(0,0,0,.5);
+  }
+  #artist {
+    margin-top: 3px; color: var(--muted); font-size: clamp(12px, 1.05vw, 15px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  #eq { display: flex; align-items: flex-end; gap: 3px; height: 28px; flex: none; opacity: .92; }
+  #eq i {
+    display: block; width: 3px; border-radius: 99px;
+    background: linear-gradient(180deg, #fff, var(--accent));
+    transform-origin: bottom; transform: scaleY(.22);
+    animation: eq 1.05s ease-in-out infinite;
+    box-shadow: 0 0 12px rgba(var(--accent-rgb), .4);
+  }
+  #eq i:nth-child(1) { height: 10px; animation-delay: -.9s; }
+  #eq i:nth-child(2) { height: 19px; animation-delay: -.42s; }
+  #eq i:nth-child(3) { height: 28px; animation-delay: -.7s; }
+  #eq i:nth-child(4) { height: 15px; animation-delay: -.2s; }
+  #eq.paused i { animation-play-state: paused; opacity: .3; }
+  @keyframes eq {
+    0%, 100% { transform: scaleY(.24); }
+    50% { transform: scaleY(1); }
+  }
+
+  #lyric-block { position: relative; }
+  #lyric-block::before {
+    content: ""; position: absolute; left: 50%; top: 54%; width: 78%; height: 160%;
+    transform: translate(-50%, -50%); z-index: -1; pointer-events: none;
+    background: radial-gradient(closest-side, rgba(var(--accent-rgb), .13), transparent 72%);
+    filter: blur(22px);
+  }
+  #prev {
+    min-height: 1.25em; margin-bottom: 5px;
+    font-size: clamp(13px, 1.25vw, 18px); font-weight: 600;
+    color: var(--faint); letter-spacing: .01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    opacity: .7;
+  }
+  #lyric {
+    font-size: clamp(28px, 3.4vw, 52px);
+    font-weight: 860;
+    line-height: 1.18;
+    letter-spacing: .005em;
+    min-height: 1.18em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-shadow: 0 4px 30px rgba(0, 0, 0, .6), 0 0 32px rgba(var(--accent-rgb), .14);
+  }
+  #lyric.switching { animation: lyric-in .32s cubic-bezier(.2,.8,.2,1); }
+  @keyframes lyric-in {
+    from { opacity: .35; transform: translateY(10px); filter: blur(2.4px); }
+    to { opacity: 1; transform: translateY(0); filter: none; }
+  }
+  #lyric .plain { color: var(--text); }
+  #lyric .w {
+    display: inline-block; white-space: pre;
+    --p: 0%;
+    color: transparent;
+    background: linear-gradient(90deg, var(--accent) var(--p), rgba(255,255,255,.26) var(--p));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 24px rgba(var(--accent-rgb), .22);
+    animation: word-in .46s cubic-bezier(.2,.8,.2,1) both;
+    animation-delay: calc(var(--i, 0) * 24ms);
+    transition: transform .18s ease, filter .18s ease;
+    will-change: transform, background;
+  }
+  #lyric .w.active {
+    transform: translateY(-2px) scale(1.055);
+    filter: drop-shadow(0 0 16px rgba(var(--accent-rgb), .62));
+  }
+  @keyframes word-in {
+    from { opacity: .55; transform: translateY(10px) scale(.96); filter: blur(1.5px); }
+    to { opacity: 1; transform: translateY(0) scale(1); filter: none; }
+  }
+  #lyric .placeholder { color: var(--faint); font-weight: 600; }
+
+  #translation {
+    margin-top: 8px; min-height: 1.3em;
+    font-size: clamp(13px, 1.3vw, 18px);
+    color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #next {
+    margin-top: 5px; min-height: 1.2em;
+    font-size: clamp(12px, 1.1vw, 16px);
+    color: var(--faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  #progress {
+    margin-top: 17px; height: 4px; border-radius: 99px;
+    background: rgba(255, 255, 255, .12); overflow: hidden;
+  }
+  #progress-fill {
+    height: 100%; width: 0%; border-radius: inherit;
+    background: linear-gradient(90deg, var(--accent), rgba(var(--accent-rgb), .44));
+    box-shadow: 0 0 16px rgba(var(--accent-rgb), .55);
+    transition: width .25s linear;
+  }
+
+  #brand {
+    position: fixed; right: 18px; bottom: 12px; z-index: 5;
+    font-size: 10px; letter-spacing: .16em;
+    color: rgba(255, 255, 255, .24);
+    pointer-events: none;
+  }
+  body.brand-off #brand { display: none; }
+  body.cover-off #cover-wrap { display: none; }
+  body.translation-off #translation { display: none; }
+  body.eq-off #eq { display: none; }
+
+  body.theme-neon #card {
+    border-color: rgba(var(--accent-rgb), .38);
+    background:
+      linear-gradient(135deg, rgba(var(--accent-rgb), .16), transparent 38%),
+      linear-gradient(180deg, rgba(5, 8, 14, .84), rgba(5, 8, 14, .68));
+  }
+  body.theme-neon #lyric { letter-spacing: -.005em; }
+  body.theme-mirror #top { justify-content: center; }
+  body.theme-mirror #lyric-block { text-align: center; }
+  body.theme-mirror #translation, body.theme-mirror #next { text-align: center; }
+  body.theme-mirror #card { background: linear-gradient(180deg, rgba(14,18,28,.68), rgba(7,10,17,.78)); }
+
+  @media (max-width: 720px) {
+    #card { width: calc(100vw - 24px); bottom: 3vh; padding: 16px 18px; border-radius: 18px; }
+    #lyric { font-size: clamp(22px, 7vw, 36px); }
+    #top { gap: 10px; margin-bottom: 9px; }
+    #eq { display: none; }
+    #prev { display: none; }
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div id="ambient"></div>
+    <canvas id="fx"></canvas>
+    <canvas id="ringfx"></canvas>
+    <div id="idle"><span class="pulse"></span> qsyy 未在播放</div>
+    <div id="card" role="status" aria-live="polite">
+      <div id="top">
+        <div id="cover-wrap"><img id="cover" alt=""><span class="cover-note">♪</span></div>
+        <div id="meta">
+          <div id="title"></div>
+          <div id="artist"></div>
+        </div>
+        <div id="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      </div>
+      <div id="lyric-block">
+        <div id="prev"></div>
+        <div id="lyric"><span class="placeholder">等待播放…</span></div>
+        <div id="translation"></div>
+        <div id="next"></div>
+      </div>
+      <div id="progress"><div id="progress-fill"></div></div>
+    </div>
+    <div id="brand">qsyy · OBS 卡片</div>
+  </div>
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const size = Number(params.get('size')) || 1;
+  const align = params.get('align') === 'left' ? 'left' : 'center';
+  const showCover = params.get('cover') !== '0';
+  const showBrand = params.get('brand') !== '0';
+  const showTranslation = params.get('translation') !== '0';
+  const showEq = params.get('eq') !== '0';
+  const theme = ['aurora', 'neon', 'mirror'].includes(params.get('theme')) ? params.get('theme') : 'aurora';
+  const bg = params.get('bg') || '';
+  const inObs = Boolean(window.obsstudio) || /OBS/i.test(navigator.userAgent || '');
+  const preview = bg === 'dark' || (!inObs && bg !== 'transparent');
+
+  if (preview) document.body.classList.add('preview');
+  if (bg === 'dark') document.body.classList.add('bg-dark');
+  if (params.get('ambient') === '1') document.body.classList.add('ambient');
+  if (!showCover) document.body.classList.add('cover-off');
+  if (!showBrand) document.body.classList.add('brand-off');
+  if (!showTranslation) document.body.classList.add('translation-off');
+  if (!showEq) document.body.classList.add('eq-off');
+  if (align === 'left') document.body.classList.add('align-left');
+  if (params.get('mode') === 'stage') document.body.classList.add('stage-mode');
+  document.body.classList.add(`theme-${theme}`);
+
+  const $ = id => document.getElementById(id);
+  const idle = $('idle');
+  const card = $('card');
+  const cover = $('cover');
+  const coverWrap = $('cover-wrap');
+  const ambient = $('ambient');
+  const title = $('title');
+  const artist = $('artist');
+  const prev = $('prev');
+  const lyric = $('lyric');
+  const translation = $('translation');
+  const next = $('next');
+  const progressFill = $('progress-fill');
+  const eq = $('eq');
+  if (size !== 1) {
+    const scale = Math.max(0.58, Math.min(2.2, size));
+    lyric.style.fontSize = `clamp(${Math.round(22 * scale)}px, ${(3.4 * scale).toFixed(2)}vw, ${Math.round(52 * scale)}px)`;
+  }
+
+  let state = null;
+  let lastLineKey = '';
+  let lastWordLine = null;
+  let lastWordSpans = [];
+  let pollTimer = 0;
+  let lyricsTrack = '';
+  let lyricsData = null;
+  let lastCover = '';
+  let accentRgb = [34, 211, 182];
+  let progress = 0;
+
+  const setText = (el, value) => {
+    const text = String(value || '');
+    if (el.textContent !== text) el.textContent = text;
+  };
+
+  const currentPosition = () => {
+    if (!state) return 0;
+    const base = Number(state.position) || 0;
+    if (!state.playing) return base;
+    const drift = Math.max(0, (Date.now() - (Number(state.updatedAt) || Date.now())) / 1000);
+    const duration = Number(state.track?.duration) || 0;
+    return duration > 0 ? Math.min(duration, base + drift) : base + drift;
+  };
+
+  const lineIndexAt = (lines, ms) => {
+    let lo = 0, hi = lines.length - 1, idx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if ((Number(lines[mid].ms) || 0) <= ms) { idx = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    return idx;
+  };
+
+  const extractAccent = img => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 18;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, 18, 18);
+      const { data } = ctx.getImageData(0, 0, 18, 18);
+      let r = 0, g = 0, b = 0, weight = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const rr = data[i], gg = data[i + 1], bb = data[i + 2];
+        const mx = Math.max(rr, gg, bb), mn = Math.min(rr, gg, bb);
+        if (mx < 36) continue;
+        const sat = mx - mn;
+        if (sat < 10) continue;
+        const w = sat * (0.5 + mx / 255);
+        r += rr * w; g += gg * w; b += bb * w; weight += w;
+      }
+      if (!weight) return;
+      accentRgb = [Math.round(r / weight), Math.round(g / weight), Math.round(b / weight)];
+      const root = document.documentElement.style;
+      root.setProperty('--accent', `rgb(${accentRgb.join(', ')})`);
+      root.setProperty('--accent-rgb', accentRgb.join(', '));
+    } catch (_) {}
+  };
+
+  const setCover = url => {
+    if (!url) {
+      cover.removeAttribute('src');
+      coverWrap.classList.remove('has-cover');
+      ambient.classList.remove('has-image');
+      lastCover = '';
+      return;
+    }
+    if (url === lastCover) return;
+    lastCover = url;
+    coverWrap.classList.add('has-cover');
+    cover.onload = () => {
+      if (lastCover !== url) return;
+      extractAccent(cover);
+      ambient.style.backgroundImage = `url("${url.replace(/"/g, '\\"')}")`;
+      ambient.classList.add('has-image');
+    };
+    cover.src = url;
+  };
+
+  const renderLineWords = line => {
+    if (lastWordLine === line) return;
+    lastWordLine = line;
+    lastWordSpans = [];
+    lyric.textContent = '';
+    lyric.classList.remove('switching');
+    if (!line) {
+      lyric.innerHTML = '<span class="placeholder">等待播放…</span>';
+      return;
+    }
+    const words = Array.isArray(line.words) ? line.words : null;
+    if (!words || !words.length) {
+      const span = document.createElement('span');
+      span.className = 'plain';
+      span.textContent = line.text || '';
+      lyric.appendChild(span);
+      return;
+    }
+    words.forEach((word, index) => {
+      const span = document.createElement('span');
+      span.className = 'w';
+      span.style.setProperty('--i', index);
+      span.textContent = word.w || '';
+      lyric.appendChild(span);
+      lastWordSpans.push(span);
+    });
+  };
+
+  const paintWords = (line, positionMs) => {
+    if (!lastWordSpans.length) return;
+    const words = line?.words || [];
+    for (let i = 0; i < lastWordSpans.length; i += 1) {
+      const word = words[i];
+      if (!word) continue;
+      const duration = Number(word.d) || 0;
+      const p = duration > 0
+        ? (positionMs - (Number(word.t) || 0)) / duration
+        : (positionMs >= (Number(word.t) || 0) ? 1 : 0);
+      const clamped = Math.max(0, Math.min(1, p));
+      lastWordSpans[i].style.setProperty('--p', `${clamped * 100}%`);
+      lastWordSpans[i].classList.toggle('active', clamped > 0 && clamped < 1);
+    }
+  };
+
+  const render = () => {
+    if (!state) return;
+    const track = state.track || {};
+    const lines = Array.isArray(state.lyrics?.lines) ? state.lyrics.lines : [];
+    const positionMs = currentPosition() * 1000 + (Number(state.lyrics?.offset) || 0);
+    const idx = lines.length ? lineIndexAt(lines, positionMs) : -1;
+
+    const hasTrack = Boolean(track.title || track.id);
+    card.classList.toggle('ready', hasTrack);
+    idle.classList.toggle('hide', hasTrack);
+    if (!hasTrack) return;
+
+    setText(title, track.title || '');
+    setText(artist, track.artist || '');
+    setCover(track.cover || '');
+    eq.classList.toggle('paused', !state.playing);
+
+    const line = idx >= 0 ? lines[idx] : null;
+    const previousLine = idx > 0 ? lines[idx - 1] : null;
+    const nextLine = idx + 1 < lines.length ? lines[idx + 1] : null;
+    const key = line ? `${line.ms}:${line.text}` : 'none';
+    if (key !== lastLineKey) {
+      lastLineKey = key;
+      lastWordLine = null;
+      renderLineWords(line);
+      void lyric.offsetWidth;
+      lyric.classList.add('switching');
+    }
+    if (line) paintWords(line, positionMs);
+    setText(prev, previousLine ? previousLine.text : '');
+    setText(translation, line?.cn || '');
+    setText(next, nextLine ? nextLine.text : '');
+
+    const duration = Number(track.duration) || 0;
+    progress = duration > 0 ? Math.max(0, Math.min(1, currentPosition() / duration)) : 0;
+    progressFill.style.width = `${(progress * 100).toFixed(2)}%`;
+  };
+
+  const poll = async () => {
+    clearTimeout(pollTimer);
+    try {
+      const response = await fetch('/api/now-playing?lyrics=0', { cache: 'no-store' });
+      const nextState = await response.json();
+      const lyricsId = String(nextState.lyricsTrackId || '');
+      if (lyricsId && lyricsId !== lyricsTrack) {
+        try {
+          const lyricResponse = await fetch('/api/lyrics/current', { cache: 'no-store' });
+          const lyricPayload = await lyricResponse.json();
+          if (String(lyricPayload.track?.id || '') === String(nextState.track?.id || '')) {
+            lyricsData = lyricPayload.lyrics || null;
+            lyricsTrack = lyricsId;
+          } else {
+            lyricsTrack = '';
+            lyricsData = null;
+          }
+        } catch (_) {
+          lyricsTrack = '';
+          lyricsData = null;
+        }
+      } else if (!lyricsId) {
+        lyricsTrack = '';
+        lyricsData = null;
+      }
+      nextState.lyrics = nextState.lyrics || lyricsData;
+      state = nextState;
+    } catch (_) {
+      state = null;
+      card.classList.remove('ready');
+      idle.classList.remove('hide');
+    }
+    render();
+    pollTimer = setTimeout(poll, 320);
+  };
+  poll();
+  setInterval(render, 80);
+
+  // ------------------------------------------------------------ canvas visualizer
+  const canvas = $('fx');
+  const ctx = canvas?.getContext('2d');
+  const ringCanvas = $('ringfx');
+  const ringCtx = ringCanvas?.getContext('2d');
+  if (!canvas || !ctx || !ringCanvas || !ringCtx) return;
+
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const FPS = Math.max(15, Math.min(60, Number(params.get('fps')) || (reducedMotion ? 30 : 45)));
+  const DPR_CAP = 1.5;
+  const SPEC_N = 48;
+  const spectrum = new Float32Array(SPEC_N);
+  const particles = [];
+  let W = 0, H = 0, DPR = 1;
+  let raf = 0, lastDraw = 0, lastCoverRead = 0, coverRect = null;
+  let fullFx = preview || document.body.classList.contains('ambient') || document.body.classList.contains('bg-dark');
+
+  const resize = () => {
+    W = window.innerWidth || 1280;
+    H = window.innerHeight || 720;
+    DPR = Math.min(window.devicePixelRatio || 1, DPR_CAP);
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width = `${W}px`;
+    canvas.style.height = `${H}px`;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ringCanvas.width = Math.round(W * DPR);
+    ringCanvas.height = Math.round(H * DPR);
+    ringCanvas.style.width = `${W}px`;
+    ringCanvas.style.height = `${H}px`;
+    ringCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    coverRect = null;
+    if (!particles.length) initParticles();
+  };
+
+  const initParticles = () => {
+    particles.length = 0;
+    const count = reducedMotion ? 34 : (fullFx ? 90 : 58);
+    for (let i = 0; i < count; i += 1) {
+      particles.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        r: 0.8 + Math.random() * 2.4,
+        vx: -7 + Math.random() * 14,
+        vy: -6 - Math.random() * 18,
+        phase: Math.random() * Math.PI * 2,
+        alpha: fullFx ? 0.18 + Math.random() * 0.45 : 0.08 + Math.random() * 0.22,
+      });
+    }
+  };
+
+  const updateCoverRect = () => {
+    if (coverWrap.offsetParent === null) { coverRect = null; return; }
+    const r = coverWrap.getBoundingClientRect();
+    if (!r.width || !r.height) { coverRect = null; return; }
+    coverRect = { x: r.x, y: r.y, w: r.width, h: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2, r: r.width / 2 };
+  };
+
+  const targetSpectrum = () => {
+    const data = state?.spectrum;
+    if (!Array.isArray(data) || !data.length) {
+      const t = performance.now() / 1000;
+      const amp = state?.playing ? 1 : 0.35;
+      return Array.from({ length: SPEC_N }, (_, i) => {
+        const base = 0.10 + 0.07 * Math.sin(t * 1.7 + i * 0.34) + 0.05 * Math.sin(t * 2.9 - i * 0.18);
+        return Math.max(0.03, base * amp);
+      });
+    }
+    return Array.from({ length: SPEC_N }, (_, i) => {
+      const pos = (i / (SPEC_N - 1)) * (data.length - 1);
+      const a = Math.floor(pos), b = Math.min(data.length - 1, a + 1);
+      const v = (Number(data[a]) || 0) + ((Number(data[b]) || 0) - (Number(data[a]) || 0)) * (pos - a);
+      return Math.max(0, Math.min(1, Math.pow(v / 255, 0.78)));
+    });
+  };
+
+  const drawBackground = t => {
+    // The CSS body handles the opaque dark stage; the canvas only adds light.
+    if (fullFx) {
+      ctx.globalCompositeOperation = 'lighter';
+      const blobs = theme === 'mirror' ? 3 : 4;
+      for (let i = 0; i < blobs; i += 1) {
+        const phase = t * (0.08 + i * 0.017) + i * 1.9;
+        const cx = W * (0.18 + 0.64 * (0.5 + 0.5 * Math.sin(phase)));
+        const cy = H * (0.18 + 0.38 * (0.5 + 0.5 * Math.cos(phase * 0.83 + i)));
+        const radius = Math.max(W, H) * (0.22 + i * 0.035);
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+        const alpha = (theme === 'neon' ? 0.075 : 0.11) * (1 - i * 0.13);
+        g.addColorStop(0, `rgba(${accentRgb.join(',')}, ${alpha})`);
+        g.addColorStop(0.45, `rgba(${accentRgb.join(',')}, ${alpha * 0.55})`);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+
+      if (theme === 'aurora') {
+        // Wide, slow ribbons above the card; additive and very transparent so
+        // they read as light rather than as a second background.
+        ctx.globalCompositeOperation = 'lighter';
+        for (let ribbon = 0; ribbon < 3; ribbon += 1) {
+          ctx.beginPath();
+          for (let x = -40; x <= W + 40; x += 40) {
+            const y = H * (0.20 + ribbon * 0.08)
+              + Math.sin(x * 0.0035 + t * (0.18 + ribbon * 0.03) + ribbon * 2) * H * 0.055
+              + Math.sin(x * 0.0012 - t * 0.12) * H * 0.035;
+            if (x === -40) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.strokeStyle = `rgba(${accentRgb.join(',')}, ${0.075 - ribbon * 0.018})`;
+          ctx.lineWidth = 84 - ribbon * 20;
+          ctx.lineCap = 'round';
+          ctx.stroke();
+        }
+        ctx.globalCompositeOperation = 'source-over';
+      }
+
+      if (theme === 'neon') {
+        const vpx = W / 2, vpy = H * 0.18;
+        ctx.strokeStyle = `rgba(${accentRgb.join(',')}, .10)`;
+        ctx.lineWidth = 1;
+        for (let i = -10; i <= 10; i += 1) {
+          ctx.beginPath();
+          ctx.moveTo(vpx, vpy);
+          ctx.lineTo(vpx + i * W * 0.11, H);
+          ctx.stroke();
+        }
+        for (let i = 1; i <= 8; i += 1) {
+          const y = vpy + (H - vpy) * Math.pow(i / 8, 1.7);
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(W, y);
+          ctx.stroke();
+        }
+      }
+      if (theme === 'mirror') {
+        const beam = ctx.createLinearGradient(0, 0, 0, H);
+        beam.addColorStop(0, 'rgba(255,255,255,.10)');
+        beam.addColorStop(.45, `rgba(${accentRgb.join(',')}, .06)`);
+        beam.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = beam;
+        ctx.fillRect(W * 0.12, 0, W * 0.76, H);
+      }
+    } else {
+      // Transparent OBS: a soft accent pool behind the card only.
+      const cx = W / 2, cy = H * 0.9;
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.55);
+      g.addColorStop(0, `rgba(${accentRgb.join(',')}, .13)`);
+      g.addColorStop(0.6, `rgba(${accentRgb.join(',')}, .05)`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+
+      // In a transparent OBS source, keep a hint of the selected theme
+      // without painting a full background over the scene.
+      if (theme === 'neon') {
+        const vpx = W / 2, vpy = H * 0.18;
+        ctx.strokeStyle = `rgba(${accentRgb.join(',')}, .055)`;
+        ctx.lineWidth = 1;
+        for (let i = -10; i <= 10; i += 1) {
+          ctx.beginPath();
+          ctx.moveTo(vpx, vpy);
+          ctx.lineTo(vpx + i * W * 0.11, H);
+          ctx.stroke();
+        }
+        for (let i = 1; i <= 8; i += 1) {
+          const y = vpy + (H - vpy) * Math.pow(i / 8, 1.7);
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(W, y);
+          ctx.stroke();
+        }
+      } else if (theme === 'mirror') {
+        const beam = ctx.createLinearGradient(0, 0, 0, H);
+        beam.addColorStop(0, `rgba(${accentRgb.join(',')}, .045)`);
+        beam.addColorStop(.55, `rgba(${accentRgb.join(',')}, .025)`);
+        beam.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = beam;
+        ctx.fillRect(W * 0.16, 0, W * 0.68, H);
+      } else {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.beginPath();
+        for (let x = -40; x <= W + 40; x += 40) {
+          const y = H * 0.28 + Math.sin(x * 0.0035 + t * 0.2) * H * 0.05;
+          if (x === -40) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = `rgba(${accentRgb.join(',')}, .045)`;
+        ctx.lineWidth = 72;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+
+    // A fine light line under the card, like a stage edge.
+    if (coverRect) {
+      const y = coverRect.y + coverRect.h / 2;
+      const grad = ctx.createLinearGradient(0, 0, W, 0);
+      grad.addColorStop(0, 'rgba(0,0,0,0)');
+      grad.addColorStop(0.25, `rgba(${accentRgb.join(',')}, .22)`);
+      grad.addColorStop(0.75, `rgba(${accentRgb.join(',')}, .22)`);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, H - 3, W, 1);
+    }
+  };
+
+  const drawParticles = (t, dt) => {
+    ctx.globalCompositeOperation = 'lighter';
+    const energy = spectrum.reduce((a, b) => a + b, 0) / SPEC_N;
+    for (const p of particles) {
+      p.x += (p.vx + Math.sin(t * 0.7 + p.phase) * 5) * dt;
+      p.y += (p.vy - energy * 8) * dt;
+      if (p.y < -10) { p.y = H + 10; p.x = Math.random() * W; }
+      if (p.x < -10) p.x = W + 10;
+      if (p.x > W + 10) p.x = -10;
+      const alpha = Math.min(0.72, p.alpha + energy * 0.35);
+      ctx.fillStyle = `rgba(${accentRgb.join(',')}, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * (0.8 + energy * 1.2), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  };
+
+  const drawRing = () => {
+    ringCtx.clearRect(0, 0, W, H);
+    if (!coverRect) return;
+    const outer = coverRect.r + 13;
+    for (let i = 0; i < SPEC_N; i += 1) {
+      const angle = -Math.PI / 2 + (i / SPEC_N) * Math.PI * 2;
+      const v = spectrum[i];
+      const len = 3 + v * 24;
+      const x1 = coverRect.cx + Math.cos(angle) * outer;
+      const y1 = coverRect.cy + Math.sin(angle) * outer;
+      const x2 = coverRect.cx + Math.cos(angle) * (outer + len);
+      const y2 = coverRect.cy + Math.sin(angle) * (outer + len);
+      ringCtx.strokeStyle = `rgba(${accentRgb.join(',')}, ${0.28 + v * 0.62})`;
+      ringCtx.lineWidth = 2.2;
+      ringCtx.lineCap = 'round';
+      ringCtx.beginPath();
+      ringCtx.moveTo(x1, y1);
+      ringCtx.lineTo(x2, y2);
+      ringCtx.stroke();
+    }
+    // progress arc outside the ring
+    const radius = coverRect.r + 24;
+    ringCtx.strokeStyle = 'rgba(255,255,255,.10)';
+    ringCtx.lineWidth = 3;
+    ringCtx.beginPath();
+    ringCtx.arc(coverRect.cx, coverRect.cy, radius, 0, Math.PI * 2);
+    ringCtx.stroke();
+    if (progress > 0) {
+      ringCtx.strokeStyle = `rgba(${accentRgb.join(',')}, .85)`;
+      ringCtx.shadowColor = `rgba(${accentRgb.join(',')}, .65)`;
+      ringCtx.shadowBlur = 12;
+      ringCtx.beginPath();
+      ringCtx.arc(coverRect.cx, coverRect.cy, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
+      ringCtx.stroke();
+      ringCtx.shadowBlur = 0;
+    }
+  };
+
+  const drawSpectrum = () => {
+    if (theme === 'neon' || theme === 'aurora') {
+      const baseY = H - 24;
+      const width = W * 0.72;
+      const left = (W - width) / 2;
+      const barW = width / SPEC_N;
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < SPEC_N; i += 1) {
+        const v = spectrum[i];
+        const h = 2 + v * (theme === 'neon' ? 76 : 52);
+        const x = left + i * barW;
+        const grad = ctx.createLinearGradient(0, baseY - h, 0, baseY);
+        grad.addColorStop(0, `rgba(${accentRgb.join(',')}, .06)`);
+        grad.addColorStop(1, `rgba(${accentRgb.join(',')}, ${theme === 'neon' ? .5 : .32})`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, baseY - h, Math.max(1, barW - 2), h);
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  };
+
+  const frame = now => {
+    raf = requestAnimationFrame(frame);
+    if (document.hidden) return;
+    if (now - lastDraw < 1000 / FPS) return;
+    const dt = Math.min(0.06, (now - lastDraw) / 1000 || 0.016);
+    lastDraw = now;
+
+    const target = targetSpectrum();
+    const ease = state?.playing ? 0.18 : 0.07;
+    for (let i = 0; i < SPEC_N; i += 1) spectrum[i] += (target[i] - spectrum[i]) * ease;
+
+    if (!coverRect || now - lastCoverRead > 120) { lastCoverRead = now; updateCoverRect(); }
+    ctx.clearRect(0, 0, W, H);
+    drawBackground(now / 1000);
+    drawParticles(now / 1000, dt);
+    drawSpectrum();
+    drawRing();
+  };
+
+  window.addEventListener('resize', resize, { passive: true });
+  resize();
+  raf = requestAnimationFrame(frame);
+  // Small troubleshooting hook: useful when an embedded browser throttles
+  // requestAnimationFrame while the page is not on screen.
+  window.qsyyObsDraw = () => { if (raf) cancelAnimationFrame(raf); lastDraw = 0; frame(performance.now()); };
+  window.qsyyObsDebug = () => ({ coverRect, progress, spectrum: Array.from(spectrum), w: W, h: H, dpr: DPR });
+})();
+</script>
+</body>
+</html>

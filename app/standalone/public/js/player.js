@@ -433,6 +433,24 @@ function persistQueue() {
       index: state.queueIndex,
     });
   } catch (_) {}
+  pushPlayerQueue();
+}
+
+// OBS / external overlays read the queue from the server. Send a compact copy
+// only when the queue actually changes (set + track switch), not per tick.
+function pushPlayerQueue() {
+  const items = state.queue.slice(0, 1000).map(t => ({
+    id: t.id,
+    title: t.name,
+    artist: (t.artists || []).join(' / '),
+    cover: trackCoverUrl(t, 140),
+    duration: (Number(t.duration) || 0) / 1000,
+  }));
+  fetch('/api/player/queue', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ index: state.queueIndex, items }),
+  }).catch(() => {});
 }
 
 function restoreQueue() {
@@ -477,6 +495,8 @@ function startCurrent(autoplay = true) {
   if (npOpen) syncNowPlaying(true);
   if (!$('lyrics-panel').classList.contains('hidden') || ls.get('lyrics-open', false) || deskLyricsOn) loadLyrics(t);
   ls.set('lastTrack', { playlistId: state.current?.id, trackId: t.id, position: 0, context: state.queueContext || 'playlist' });
+  nowPlayingLyricsTrack = '';
+  pushNowPlaying(true);
   // 库限定流(?set=):本地 m4a 直取,免登录免在线解析
   audio.src = t.storeSrc || `/api/stream/${t.id}`;
   updateHeroPlayback();
@@ -551,6 +571,7 @@ function playNextIndex(step) {
 }
 
 audio.onended = () => {
+  pushNowPlaying(true);
   if (state.repeat === 'one') { audio.currentTime = 0; audio.play(); return; }
   playNextIndex(1);
 };
@@ -587,8 +608,9 @@ audio.onplaying = () => {
   document.title = t ? `▶ ${t.name} · qsyy` : 'qsyy';
   prefetchNext();
   startEqLoop();
+  pushNowPlaying(true);
 };
-audio.onpause = () => { $('p-title').textContent = $('p-title').textContent.replace(' — 点 ▶ 开始', ''); $('p-play').innerHTML = ICONS.play; setNpPlayIcon(); decoratePlayingRow(); updateHeroPlayback(); stopEqLoop(); };
+audio.onpause = () => { $('p-title').textContent = $('p-title').textContent.replace(' — 点 ▶ 开始', ''); $('p-play').innerHTML = ICONS.play; setNpPlayIcon(); decoratePlayingRow(); updateHeroPlayback(); stopEqLoop(); pushNowPlaying(true); };
 audio.ontimeupdate = () => {
   highlightLyric();
   if (!audio.duration || seeking) return;
@@ -604,6 +626,7 @@ audio.ontimeupdate = () => {
   if (track && Math.floor(audio.currentTime) % 5 === 0) {
     ls.set('lastTrack', { playlistId: state.current?.id, trackId: track.id, position: audio.currentTime, context: state.queueContext || 'playlist' });
   }
+  if (track) pushNowPlaying();
 };
 audio.onprogress = () => {
   try {
@@ -614,6 +637,7 @@ audio.onprogress = () => {
     }
   } catch (_) {}
 };
+audio.addEventListener('seeked', () => pushNowPlaying(true));
 // ------------------------------------------------------------------ seekbar (custom, draggable)
 // 播放栏与全屏页各有一条进度条，共用同一套拖拽逻辑；seeking 在拖动期间
 // 抑制 ontimeupdate 回写，避免手指和播放进度打架。
@@ -722,6 +746,135 @@ if ($('p-repeat')) $('p-repeat').onclick = () => {
   ls.set('repeat', state.repeat); updateModeButtons();
   toast(state.repeat === 'off' ? '循环关' : state.repeat === 'all' ? '列表循环' : '单曲循环');
 };
+
+// ------------------------------------------------------------------ remote control (OBS overlay)
+// The overlay page is a separate browser context, so its transport buttons
+// write POST /api/player/control and this page executes them. Polling is
+// enough (sub-second latency, no extra SSE connection); commands expire after
+// 15 s server-side so a reloaded tab never replays stale presses.
+function setPlayerVolume(value) {
+  state.volume = Math.max(0, Math.min(1, Number(value) || 0));
+  audio.volume = state.volume;
+  ls.set('volume', state.volume);
+  if ($('p-vol')) {
+    $('p-vol').value = String(Math.round(state.volume * 100));
+    $('p-vol').style.setProperty('--fill', `${Math.round(state.volume * 100)}%`);
+  }
+  setVolIcon();
+  pushNowPlaying(true);
+}
+
+function applyPlayerCommand(command) {
+  const action = command?.action;
+  const value = command?.value;
+  if (action === 'toggle' || action === 'play' || action === 'pause') {
+    ensureGraph();
+    if (!audio.src) {
+      const visible = visibleTracks();
+      if (visible.length) setQueue(visible.slice(), 0);
+      return;
+    }
+    if (action === 'play') audio.play().catch(() => {});
+    else if (action === 'pause') audio.pause();
+    else if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+    return;
+  }
+  if (action === 'next') { ensureGraph(); playNextIndex(1); return; }
+  if (action === 'prev') { ensureGraph(); playNextIndex(-1); return; }
+  if (action === 'seek') {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && Number.isFinite(audio.duration) && audio.duration > 0) {
+      audio.currentTime = Math.max(0, Math.min(audio.duration, seconds));
+      pushNowPlaying(true);
+    }
+    return;
+  }
+  if (action === 'volume') { setPlayerVolume(value); return; }
+  if (action === 'shuffle') {
+    state.shuffle = Boolean(value);
+    ls.set('shuffle', state.shuffle);
+    updateModeButtons();
+    pushNowPlaying(true);
+    return;
+  }
+  if (action === 'repeat') {
+    if (value !== 'off' && value !== 'all' && value !== 'one') return;
+    state.repeat = value;
+    ls.set('repeat', state.repeat);
+    updateModeButtons();
+    pushNowPlaying(true);
+    return;
+  }
+  if (action === 'jump') {
+    const index = Number(value);
+    if (Number.isInteger(index) && index >= 0 && index < state.queue.length) {
+      state.queueIndex = index;
+      startCurrent();
+    }
+  }
+}
+
+let playerCommandSeq = null;
+let playerCommandApplied = 0;
+let playerControlStream = null;
+let playerCommandBusy = false;
+
+function applyPlayerCommands(commands) {
+  for (const command of Array.isArray(commands) ? commands : []) {
+    const seq = Number(command?.seq);
+    if (!Number.isFinite(seq) || seq <= playerCommandApplied) continue;
+    playerCommandApplied = seq;
+    applyPlayerCommand(command);
+  }
+}
+
+// SSE keeps controls responsive while the player tab is in the background
+// (background tabs throttle setInterval). The plain poll below is the
+// fallback and also covers commands sent while the stream is reconnecting;
+// both share playerCommandApplied so a command is never executed twice.
+function startPlayerControlStream() {
+  if (typeof EventSource !== 'function' || playerControlStream) return;
+  try {
+    playerControlStream = new EventSource('/api/player/control/stream');
+    playerControlStream.onmessage = event => {
+      try {
+        const data = JSON.parse(event.data);
+        const seq = Number(data.seq) || 0;
+        if (playerCommandSeq === null) playerCommandSeq = seq;
+        else playerCommandSeq = Math.max(playerCommandSeq, seq);
+        applyPlayerCommands(data.commands);
+      } catch (_) {}
+    };
+    playerControlStream.onerror = () => {
+      // EventSource reconnects on its own; polling continues meanwhile. If it
+      // gives up entirely, retry on a slow timer so background tabs recover.
+      if (playerControlStream?.readyState === EventSource.CLOSED) {
+        playerControlStream = null;
+        setTimeout(startPlayerControlStream, 5000);
+      }
+    };
+  } catch (_) { playerControlStream = null; }
+}
+
+async function pollPlayerCommands() {
+  if (playerCommandBusy) return;
+  playerCommandBusy = true;
+  try {
+    const query = playerCommandSeq === null ? '' : `?since=${playerCommandSeq}`;
+    const response = await fetch(`/api/player/control${query}`, { cache: 'no-store' });
+    if (!response.ok) return;
+    const data = await response.json();
+    const seq = Number(data.seq) || 0;
+    if (playerCommandSeq === null) { playerCommandSeq = seq; return; }
+    playerCommandSeq = Math.max(playerCommandSeq, seq);
+    applyPlayerCommands(data.commands);
+  } catch (_) {}
+  finally { playerCommandBusy = false; }
+}
+startPlayerControlStream();
+setInterval(pollPlayerCommands, 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { startPlayerControlStream(); pollPlayerCommands(); } });
+pollPlayerCommands();
 
 // ------------------------------------------------------------------ MediaSession (system media keys / Now Playing)
 
@@ -883,11 +1036,56 @@ if ($('close-queue')) $('close-queue').onclick = () => closePanel($('queue-panel
 // renders, just without word-level progress.
 const LYRIC_LATENCY_MS = 160;   // nudge the highlight to match what you hear
 const LYRIC_HOLD_MS = 2400;     // pause auto-follow after the user scrolls
+const LYRIC_OFFSET_KEY = 'lyricOffsets';
+const LYRIC_OFFSET_STEP = 500;
+const LYRIC_OFFSET_MAX = 10000;
 const lyricsState = {
   trackId: '', lines: [], activeIdx: -1, requestSeq: 0,
   rows: [], wordSpans: [], centers: [], measured: false,
   raf: 0, lastScroll: -1, holdUntil: 0,
+  offset: 0,                 // ms; positive delays the lyric clock
 };
+
+function readLyricOffset(trackId) {
+  const stored = ls.get(LYRIC_OFFSET_KEY, {});
+  const map = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+  const value = Number(map[String(trackId)]);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function writeLyricOffset(trackId, value) {
+  const id = String(trackId || '');
+  if (!id) return;
+  const stored = ls.get(LYRIC_OFFSET_KEY, {});
+  const map = stored && typeof stored === 'object' && !Array.isArray(stored) ? { ...stored } : {};
+  if (value) map[id] = value;
+  else delete map[id];
+  const keys = Object.keys(map);
+  if (keys.length > 1000) for (const key of keys.slice(0, keys.length - 1000)) delete map[key];
+  ls.set(LYRIC_OFFSET_KEY, map);
+}
+
+function updateLyricOffsetUI() {
+  const label = $('lyric-offset-label');
+  if (!label) return;
+  const ms = lyricsState.offset;
+  label.textContent = `${ms > 0 ? '+' : ''}${(ms / 1000).toFixed(1)}s`;
+  label.title = ms ? `歌词${ms > 0 ? '延后' : '提前'} ${Math.abs(ms / 1000).toFixed(1)} 秒` : '歌词与音频同步';
+}
+
+function setLyricOffset(value, { save = true, announce = false } = {}) {
+  const next = Math.max(-LYRIC_OFFSET_MAX, Math.min(LYRIC_OFFSET_MAX, Math.round(Number(value) || 0)));
+  if (next === lyricsState.offset) return;
+  lyricsState.offset = next;
+  if (save) writeLyricOffset(lyricsState.trackId, next);
+  updateLyricOffsetUI();
+  highlightLyric(true);
+  pushDeskLyrics('ready');
+  // Force the next snapshot to carry the new offset, not just the progress.
+  nowPlayingLyricsTrack = '';
+  pushNowPlaying(true);
+  if (announce) toast(next ? `歌词偏移 ${next > 0 ? '+' : ''}${(next / 1000).toFixed(1)} 秒` : '歌词偏移已重置', 'ok');
+}
 
 // v1 fallback: standard LRC in which a translation is a second line sharing
 // the original's timestamp — fold it back into the same entry.
@@ -934,7 +1132,12 @@ function renderLyrics(message = '这首歌暂时没有歌词') {
       ? `<div class="lyric-line">${words}</div>`
       : `<div class="lyric-line plain">${esc(l.text)}</div>`;
     const tn = l.cn ? `<div class="lyric-line tn plain">${esc(l.cn)}</div>` : '';
-    return `<div class="lyric-row" data-i="${i}" data-ms="${l.ms}">${main}${tn}</div>`;
+    // TTML 罗马音(x-roman):主行下方小字,不参与逐字高亮
+    const roman = l.roman ? `<div class="lyric-line roman plain">${esc(l.roman)}</div>` : '';
+    // TTML 背景人声(x-bg):小字弱化显示,不参与逐字高亮
+    const bg = l.bg?.text ? `<div class="lyric-line bg plain">${esc(l.bg.text)}</div>` : '';
+    const chorus = l.chorus ? ' chorus' : '';
+    return `<div class="lyric-row${chorus}" data-i="${i}" data-ms="${l.ms}">${main}${roman}${bg}${tn}</div>`;
   }).join('');
   lyricsState.rows = [...wrap.querySelectorAll('.lyric-row')];
   lyricsState.wordSpans = lyricsState.rows.map(r => [...r.querySelectorAll('.lw')]);
@@ -945,7 +1148,9 @@ function renderLyrics(message = '这首歌暂时没有歌词') {
   lyricsState.rows.forEach(el => {
     el.onclick = () => {
       if (!audio.duration) return;
-      audio.currentTime = Number(el.dataset.ms) / 1000 + 0.05;
+      // With a positive offset the lyric is deliberately late; seek to where
+      // the sung line actually starts so clicking still lands on that line.
+      audio.currentTime = (Number(el.dataset.ms) + lyricsState.offset) / 1000 + 0.05;
       lyricsState.holdUntil = 0;
       if (audio.paused) audio.play().catch(() => {});
       highlightLyric(true);
@@ -1045,7 +1250,7 @@ function highlightLyric(force = false) {
   if (!panel || panel.classList.contains('hidden')) return;
   if (!lyricsState.lines.length) return;
   if (!lyricsState.measured && !measureLyrics()) return;
-  const nowMs = audio.currentTime * 1000 + LYRIC_LATENCY_MS;
+  const nowMs = audio.currentTime * 1000 + LYRIC_LATENCY_MS - lyricsState.offset;
   const idx = lyricIndexAt(nowMs);
   if (idx !== lyricsState.activeIdx || force) {
     activateRow(idx);
@@ -1070,18 +1275,102 @@ function stopLyricsLoop() {
   lyricsState.raf = 0;
 }
 
+// ------------------------------------------------------------------ now playing bridge
+// Publish a small snapshot for /obs.html and local integrations. Lyrics are
+// sent once per track (and again after they load); progress follows every ~2s.
+let nowPlayingPushAt = 0;
+let nowPlayingLyricsTrack = '';
+let nowPlayingTrackId = '';
+const NOW_PLAYING_SPECTRUM_BINS = 32;
+let npSpectrum = new Uint8Array(0);
+
+// 32 log-ish bins for the OBS visualizer. The main equalizer keeps its own
+// three bands; this is a lightweight second read of the same analyser.
+function sampleSpectrum() {
+  if (typeof analyser === 'undefined' || !analyser || typeof eqFreq === 'undefined' || !eqFreq?.length) return null;
+  if (typeof audioCtx === 'undefined' || !audioCtx || audioCtx.state !== 'running' || audio.paused) return null;
+  try {
+    analyser.getByteFrequencyData(eqFreq);
+    if (npSpectrum.length !== NOW_PLAYING_SPECTRUM_BINS) npSpectrum = new Uint8Array(NOW_PLAYING_SPECTRUM_BINS);
+    const n = eqFreq.length;
+    for (let i = 0; i < NOW_PLAYING_SPECTRUM_BINS; i += 1) {
+      const a = Math.floor((i / NOW_PLAYING_SPECTRUM_BINS) * n);
+      const b = Math.max(a + 1, Math.floor(((i + 1) / NOW_PLAYING_SPECTRUM_BINS) * n));
+      let sum = 0;
+      for (let k = a; k < b; k += 1) sum += eqFreq[k] || 0;
+      npSpectrum[i] = Math.round(sum / (b - a));
+    }
+    return Array.from(npSpectrum);
+  } catch (_) { return null; }
+}
+
+function pushNowPlaying(force = false) {
+  const t = state.queue[state.queueIndex];
+  if (!t) return;
+  const now = Date.now();
+  if (!force && now - nowPlayingPushAt < 450) return;
+  nowPlayingPushAt = now;
+  const trackChanged = nowPlayingTrackId !== t.id;
+  nowPlayingTrackId = t.id;
+  const sendLyrics = lyricsState.trackId === t.id && lyricsState.lines.length && nowPlayingLyricsTrack !== t.id;
+  if (sendLyrics) nowPlayingLyricsTrack = t.id;
+  const store = state.queueContext?.startsWith('store:') ? state.queueContext.slice(6) : '';
+  const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (Number(t.duration) || 0) / 1000;
+  const payload = {
+    trackId: t.id,
+    title: t.name,
+    artist: (t.artists || []).join(' / '),
+    album: t.album || '',
+    cover: trackCoverUrl(t, 360),
+    duration,
+    // audio.currentTime still belongs to the previous source right after
+    // startCurrent() swaps audio.src; send the new track from zero.
+    position: trackChanged ? 0 : (Number.isFinite(audio.currentTime) ? audio.currentTime : 0),
+    playing: !audio.paused && !audio.ended,
+    shuffle: state.shuffle,
+    repeat: state.repeat,
+    volume: state.volume,
+    queueIndex: state.queueIndex,
+    queueLength: state.queue.length,
+    spectrum: sampleSpectrum(),
+    set: store,
+  };
+  if (sendLyrics) payload.lyrics = { v: 2, name: t.name, offset: lyricsState.offset, lines: lyricsState.lines };
+  // A lyrics payload can exceed the 64 KB keepalive limit, so this is a
+  // normal fetch; losing a progress tick on unload is harmless.
+  fetch('/api/now-playing', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch(() => {});
+}
+
 async function loadLyrics(track) {
   const seq = ++lyricsState.requestSeq;
   lyricsState.trackId = track.id;
   lyricsState.lines = [];
+  lyricsState.offset = readLyricOffset(track.id);
+  updateLyricOffsetUI();
   $('lyrics-lines').innerHTML = '';
   $('lyrics-empty').textContent = '正在加载歌词…';
   $('lyrics-empty').classList.remove('hidden');
   $('lyrics-title').textContent = `${track.name} · 歌词`;
   pushDeskLyrics('loading');
   try {
-    const data = await api(`/api/lyrics/${track.id}`);
+    const setId = state.queueContext?.startsWith('store:') ? state.queueContext.slice(6) : '';
+    const params = new URLSearchParams();
+    if (setId) params.set('set', setId);
+    // title/artist 供服务端 TTML 兜底匹配(面板先于播放打开时也能命中)
+    if (track.name) params.set('title', track.name);
+    const artist = (track.artists || []).join(' / ');
+    if (artist) params.set('artist', artist);
+    const qs = params.toString();
+    const data = await api(`/api/lyrics/${track.id}${qs ? `?${qs}` : ''}`);
     if (seq !== lyricsState.requestSeq) return;
+    // 社区 TTML 库来源署名(CC0,礼貌归属):标题尾部带贡献者
+    if (data.source === 'ttml-db') {
+      $('lyrics-title').textContent = `${track.name} · 歌词 · TTML 社区库${data.ttmlAuthor ? ` · ${data.ttmlAuthor}` : ''}`;
+    }
     if (data.ok && Array.isArray(data.lines) && data.lines.length) lyricsState.lines = data.lines;
     else if (data.ok && data.lrc) lyricsState.lines = lrcToLines(data.lrc);
     else {
@@ -1092,6 +1381,7 @@ async function loadLyrics(track) {
     }
     renderLyrics();
     pushDeskLyrics('ready');
+    pushNowPlaying(true);
   } catch (_) {
     if (seq === lyricsState.requestSeq) { lyricsState.lines = []; renderLyrics(); pushDeskLyrics('error'); }
   }
@@ -1121,6 +1411,91 @@ if ($('p-lyrics-btn')) $('p-lyrics-btn').onclick = () => {
 };
 if ($('lyrics-close')) $('lyrics-close').onclick = () => { stopLyricsLoop(); closePanel($('lyrics-panel')); ls.set('lyrics-open', false); syncSideButtons(); };
 
+const adjustLyricOffset = delta => {
+  if (!lyricsState.trackId) { toast('播放一首歌后再调整歌词偏移', 'err'); return; }
+  setLyricOffset(lyricsState.offset + delta, { announce: true });
+};
+if ($('lyric-offset-down')) $('lyric-offset-down').onclick = () => adjustLyricOffset(-LYRIC_OFFSET_STEP);
+if ($('lyric-offset-up')) $('lyric-offset-up').onclick = () => adjustLyricOffset(LYRIC_OFFSET_STEP);
+if ($('lyric-offset-reset')) $('lyric-offset-reset').onclick = () => {
+  if (!lyricsState.trackId) { toast('播放一首歌后再调整歌词偏移', 'err'); return; }
+  setLyricOffset(0, { announce: true });
+};
+
+// ------------------------------------------------------------------ manual TTML match
+// 自动匹配宁缺毋滥,选错/没选时在这里手动搜社区库并指定文件覆盖。
+let lyricMatchSeq = 0;
+async function searchTtmlCandidates() {
+  const input = $('lyric-match-input');
+  const list = $('lyric-match-list');
+  const q = input.value.trim();
+  if (!q) { list.innerHTML = '<div class="lyric-match-empty">输入歌名后搜索</div>'; return; }
+  const t = state.queue[state.queueIndex];
+  const seq = ++lyricMatchSeq;
+  list.innerHTML = '<div class="lyric-match-empty">正在搜索社区库…</div>';
+  try {
+    const params = new URLSearchParams({ title: q });
+    if (t?.artists?.length) params.set('artist', t.artists.join(' / '));
+    const data = await api(`/api/ttml/search?${params}`);
+    if (seq !== lyricMatchSeq) return;
+    if (!data.ok || !data.entries?.length) {
+      list.innerHTML = `<div class="lyric-match-empty">${data.error === 'index-unavailable' ? '社区库索引暂不可用（网络）' : '没有候选，换个关键词试试'}</div>`;
+      return;
+    }
+    list.innerHTML = data.entries.map((e, i) =>
+      `<button class="lyric-match-item" data-i="${i}" type="button">
+        <span class="lm-name">${esc(e.musicName)}</span>
+        <span class="lm-meta">${esc(e.artists.join(' / '))}${e.album ? ` · ${esc(e.album)}` : ''}${e.author ? ` · by ${esc(e.author)}` : ''}</span>
+      </button>`).join('');
+    [...list.querySelectorAll('.lyric-match-item')].forEach(btn => {
+      btn.onclick = () => applyTtmlCandidate(data.entries[Number(btn.dataset.i)]);
+    });
+  } catch (_) {
+    if (seq === lyricMatchSeq) list.innerHTML = '<div class="lyric-match-empty">搜索失败，稍后重试</div>';
+  }
+}
+async function applyTtmlCandidate(entry) {
+  const t = state.queue[state.queueIndex];
+  if (!t || !entry?.file) return;
+  const list = $('lyric-match-list');
+  list.innerHTML = '<div class="lyric-match-empty">正在下载并应用…</div>';
+  try {
+    const data = await api(`/api/lyrics/${t.id}?ttmlFile=${encodeURIComponent(entry.file)}`);
+    if (!data.ok || !Array.isArray(data.lines) || !data.lines.length) {
+      list.innerHTML = '<div class="lyric-match-empty">该文件下载或解析失败，换一个候选</div>';
+      return;
+    }
+    lyricsState.trackId = t.id;
+    lyricsState.lines = data.lines;
+    renderLyrics();
+    pushDeskLyrics('ready');
+    nowPlayingLyricsTrack = '';
+    pushNowPlaying(true);
+    $('lyrics-title').textContent = `${t.name} · 歌词 · TTML 社区库${data.ttmlAuthor ? ` · ${data.ttmlAuthor}` : ''}`;
+    $('lyric-match-pop').classList.add('hidden');
+    toast(`已应用社区歌词${entry.author ? `（by ${entry.author}）` : ''}`, 'ok');
+  } catch (_) {
+    list.innerHTML = '<div class="lyric-match-empty">应用失败，稍后重试</div>';
+  }
+}
+if ($('lyric-match-btn')) $('lyric-match-btn').onclick = () => {
+  const t = state.queue[state.queueIndex];
+  if (!t) { toast('播放一首歌后再匹配歌词', 'err'); return; }
+  const pop = $('lyric-match-pop');
+  pop.classList.toggle('hidden');
+  if (!pop.classList.contains('hidden')) {
+    const input = $('lyric-match-input');
+    input.value = t.name || '';
+    input.focus();
+    searchTtmlCandidates();
+  }
+};
+if ($('lyric-match-go')) $('lyric-match-go').onclick = () => searchTtmlCandidates();
+if ($('lyric-match-input')) $('lyric-match-input').onkeydown = e => {
+  if (e.key === 'Enter') { e.preventDefault(); searchTtmlCandidates(); }
+  if (e.key === 'Escape') $('lyric-match-pop').classList.add('hidden');
+};
+
 // ------------------------------------------------------------------ desktop lyrics
 // Electron only: a floating always-on-top window (desktop-lyrics.html). This
 // window owns playback, so it pushes the parsed lines once per track and a
@@ -1147,7 +1522,7 @@ function pushDeskClock() {
   const t = state.queue[state.queueIndex];
   deskLyricsBridge.pushClock({
     trackId: t?.id || '',
-    pos: audio.currentTime * 1000 + LYRIC_LATENCY_MS,
+    pos: audio.currentTime * 1000 + LYRIC_LATENCY_MS - lyricsState.offset,
     at: Date.now(),
     rate: audio.playbackRate || 1,
     playing: !audio.paused && !audio.ended,
@@ -1362,7 +1737,9 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Escape' && coverExpander?.classList.contains('open')) { closeCoverExpander(); return; }
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   // mobile browsers have no hardware keyboard; skip path is harmless
-  if (e.code === 'Space') { e.preventDefault(); $('p-play').click(); }
+  if (e.key === '[' && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); adjustLyricOffset(-250); }
+  else if (e.key === ']' && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); adjustLyricOffset(250); }
+  else if (e.code === 'Space') { e.preventDefault(); $('p-play').click(); }
   else if (e.code === 'ArrowRight' && audio.duration) audio.currentTime = Math.min(audio.duration - 1, audio.currentTime + 5);
   else if (e.code === 'ArrowLeft' && audio.duration) audio.currentTime = Math.max(0, audio.currentTime - 5);
   else if (e.code === 'ArrowUp') { e.preventDefault(); $('p-vol').value = String(Math.min(100, Number($('p-vol').value) + 5)); $('p-vol').dispatchEvent(new Event('input')); }
