@@ -11,7 +11,19 @@
 - 歌词面板新增 `−` / `＋` 时间轴微调（0.5 秒一档，`[` / `]` 也可），每首歌单独记住偏移
 - 新增 `/obs.html`：重定向到独立的 **AGPL-3.0 Folia Tilt 移植模块** `obs-folia/`，原样保留 Folia 的 1–4 行概率切分、随机倾斜段、字符上下交替、逐段显示和逐字 sine 脉冲，并直接移植 Folia 的 `FluidBackground`（封面模糊 + 主题色渐变 + 封面色调）作为背景，删除全部自绘装饰；底部播放器按 Folia 的悬浮胶囊移植，支持播放/暂停、上一首/下一首、拖动进度、随机/循环、音量、队列跳转与悬停展开，控件经 `POST /api/player/control` 驱动主页面播放器；`/obs-stage.html` 保留 qsyy 自研的 Lumi / Tilt / Pendolo 舞台，`/obs-card.html` 保留底部字幕卡片。同时新增 `GET /api/now-playing`、`POST /api/now-playing`、`GET /api/lyrics/current`、`GET` / `POST /api/player/control`、`GET` / `POST /api/player/queue` 供本地集成使用
 - 播放栏新增睡眠定时器：15/30/45/60/90 分钟，到点音量 30 秒渐出后暂停
-- 新增 `⌘K` / `Ctrl+K` 命令面板：搜索当前歌曲、歌单、缓存库，执行播放、歌词、全屏、下载、睡眠定时器和 OBS 等命令
+- 新增 `⌘K` / `Ctrl+K` 命令面板：搜索当前歌曲、歌单、缓存库，执行播放、歌词、全屏、下载、睡眠定时器和 OBS 等命令；新增群唱/浮名舞台与"匹配社区歌词"入口
+- 封面取色主题升级：50×50 降采样 + OKLab 面积聚类 k-means 取主色，强调色在 OKLCH 感知空间生成并求解 WCAG 对比度（算法借鉴 Folia，独立重写）；全灰封面退中性灰
+- 官方歌词缺逐字时间轴时自动兜底 amll-ttml-db 社区 TTML 库（CC0，镜像链容灾，索引磁盘缓存 24h）；歌词面板新增"匹配歌词"手动搜索候选并指定文件覆盖（`GET /api/ttml/search` + `ttmlFile=` 参数），来源带贡献者署名
+- 副歌重复行检测：所有歌词来源落盘前统一标注 `chorus:true`，歌词面板副歌行左侧强调色短杠；浮名舞台副歌自动大字块
+- TTML 背景人声（x-bg）/罗马音（x-roman）/对唱歌者（ttm:agent）分离为 `bg`/`roman`/`agent` 字段：歌词面板与桌面歌词窗渲染，群唱舞台对唱自动分边
+- 新增 Folia 兼容只读歌词接口 `GET /v1/lyric`（秒制时间、offset、wordByWord 合成、backgroundVocals、romanization），外部歌词组件可直接轮询
+- obs-folia 新增群唱（Cappella 聊天气泡流）与浮名（Fume 整篇排版+相机飞行）舞台：`?mode=` 或播放器胶囊内切换（同步地址栏不刷新），React.lazy 分包
+- `/api/now-playing`、`/api/lyrics/current`、`/v1/lyric` 脏门控序列化 + ETag/304 条件请求，OBS 轮询空闲零传输零解析
+
+### 修复
+- TTML 小数秒解析错误（`.686` 被算成整秒/零）、英文词间空格丢失、翻译与背景人声 span 混入正文
+- 浮名舞台整篇排版偏右半屏：居中位移类被 framer-motion 动画覆盖，改由 motion 属性承担
+- `fresh=1` 强制刷新现在穿透 TTML 负缓存重试
 
 ### 安全
 - 封面代理与封面落盘改为精确域名边界白名单，拒绝 `evil-douyinpic.com` 这类后缀伪装、非 HTTPS、带凭据和非默认端口

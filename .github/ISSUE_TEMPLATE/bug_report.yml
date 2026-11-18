@@ -1,0 +1,78 @@
+name: Bug 反馈
+description: 提交前请先搜索已有 issue（含已关闭的），重复问题会被关闭。
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先搜一遍 [已有 issue](https://github.com/shiaho777/qsyy/issues?q=is%3Aissue)，确认没人报过再提交。
+        信息越具体，修得越快。
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 一两句话说清哪里坏了。
+      placeholder: 例如：播放无损缓存曲目时进度条不动，声音正常。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 按顺序列出操作，让别人能照着复现。
+      placeholder: |
+        1. 打开收藏列表
+        2. 点击某首已缓存的无损曲目
+        3. 观察进度条
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 你认为应该发生什么。
+    validations:
+      required: false
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么，包括报错提示。
+    validations:
+      required: false
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 端
+      description: 问题出现在哪个端。
+      options:
+        - macOS 桌面
+        - Windows 桌面
+        - Android APK
+        - 浏览器 PWA
+        - Docker
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本号
+      description: 桌面端在「关于」面板查看；服务端看启动日志或 /api/version；Docker 看镜像 tag。
+      placeholder: 例如 v1.3.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或截图
+      description: 可选。可从服务端控制台复制相关报错行；截图直接粘贴。注意抹掉 Cookies、密钥等敏感信息。
+      render: text
+    validations:
+      required: false

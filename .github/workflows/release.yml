@@ -168,4 +168,9 @@ jobs:
             -exec cp {} assets/ \;
           ls -la assets/
           test -n "$(ls -A assets)"
+          # Verifiable releases: SHA-256 checksums for every artifact.
+          # (cd assets && sha256sum * > SHA256SUMS.txt) keeps names relative so
+          # `sha256sum -c SHA256SUMS.txt` works in the user's download folder.
+          (cd assets && sha256sum -- * > SHA256SUMS.txt)
+          cat assets/SHA256SUMS.txt
           gh release upload "$GITHUB_REF_NAME" assets/* --clobber

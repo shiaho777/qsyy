@@ -166,7 +166,7 @@ QSYY_HOST=0.0.0.0 npm run standalone
 - [x] Windows 平台适配(客户端自动定位、Cookie 读取、签名库加载)
 - [x] Android 移动端适配(响应式 UI、抽屉侧栏、PWA 安装、LAN 访问)
 - [x] 三端客户端发版(macOS dmg / Windows NSIS / Android apk,tag 自动构建)
-- [ ] 歌单导入 / 导出
+- [x] 歌单导入 / 导出(zip 歌单包,携带歌词 sidecar)
 - [ ] 更多音效与可视化
 
 欢迎通过 Issue / PR 参与共建!
@@ -207,6 +207,29 @@ QSYY_HOST=0.0.0.0 npm run standalone
 
 [![Star History Chart](https://api.star-history.com/svg?repos=shiaho777/qsyy&type=Date)](https://star-history.com/#shiaho777/qsyy&Date)
 
+## 隐私与网络请求
+
+**零遥测、零广告、零账号注册。** 所有数据留在本机,以下是全部出站请求清单:
+
+| 请求目标 | 用途 | 触发时机 |
+|---|---|---|
+| 汽水音乐官方 API / CDN | 歌单、播放直链、歌词、封面、音效配置 | 浏览与播放时(复用你本机客户端的登录态) |
+| `github.com` / `api.github.com` | 检查新版本 | 启动后自动检查(可关)或手动点击 |
+| `raw.githubusercontent.com` 及镜像(ghproxy / jsDelivr) | 社区 TTML 歌词兜底(amll-ttml-db,CC0) | 官方歌词缺逐字时间轴时;索引缓存 24h |
+
+- 客户端 Cookie 仅在本机读取与使用,**不上传到任何第三方**;会话文件以 0600 权限落盘
+- 缓存解密产物、歌词、设置全部存于本机缓存目录,歌单可导出为开放 zip 格式
+- 服务默认只监听回环地址;`--host` 开放局域网是你的显式选择
+- 安全漏洞上报见 [SECURITY.md](./SECURITY.md)
+
+## 下载校验
+
+每个 Release 附 `SHA256SUMS.txt`。下载后在安装包所在目录执行:
+
+```bash
+sha256sum -c SHA256SUMS.txt   # macOS: shasum -a 256 -c SHA256SUMS.txt
+```
+
 ## 许可证
 
-[GPL-3.0 + 非商业附加条款](./app/LICENSE) · 本项目与汽水音乐官方无关,请支持正版音乐。
+[GPL-3.0 + 非商业附加条款](./LICENSE) · [第三方许可清单](./THIRD-PARTY-LICENSES.md) · [贡献指南](./CONTRIBUTING.md) · 本项目与汽水音乐官方无关,请支持正版音乐。
