@@ -37,11 +37,20 @@ type QueueItem = {
 
 type QueueState = { index: number; items: QueueItem[] };
 
+export type StageMode = 'tilt' | 'cappella' | 'fume';
+const STAGE_MODES: Array<{ id: StageMode; label: string }> = [
+  { id: 'tilt', label: '倾诉' },
+  { id: 'cappella', label: '群唱' },
+  { id: 'fume', label: '浮名' },
+];
+
 interface Props {
   track: Track;
   position: number;
   status: Status;
   onCommand: RemoteCommand;
+  mode?: StageMode;
+  onModeChange?: (mode: StageMode) => void;
 }
 
 const fmt = (seconds: number) => {
@@ -154,7 +163,7 @@ const QueueList: React.FC<{
 };
 
 // ---------------------------------------------------------------- player
-const PlayerControls: React.FC<Props> = ({ track, position, status, onCommand }) => {
+const PlayerControls: React.FC<Props> = ({ track, position, status, onCommand, mode, onModeChange }) => {
   // Folia's capsule rests at 56px and grows on hover; a click pins it open.
   const [pinned, setPinned] = useState(() => {
     const mode = new URLSearchParams(location.search).get('controls');
@@ -375,6 +384,21 @@ const PlayerControls: React.FC<Props> = ({ track, position, status, onCommand })
                   >
                     {status.repeat === 'one' ? <RepeatOneIcon /> : <RepeatIcon />}
                   </button>
+                  {mode && onModeChange && (
+                    <div className="fp-modes" role="group" aria-label="歌词舞台模式">
+                      {STAGE_MODES.map(item => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={`fp-mode${mode === item.id ? ' active' : ''}`}
+                          onClick={() => onModeChange(item.id)}
+                          title={`切换到${item.label}舞台`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <span className="fp-spacer" />
                   <div className="fp-volume">
                     <button

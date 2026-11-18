@@ -157,6 +157,18 @@ body.transparent .folio-vignette { display: none; }
 .fp-time-end { text-align: right; }
 .fp-controls { display: flex; align-items: center; gap: 4px; margin-top: 3px; }
 .fp-spacer { flex: 1; }
+.fp-modes {
+  display: flex; gap: 2px; margin-left: 6px; padding: 2px;
+  border-radius: 99px; background: rgba(255,255,255,.06);
+}
+.fp-mode {
+  border: 0; border-radius: 99px; padding: 4px 9px; cursor: pointer;
+  background: transparent; color: rgba(255,255,255,.55);
+  font-size: 10.5px; font-weight: 600; letter-spacing: .02em; line-height: 1;
+  transition: color .16s, background .16s;
+}
+.fp-mode:hover { color: #fff; }
+.fp-mode.active { background: rgba(125,211,252,.18); color: var(--accent); }
 .fp-volume { display: flex; align-items: center; gap: 3px; }
 .fp-volume-btn { width: 26px; height: 28px; }
 .fp-foot {
@@ -311,5 +323,64 @@ body.transparent .folio-vignette { display: none; }
 .z-0 { z-index: 0; }
 .object-cover { object-fit: cover; }
 .transition-opacity { transition-property: opacity; }
+.transition-colors { transition-property: color, background-color, border-color; transition-duration: 150ms; }
 .duration-700 { transition-duration: 700ms; }
+.duration-1000 { transition-duration: 1000ms; }
 .ease-out { transition-timing-function: ease-out; }
+
+/* Tailwind utilities used by the ported Cappella / Fume components. */
+.items-start { align-items: flex-start; }
+.items-end { align-items: flex-end; }
+.justify-start { justify-content: flex-start; }
+.justify-end { justify-content: flex-end; }
+.flex-row { flex-direction: row; }
+.flex-row-reverse { flex-direction: row-reverse; }
+.overflow-visible { overflow: visible; }
+.shrink-0 { flex-shrink: 0; }
+.gap-3 { gap: .75rem; }
+.gap-4 { gap: 1rem; }
+.gap-2\.5 { gap: .625rem; }
+.px-4 { padding-left: 1rem; padding-right: 1rem; }
+.px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
+.py-5 { padding-top: 1.25rem; padding-bottom: 1.25rem; }
+.pb-36 { padding-bottom: 9rem; }
+.pt-12 { padding-top: 3rem; }
+.max-w-4xl { max-width: 56rem; }
+.max-w-\[78\%\] { max-width: 78%; }
+.h-10 { height: 2.5rem; }
+.w-10 { width: 2.5rem; }
+.w-28 { width: 7rem; }
+.h-2 { height: .5rem; }
+.min-w-40 { min-width: 10rem; }
+.left-0 { left: 0; }
+.left-1\/2 { left: 50%; }
+.top-0 { top: 0; }
+.inset-y-0 { top: 0; bottom: 0; }
+.-translate-x-1\/2 { transform: translateX(-50%); }
+.rounded-full { border-radius: 9999px; }
+.rounded-2xl { border-radius: 1rem; }
+.rounded-3xl { border-radius: 1.5rem; }
+.rounded-br-md { border-bottom-right-radius: .375rem; }
+.rounded-bl-md { border-bottom-left-radius: .375rem; }
+.rounded-\[inherit\] { border-radius: inherit; }
+.border { border-width: 1px; border-style: solid; }
+.shadow-lg { box-shadow: 0 10px 15px -3px rgba(0,0,0,.1), 0 4px 6px -4px rgba(0,0,0,.1); }
+.text-\[11px\] { font-size: 11px; }
+.font-medium { font-weight: 500; }
+.tabular-nums { font-variant-numeric: tabular-nums; }
+.transition-\[min-height\,box-shadow\,background-color\] {
+  transition-property: min-height, box-shadow, background-color;
+}
+.duration-200 { transition-duration: 200ms; }
+.animate-pulse { animation: folio-pulse 2s cubic-bezier(.4,0,.6,1) infinite; }
+@keyframes folio-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+@media (min-width: 640px) {
+  .sm\:px-8 { padding-left: 2rem; padding-right: 2rem; }
+  .sm\:pb-40 { padding-bottom: 10rem; }
+  .sm\:pt-16 { padding-top: 4rem; }
+  .sm\:max-w-\[68\%\] { max-width: 68%; }
+}
+@media (min-width: 1024px) {
+  .lg\:px-14 { padding-left: 3.5rem; padding-right: 3.5rem; }
+  .lg\:pt-20 { padding-top: 5rem; }
+}

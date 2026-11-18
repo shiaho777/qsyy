@@ -2,7 +2,7 @@
 // original names makes the copied Tilt component compile with minimal edits.
 
 import type { MotionValue } from 'framer-motion';
-import type { AudioBands, Line, Theme, TiltTuning } from './types';
+import type { AudioBands, CappellaAvatarImage, CappellaEmojiImage, CappellaTuning, FumeTuning, Line, Theme, TiltTuning } from './types';
 
 export interface VisualizerSharedProps {
   currentTime: MotionValue<number>;
@@ -30,5 +30,12 @@ export interface VisualizerSharedProps {
   hideTranslationSubtitle?: boolean;
   subtitleOverlayLayout?: unknown;
   tiltTuning?: TiltTuning;
+  paused?: boolean;
+  isPreviewMode?: boolean;
+  cappellaTuning?: CappellaTuning;
+  cappellaCustomEmojiImages?: CappellaEmojiImage[];
+  cappellaCustomAvatarImages?: CappellaAvatarImage[];
+  fumeTuning?: FumeTuning;
+  background?: unknown;
   [key: string]: unknown;
 }

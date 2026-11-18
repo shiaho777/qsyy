@@ -1132,7 +1132,12 @@ function renderLyrics(message = '这首歌暂时没有歌词') {
       ? `<div class="lyric-line">${words}</div>`
       : `<div class="lyric-line plain">${esc(l.text)}</div>`;
     const tn = l.cn ? `<div class="lyric-line tn plain">${esc(l.cn)}</div>` : '';
-    return `<div class="lyric-row" data-i="${i}" data-ms="${l.ms}">${main}${tn}</div>`;
+    // TTML 罗马音(x-roman):主行下方小字,不参与逐字高亮
+    const roman = l.roman ? `<div class="lyric-line roman plain">${esc(l.roman)}</div>` : '';
+    // TTML 背景人声(x-bg):小字弱化显示,不参与逐字高亮
+    const bg = l.bg?.text ? `<div class="lyric-line bg plain">${esc(l.bg.text)}</div>` : '';
+    const chorus = l.chorus ? ' chorus' : '';
+    return `<div class="lyric-row${chorus}" data-i="${i}" data-ms="${l.ms}">${main}${roman}${bg}${tn}</div>`;
   }).join('');
   lyricsState.rows = [...wrap.querySelectorAll('.lyric-row')];
   lyricsState.wordSpans = lyricsState.rows.map(r => [...r.querySelectorAll('.lw')]);
@@ -1353,8 +1358,19 @@ async function loadLyrics(track) {
   pushDeskLyrics('loading');
   try {
     const setId = state.queueContext?.startsWith('store:') ? state.queueContext.slice(6) : '';
-    const data = await api(`/api/lyrics/${track.id}${setId ? `?set=${encodeURIComponent(setId)}` : ''}`);
+    const params = new URLSearchParams();
+    if (setId) params.set('set', setId);
+    // title/artist 供服务端 TTML 兜底匹配(面板先于播放打开时也能命中)
+    if (track.name) params.set('title', track.name);
+    const artist = (track.artists || []).join(' / ');
+    if (artist) params.set('artist', artist);
+    const qs = params.toString();
+    const data = await api(`/api/lyrics/${track.id}${qs ? `?${qs}` : ''}`);
     if (seq !== lyricsState.requestSeq) return;
+    // 社区 TTML 库来源署名(CC0,礼貌归属):标题尾部带贡献者
+    if (data.source === 'ttml-db') {
+      $('lyrics-title').textContent = `${track.name} · 歌词 · TTML 社区库${data.ttmlAuthor ? ` · ${data.ttmlAuthor}` : ''}`;
+    }
     if (data.ok && Array.isArray(data.lines) && data.lines.length) lyricsState.lines = data.lines;
     else if (data.ok && data.lrc) lyricsState.lines = lrcToLines(data.lrc);
     else {
@@ -1404,6 +1420,80 @@ if ($('lyric-offset-up')) $('lyric-offset-up').onclick = () => adjustLyricOffset
 if ($('lyric-offset-reset')) $('lyric-offset-reset').onclick = () => {
   if (!lyricsState.trackId) { toast('播放一首歌后再调整歌词偏移', 'err'); return; }
   setLyricOffset(0, { announce: true });
+};
+
+// ------------------------------------------------------------------ manual TTML match
+// 自动匹配宁缺毋滥,选错/没选时在这里手动搜社区库并指定文件覆盖。
+let lyricMatchSeq = 0;
+async function searchTtmlCandidates() {
+  const input = $('lyric-match-input');
+  const list = $('lyric-match-list');
+  const q = input.value.trim();
+  if (!q) { list.innerHTML = '<div class="lyric-match-empty">输入歌名后搜索</div>'; return; }
+  const t = state.queue[state.queueIndex];
+  const seq = ++lyricMatchSeq;
+  list.innerHTML = '<div class="lyric-match-empty">正在搜索社区库…</div>';
+  try {
+    const params = new URLSearchParams({ title: q });
+    if (t?.artists?.length) params.set('artist', t.artists.join(' / '));
+    const data = await api(`/api/ttml/search?${params}`);
+    if (seq !== lyricMatchSeq) return;
+    if (!data.ok || !data.entries?.length) {
+      list.innerHTML = `<div class="lyric-match-empty">${data.error === 'index-unavailable' ? '社区库索引暂不可用（网络）' : '没有候选，换个关键词试试'}</div>`;
+      return;
+    }
+    list.innerHTML = data.entries.map((e, i) =>
+      `<button class="lyric-match-item" data-i="${i}" type="button">
+        <span class="lm-name">${esc(e.musicName)}</span>
+        <span class="lm-meta">${esc(e.artists.join(' / '))}${e.album ? ` · ${esc(e.album)}` : ''}${e.author ? ` · by ${esc(e.author)}` : ''}</span>
+      </button>`).join('');
+    [...list.querySelectorAll('.lyric-match-item')].forEach(btn => {
+      btn.onclick = () => applyTtmlCandidate(data.entries[Number(btn.dataset.i)]);
+    });
+  } catch (_) {
+    if (seq === lyricMatchSeq) list.innerHTML = '<div class="lyric-match-empty">搜索失败，稍后重试</div>';
+  }
+}
+async function applyTtmlCandidate(entry) {
+  const t = state.queue[state.queueIndex];
+  if (!t || !entry?.file) return;
+  const list = $('lyric-match-list');
+  list.innerHTML = '<div class="lyric-match-empty">正在下载并应用…</div>';
+  try {
+    const data = await api(`/api/lyrics/${t.id}?ttmlFile=${encodeURIComponent(entry.file)}`);
+    if (!data.ok || !Array.isArray(data.lines) || !data.lines.length) {
+      list.innerHTML = '<div class="lyric-match-empty">该文件下载或解析失败，换一个候选</div>';
+      return;
+    }
+    lyricsState.trackId = t.id;
+    lyricsState.lines = data.lines;
+    renderLyrics();
+    pushDeskLyrics('ready');
+    nowPlayingLyricsTrack = '';
+    pushNowPlaying(true);
+    $('lyrics-title').textContent = `${t.name} · 歌词 · TTML 社区库${data.ttmlAuthor ? ` · ${data.ttmlAuthor}` : ''}`;
+    $('lyric-match-pop').classList.add('hidden');
+    toast(`已应用社区歌词${entry.author ? `（by ${entry.author}）` : ''}`, 'ok');
+  } catch (_) {
+    list.innerHTML = '<div class="lyric-match-empty">应用失败，稍后重试</div>';
+  }
+}
+if ($('lyric-match-btn')) $('lyric-match-btn').onclick = () => {
+  const t = state.queue[state.queueIndex];
+  if (!t) { toast('播放一首歌后再匹配歌词', 'err'); return; }
+  const pop = $('lyric-match-pop');
+  pop.classList.toggle('hidden');
+  if (!pop.classList.contains('hidden')) {
+    const input = $('lyric-match-input');
+    input.value = t.name || '';
+    input.focus();
+    searchTtmlCandidates();
+  }
+};
+if ($('lyric-match-go')) $('lyric-match-go').onclick = () => searchTtmlCandidates();
+if ($('lyric-match-input')) $('lyric-match-input').onkeydown = e => {
+  if (e.key === 'Enter') { e.preventDefault(); searchTtmlCandidates(); }
+  if (e.key === 'Escape') $('lyric-match-pop').classList.add('hidden');
 };
 
 // ------------------------------------------------------------------ desktop lyrics

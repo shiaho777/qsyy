@@ -77,6 +77,19 @@
       makeCommand('obs', '打开 OBS 歌词覆盖层', '透明背景，可加入 OBS 浏览器源', () => window.open('/obs.html', '_blank', 'noopener'), {
         icon: ICONS.note, keywords: 'obs overlay 歌词 覆盖',
       }),
+      makeCommand('obs-cappella', '群唱舞台', '聊天气泡流歌词，对唱自动分边', () => window.open('/obs-folia/?mode=cappella', '_blank', 'noopener'), {
+        icon: ICONS.note, keywords: 'obs cappella 群唱 气泡 聊天',
+      }),
+      makeCommand('obs-fume', '浮名舞台', '整篇排版 + 相机飞行，副歌大字块', () => window.open('/obs-folia/?mode=fume', '_blank', 'noopener'), {
+        icon: ICONS.note, keywords: 'obs fume 浮名 排版 相机',
+      }),
+      makeCommand('lyric-match', '匹配社区歌词', '从 TTML 社区库手动匹配这首歌的逐字歌词', () => {
+        const panel = $('lyrics-panel');
+        if (panel?.classList.contains('hidden')) $('p-lyrics-btn')?.click();
+        setTimeout(() => $('lyric-match-btn')?.click(), 60);
+      }, {
+        icon: ICONS.note, keywords: 'match ttml 匹配 歌词 社区',
+      }),
       makeCommand('download', '下载当前歌曲', '导出当前播放的歌曲', () => $('download-current')?.click(), {
         icon: ICONS.downloadRow, keywords: 'download 下载',
       }),
