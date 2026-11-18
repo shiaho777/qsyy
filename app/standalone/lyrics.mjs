@@ -68,14 +68,17 @@ function stripTags(value) {
 function parseTimeValue(raw) {
   const value = String(raw || '').trim();
   if (!value) return 0;
+  // Fraction digits are decimal fractions of a second: ".68" = 680 ms, not
+  // 68 ms. Scale by digit count instead of right-padding (AMLL TTML uses
+  // two-digit fractions throughout).
+  const fracMs = frac => (frac ? Math.round(Number(`0.${frac}`) * 1000) : 0);
   const clock = value.match(/^(\d{1,3}):(\d{2})(?::(\d{2}))?(?:[.,](\d{1,3}))?$/);
   if (clock) {
     if (clock[3] !== undefined) {
       return Number(clock[1]) * 3600000 + Number(clock[2]) * 60000
-        + Number(clock[3]) * 1000 + Number(String(clock[4] || '').padEnd(3, '0').slice(0, 3));
+        + Number(clock[3]) * 1000 + fracMs(clock[4]);
     }
-    return Number(clock[1]) * 60000 + Number(clock[2]) * 1000
-      + Number(String(clock[3] || '').padEnd(3, '0').slice(0, 3));
+    return Number(clock[1]) * 60000 + Number(clock[2]) * 1000 + fracMs(clock[4]);
   }
   const unit = value.match(/^([\d.]+)\s*(h|m|s|ms)$/i);
   if (unit) {
@@ -239,34 +242,81 @@ function parseVtt(text) {
 function parseTtml(text) {
   const lines = [];
   const source = String(text || '').replace(/\r\n?/g, '\n');
-  const paragraphRe = /<p\b([^>]*)>([\s\S]*?)<\/p>/gi;
-  let paragraph;
-  while ((paragraph = paragraphRe.exec(source))) {
-    const attrs = paragraph[1] || '';
-    const body = paragraph[2] || '';
-    const begin = attrs.match(/\bbegin\s*=\s*["']([^"']+)["']/i)?.[1] || '';
-    const end = attrs.match(/\bend\s*=\s*["']([^"']+)["']/i)?.[1] || '';
-    const dur = attrs.match(/\bdur\s*=\s*["']([^"']+)["']/i)?.[1] || '';
-    const start = parseTimeValue(begin);
-    const endMs = end ? parseTimeValue(end) : dur ? start + parseTimeValue(dur) : 0;
+  const attrOf = (attrs, name) =>
+    attrs.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, 'i'))?.[1] || '';
+  // AMLL/Apple-style TTML marks translations and background vocals with
+  // ttm:role. Background spans nest word spans, so match balanced one level
+  // deep instead of the flat non-greedy span regex (which used to cut the
+  // block at the first inner </span> and leak the rest into the main line).
+  const BG_SPAN_RE = /<span\b([^>]*\bttm:role\s*=\s*["']x-bg["'][^>]*)>((?:[^<]|<(?!\/?span\b)|<span\b[^>]*>[^<]*<\/span>)*)<\/span>/gi;
+  const TR_SPAN_RE = /<span\b[^>]*\bttm:role\s*=\s*["']x-translation["'][^>]*>[\s\S]*?<\/span>/gi;
+  const ROMAN_SPAN_RE = /<span\b[^>]*\bttm:role\s*=\s*["']x-roman["'][^>]*>[\s\S]*?<\/span>/gi;
+  const parseSpans = (body, lineStart) => {
     const words = [];
     const spanRe = /<span\b([^>]*)>([\s\S]*?)<\/span>/gi;
     let span;
     while ((span = spanRe.exec(body))) {
       const spanAttrs = span[1] || '';
-      const value = stripTags(span[2]);
-      if (!value) continue;
-      const spanBegin = spanAttrs.match(/\bbegin\s*=\s*["']([^"']+)["']/i)?.[1] || '';
-      const spanEnd = spanAttrs.match(/\bend\s*=\s*["']([^"']+)["']/i)?.[1] || '';
-      const spanDur = spanAttrs.match(/\bdur\s*=\s*["']([^"']+)["']/i)?.[1] || '';
-      const wordStart = spanBegin ? parseTimeValue(spanBegin) : start;
+      // Word text is whitespace-significant (" beat" carries the separator);
+      // only decode entities and drop inner tags (ruby bases etc.).
+      const value = decodeEntities(String(span[2] || '').replace(/<[^>]*>/g, ''));
+      if (!value.trim()) continue;
+      const spanBegin = attrOf(spanAttrs, 'begin');
+      const spanEnd = attrOf(spanAttrs, 'end');
+      const spanDur = attrOf(spanAttrs, 'dur');
+      const wordStart = spanBegin ? parseTimeValue(spanBegin) : lineStart;
       const wordEnd = spanEnd ? parseTimeValue(spanEnd) : spanDur ? wordStart + parseTimeValue(spanDur) : 0;
       words.push({ t: wordStart, d: Math.max(0, wordEnd - wordStart), w: value });
     }
+    return words;
+  };
+  const paragraphRe = /<p\b([^>]*)>([\s\S]*?)<\/p>/gi;
+  let paragraph;
+  while ((paragraph = paragraphRe.exec(source))) {
+    const attrs = paragraph[1] || '';
+    let body = paragraph[2] || '';
+    const begin = attrOf(attrs, 'begin');
+    const end = attrOf(attrs, 'end');
+    const dur = attrOf(attrs, 'dur');
+    const start = parseTimeValue(begin);
+    const endMs = end ? parseTimeValue(end) : dur ? start + parseTimeValue(dur) : 0;
+
+    // Pull background-vocal blocks out first (they carry their own words
+    // and translation), then the line-level translation span.
+    let bg = null;
+    body = body.replace(BG_SPAN_RE, (whole, bgAttrs, bgBody) => {
+      const bgStart = attrOf(bgAttrs, 'begin');
+      const bgEnd = attrOf(bgAttrs, 'end');
+      const bgBeginMs = bgStart ? parseTimeValue(bgStart) : start;
+      const bgEndMs = bgEnd ? parseTimeValue(bgEnd) : 0;
+      const bgPlain = bgBody.replace(TR_SPAN_RE, '').replace(ROMAN_SPAN_RE, '');
+      const bgWords = parseSpans(bgPlain, bgBeginMs);
+      const bgCn = stripTags(bgBody.match(TR_SPAN_RE)?.[0] || '');
+      const bgRoman = stripTags(bgBody.match(ROMAN_SPAN_RE)?.[0] || '');
+      const bgText = bgWords.length ? wordsText(bgWords) : stripTags(bgPlain);
+      if (bgText) {
+        bg = { ms: bgBeginMs, dur: Math.max(0, bgEndMs - bgBeginMs), text: bgText, words: bgWords.length ? bgWords : null };
+        if (bgCn) bg.cn = bgCn;
+        if (bgRoman) bg.roman = bgRoman;
+      }
+      return '';
+    });
+    const cn = stripTags(body.match(TR_SPAN_RE)?.[0] || '');
+    const roman = stripTags(body.match(ROMAN_SPAN_RE)?.[0] || '');
+    body = body.replace(TR_SPAN_RE, '').replace(ROMAN_SPAN_RE, '');
+
+    const words = parseSpans(body, start);
     const safe = safeWords(words, body, 'ttml');
     const value = safe ? wordsText(safe) : stripTags(body);
     if (!value) continue;
-    lines.push({ ms: start, dur: Math.max(0, endMs - start), text: value, words: safe });
+    const line = { ms: start, dur: Math.max(0, endMs - start), text: value, words: safe };
+    if (cn) line.cn = cn;
+    if (roman) line.roman = roman;
+    if (bg) line.bg = bg;
+    // Duet marker: cappella-style renderers map distinct agents to senders.
+    const agent = attrOf(attrs, 'ttm:agent');
+    if (agent) line.agent = agent;
+    lines.push(line);
   }
   return lines;
 }

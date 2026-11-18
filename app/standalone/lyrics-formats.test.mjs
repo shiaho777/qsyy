@@ -75,6 +75,61 @@ test('TTML parses paragraph and span timings', () => {
   ]);
 });
 
+test('TTML mm:ss fractions are decimal seconds (AMLL two/three-digit)', () => {
+  const built = parseLyricText([
+    '<tt xmlns="http://www.w3.org/ns/ttml"><body><div>',
+    '<p begin="00:00.686" end="00:03.110">',
+    '<span begin="00:00.686" end="00:01.020">Hi</span>',
+    '</p>',
+    '<p begin="00:04.68" end="00:05.9">Bye</p>',
+    '</div></body></tt>',
+  ].join(''));
+  assert.equal(built.lines[0].ms, 686);
+  assert.equal(built.lines[0].dur, 2424);
+  assert.deepEqual(built.lines[0].words, [{ t: 686, d: 334, w: 'Hi' }]);
+  assert.equal(built.lines[1].ms, 4680);
+  assert.equal(built.lines[1].dur, 1220);
+});
+
+test('TTML keeps word-leading spaces and splits translation / background vocals', () => {
+  const built = parseLyricText([
+    '<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">',
+    '<body><div>',
+    '<p begin="00:01.000" end="00:03.000" ttm:agent="v1">',
+    '<span begin="00:01.000" end="00:01.500">Hello</span>',
+    '<span begin="00:01.500" end="00:03.000"> world</span>',
+    '<span ttm:role="x-bg" begin="00:02.000" end="00:03.000">',
+    '<span begin="00:02.000" end="00:02.500">(oh</span>',
+    '<span begin="00:02.500" end="00:03.000"> yeah)</span>',
+    '<span ttm:role="x-translation" xml:lang="zh-CN">背景翻译</span>',
+    '<span ttm:role="x-roman">bg roman</span>',
+    '</span>',
+    '<span ttm:role="x-translation" xml:lang="zh-CN">你好世界</span>',
+    '<span ttm:role="x-roman">he-llo world</span>',
+    '</p></div></body></tt>',
+  ].join(''));
+  assert.equal(built.lines.length, 1);
+  const line = built.lines[0];
+  assert.equal(line.text, 'Hello world');
+  assert.equal(line.cn, '你好世界');
+  assert.equal(line.roman, 'he-llo world');
+  assert.equal(line.agent, 'v1');
+  assert.equal(line.bg.roman, 'bg roman');
+  assert.deepEqual(line.words, [
+    { t: 1000, d: 500, w: 'Hello' },
+    { t: 1500, d: 1500, w: ' world' },
+  ]);
+  assert.deepEqual(line.bg, {
+    ms: 2000, dur: 1000, text: '(oh yeah)',
+    words: [
+      { t: 2000, d: 500, w: '(oh' },
+      { t: 2500, d: 500, w: ' yeah)' },
+    ],
+    cn: '背景翻译',
+    roman: 'bg roman',
+  });
+});
+
 test('QRC and YRC word tags resolve to absolute milliseconds', () => {
   const qrc = parseLyricText('[1000,2000]<0,500,0>Hel<500,500,0>lo', { format: 'qrc' });
   assert.equal(qrc.lines[0].text, 'Hello');

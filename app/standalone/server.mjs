@@ -31,6 +31,9 @@ import { buildLyrics, parseLyricFile } from './lyrics.mjs';
 import { parseTrustedUrl } from './net-guard.mjs';
 import { zipBuildStream, zipParse } from './zip.mjs';
 import { createPlayerControlHub } from './player-control.mjs';
+import { parseTtmlIndex, matchTtmlEntry, searchTtmlEntries, isSafeTtmlFile, ttmlIndexUrls, ttmlFileUrls, hasWordTimings } from './ttml-db.mjs';
+import { buildFoliaLyricPayload } from './lyric-api.mjs';
+import { markChorus } from './chorus.mjs';
 
 const require = createRequire(import.meta.url);
 const { RestoreService } = require('../bridge/lib/restore-service.js');
@@ -83,6 +86,56 @@ function resolveLatestRelease() {
     req.setTimeout(8000, () => { try { req.destroy(); } catch (_) {} resolve(''); });
   });
 }
+// Full release metadata for the in-app update dialog (changelog body).
+// GitHub API first (60 req/h unauthenticated — the 30 min cache keeps us far
+// below), 302-tag fallback only yields the tag so body stays empty there.
+let releaseInfoCache = { data: null, at: 0 };
+function resolveReleaseInfo() {
+  if (releaseInfoCache.data && Date.now() - releaseInfoCache.at < 30 * 60 * 1000) {
+    return Promise.resolve(releaseInfoCache.data);
+  }
+  const fromApi = () => new Promise(resolve => {
+    const req = https.get('https://api.github.com/repos/shiaho777/qsyy/releases/latest', {
+      headers: { 'user-agent': 'qsyy-update-check', accept: 'application/vnd.github+json' },
+    }, res => {
+      if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
+      let size = 0;
+      const chunks = [];
+      res.on('data', chunk => {
+        size += chunk.length;
+        if (size > 2 * 1024 * 1024) { try { req.destroy(); } catch (_) {} resolve(null); return; }
+        chunks.push(chunk);
+      });
+      res.on('end', () => {
+        try {
+          const d = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          const tag = String(d.tag_name || '');
+          resolve(tag ? {
+            ok: true, tag, version: tag.replace(/^v/, ''),
+            name: String(d.name || tag), body: String(d.body || ''),
+            url: String(d.html_url || `${APP_REPO}/releases/latest`),
+            publishedAt: String(d.published_at || ''), prerelease: Boolean(d.prerelease),
+          } : null);
+        } catch (_) { resolve(null); }
+      });
+      res.on('error', () => resolve(null));
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(8000, () => { try { req.destroy(); } catch (_) {} resolve(null); });
+  });
+  return fromApi().then(async info => {
+    if (!info) {
+      const tag = await resolveLatestRelease();
+      info = tag ? {
+        ok: true, tag, version: tag.replace(/^v/, ''), name: tag, body: '',
+        url: `${APP_REPO}/releases/tag/${encodeURIComponent(tag)}`, publishedAt: '', prerelease: false,
+      } : { ok: false, error: 'unavailable' };
+    }
+    if (info.ok) releaseInfoCache = { data: info, at: Date.now() };
+    return info;
+  });
+}
+
 const RESTORE_SCRIPT = path.join(root, '..', 'bridge', 'restore_cache.js');
 const LMDB_MODULE = path.join(root, '..', 'bridge', 'node_modules', 'lmdb');
 // Decrypted copies / lyrics / incremental stores live under the OS cache root.
@@ -583,6 +636,9 @@ function persistJobs() {
 function writeLyricsCache(trackId, built) {
   const lyricsDir = path.join(DECRYPT_DIR, 'lyrics');
   try {
+    // Single choke point for every lyric source (ttnet pre-write, route
+    // builds, TTML fallback): mark chorus lines once before persisting.
+    markChorus(built);
     fs.mkdirSync(lyricsDir, { recursive: true });
     fs.writeFileSync(path.join(lyricsDir, `${trackId}.json`), JSON.stringify(built));
     fs.writeFileSync(path.join(lyricsDir, `${trackId}.lrc`), `${built.lrc}\n`);
@@ -1502,7 +1558,7 @@ function readLocalLyrics(trackId, setParam = '') {
           }
           let built = null;
           try { built = parseLyricFile(text, name, { translation }); } catch (_) { built = null; }
-          if (built?.lines?.length) return { ...built, source: 'local' };
+          if (built?.lines?.length) return { ...markChorus(built), source: 'local' };
         }
       }
     }
@@ -1516,6 +1572,199 @@ function readCachedLyrics(trackId) {
     if (cached?.v === 2 && Array.isArray(cached.lines) && cached.lines.length) return cached;
   } catch (_) {}
   return null;
+}
+
+// ---------------------------------------------------------------- amll-ttml-db fallback
+// When the official payload has no per-word timings (plain LRC), try the
+// community TTML database (CC0). Static files on GitHub, no API: a ~6 MB
+// JSONL index (cached on disk 24h, in memory 6h) plus one TTML per song.
+// raw.githubusercontent.com times out on some networks, so every fetch walks
+// a priority list of mirrors with short timeouts. Failures resolve null and
+// are negatively cached per track for 30 min — never retried in a hot loop.
+const TTML_DIR = path.join(DECRYPT_DIR, 'ttml-db');
+const TTML_INDEX_FILE = path.join(TTML_DIR, 'ncm-index.jsonl');
+const TTML_DISK_TTL = 24 * 60 * 60 * 1000;
+const TTML_MEM_TTL = 6 * 60 * 60 * 1000;
+const TTML_MISS_TTL = 30 * 60 * 1000;
+let ttmlIndexMem = { index: null, at: 0 };
+let ttmlIndexPending = null;
+const ttmlMissCache = new Map();
+
+function fetchTextFromUrls(urls, timeoutMs = 6000, maxBytes = 16 * 1024 * 1024) {
+  const attempt = i => new Promise(resolve => {
+    if (i >= urls.length) { resolve(''); return; }
+    let settled = false;
+    const done = value => { if (!settled) { settled = true; resolve(value); } };
+    let req;
+    try {
+      req = https.get(urls[i], { headers: { 'user-agent': 'qsyy-ttml-db' } }, res => {
+        if (res.statusCode !== 200) { res.resume(); done(null); return; }
+        let size = 0;
+        const chunks = [];
+        res.on('data', chunk => {
+          size += chunk.length;
+          if (size > maxBytes) { try { req.destroy(); } catch (_) {} done(null); return; }
+          chunks.push(chunk);
+        });
+        res.on('end', () => done(Buffer.concat(chunks).toString('utf8')));
+        res.on('error', () => done(null));
+      });
+    } catch (_) { done(null); return; }
+    req.on('error', () => done(null));
+    req.setTimeout(timeoutMs, () => { try { req.destroy(); } catch (_) {} done(null); });
+  }).then(text => (text ? text : attempt(i + 1)));
+  return attempt(0);
+}
+
+async function loadTtmlIndex() {
+  if (ttmlIndexMem.index && Date.now() - ttmlIndexMem.at < TTML_MEM_TTL) return ttmlIndexMem.index;
+  if (ttmlIndexPending) return ttmlIndexPending;
+  ttmlIndexPending = (async () => {
+    let text = '';
+    try {
+      const stat = fs.statSync(TTML_INDEX_FILE);
+      if (stat.isFile() && Date.now() - stat.mtimeMs < TTML_DISK_TTL) {
+        text = fs.readFileSync(TTML_INDEX_FILE, 'utf8');
+      }
+    } catch (_) {}
+    if (!text) {
+      text = await fetchTextFromUrls(ttmlIndexUrls(), 10000);
+      if (text) {
+        try {
+          fs.mkdirSync(TTML_DIR, { recursive: true });
+          fs.writeFileSync(TTML_INDEX_FILE, text);
+        } catch (_) {}
+      }
+    }
+    if (!text) return null;
+    const index = parseTtmlIndex(text);
+    ttmlIndexMem = { index, at: Date.now() };
+    return index;
+  })().finally(() => { ttmlIndexPending = null; });
+  return ttmlIndexPending;
+}
+
+// Track metadata for the lookup: the browser's now-playing snapshot first,
+// then the now-playing POST body itself (same request carries title/artist).
+function ttmlQueryMeta(trackId, input = {}) {
+  if (nowPlayingState.trackId === String(trackId) && nowPlayingState.title) {
+    return { title: nowPlayingState.title, artist: nowPlayingState.artist };
+  }
+  const title = cleanText(input.title);
+  if (title) return { title, artist: cleanText(input.artist) };
+  // Incremental-store metadata carries the track name for library songs that
+  // are not the current now-playing snapshot.
+  const stored = storeMeta.get(String(trackId));
+  const storedTitle = cleanText(stored?.name || stored?.title);
+  return storedTitle ? { title: storedTitle, artist: cleanText(stored?.artist) } : null;
+}
+
+async function fetchTtmlLyrics(trackId, meta, { file = '', fresh = false } = {}) {
+  const explicit = isSafeTtmlFile(file) ? file : '';
+  if (!explicit && !meta?.title) return null;
+  // fresh=1 (user-forced refresh) retries even a negatively cached track.
+  if (!fresh) {
+    const miss = ttmlMissCache.get(trackId);
+    if (miss && Date.now() - miss < TTML_MISS_TTL) return null;
+  }
+  let built = null;
+  try {
+    let target = explicit;
+    let author = '';
+    if (!target) {
+      const index = await loadTtmlIndex();
+      const entry = index && matchTtmlEntry(index, meta);
+      if (entry) { target = entry.file; author = entry.author || ''; }
+    }
+    if (target) {
+      const text = await fetchTextFromUrls(ttmlFileUrls(target));
+      if (text) {
+        const parsed = parseLyricFile(text, `${trackId}.ttml`);
+        if (hasWordTimings(parsed)) built = { ...parsed, ttmlAuthor: author, ttmlFile: target };
+      }
+    }
+  } catch (_) { built = null; }
+  if (!built && !explicit) ttmlMissCache.set(trackId, Date.now());
+  return built;
+}
+
+// Manual match: apply a user-picked community TTML file to a track. Wins over
+// the auto matcher because it overwrites the same on-disk lyrics cache.
+async function applyTtmlFile(trackId, file) {
+  if (!isSafeTtmlFile(file)) return { ok: false, error: 'bad file' };
+  const built = await fetchTtmlLyrics(trackId, null, { file, fresh: true });
+  if (!built) return { ok: false, error: 'fetch-failed' };
+  writeLyricsCache(trackId, built);
+  ttmlMissCache.delete(trackId);
+  return { ok: true, ...built, source: 'ttml-db' };
+}
+
+// ---------------------------------------------------------------- Folia-compatible lyric API
+// Read-only loopback endpoint mirroring Folia's GET /v1/lyric contract so
+// external lyric widgets / status-bar plugins can consume qsyy playback.
+// 200 + JSON null when nothing is playing or no lyrics are loaded.
+//
+// Dirty-gated like the SSE streams: the (potentially large) lyric body is
+// serialized once per state change, not per poll. `nowPlayingState.updatedAt`
+// only advances on POSTs, so idle polling costs zero serialization. ETag lets
+// well-behaved pollers short-circuit to 304.
+let foliaLyricCache = { at: -1, body: 'null', etag: '"0"' };
+function foliaLyricBody() {
+  if (foliaLyricCache.at !== nowPlayingState.updatedAt) {
+    const payload = nowPlayingPayload();
+    const body = JSON.stringify(buildFoliaLyricPayload({ track: payload.track, lyrics: payload.lyrics }));
+    foliaLyricCache = { at: nowPlayingState.updatedAt, body, etag: `"${nowPlayingState.updatedAt}-${body.length}"` };
+  }
+  return foliaLyricCache;
+}
+function foliaLyricResponse(request, response) {
+  const cache = foliaLyricBody();
+  if (request.headers['if-none-match'] === cache.etag) {
+    response.writeHead(304, { etag: cache.etag, 'access-control-allow-origin': '*' }).end();
+    return;
+  }
+  response.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-cache',
+    etag: cache.etag,
+    'access-control-allow-origin': '*',
+  });
+  response.end(cache.body);
+}
+
+// Same dirty gate for the OBS polling endpoints. Two variants (with/without
+// lyrics) because obs-folia polls ?lyrics=0 at 320ms while other overlays
+// want the full snapshot.
+const nowPlayingJsonCache = new Map();
+function nowPlayingJson(variant) {
+  const hit = nowPlayingJsonCache.get(variant);
+  if (hit && hit.at === nowPlayingState.updatedAt) return hit;
+  let payload;
+  if (variant === 'current') {
+    // /api/lyrics/current keeps its historical slim shape.
+    const full = nowPlayingPayload();
+    payload = { ok: true, track: full.track, position: full.position, playing: full.playing, updatedAt: full.updatedAt, lyrics: full.lyrics };
+  } else {
+    payload = nowPlayingPayload(variant === 'full');
+  }
+  const body = JSON.stringify(payload);
+  const entry = { at: nowPlayingState.updatedAt, body, etag: `"${nowPlayingState.updatedAt}-${variant}-${body.length}"` };
+  nowPlayingJsonCache.set(variant, entry);
+  return entry;
+}
+function sendCachedJson(request, response, entry) {
+  if (request.headers['if-none-match'] === entry.etag) {
+    response.writeHead(304, { etag: entry.etag, 'access-control-allow-origin': '*' }).end();
+    return;
+  }
+  response.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-cache',
+    etag: entry.etag,
+    'access-control-allow-origin': '*',
+    'access-control-allow-headers': 'content-type',
+  });
+  response.end(entry.body);
 }
 
 // Sidecars that travel with a library package. Local lyrics win over the
@@ -1614,13 +1863,13 @@ function updateNowPlaying(input = {}) {
   }
   nowPlayingState.updatedAt = Date.now();
   if (validLyricsPayload(input.lyrics)) {
-    nowPlayingState.lyrics = input.lyrics;
+    nowPlayingState.lyrics = markChorus(input.lyrics);
     nowPlayingState.lyricsTrackId = trackId;
   } else if (trackId && nowPlayingState.lyricsTrackId !== trackId) {
     const local = readLocalLyrics(trackId, cleanText(input.set));
     const cached = local || readCachedLyrics(trackId);
     if (cached) {
-      nowPlayingState.lyrics = cached;
+      nowPlayingState.lyrics = markChorus(cached);
       nowPlayingState.lyricsTrackId = trackId;
     }
   }
@@ -3460,7 +3709,7 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'GET /api/now-playing') {
-      sendJson(response, 200, nowPlayingPayload(url.searchParams.get('lyrics') !== '0'));
+      sendCachedJson(request, response, nowPlayingJson(url.searchParams.get('lyrics') !== '0' ? 'full' : 'lean'));
       return;
     }
     if (route === 'POST /api/now-playing') {
@@ -3534,15 +3783,7 @@ const serverHandler = async (request, response) => {
       return;
     }
     if (route === 'GET /api/lyrics/current') {
-      const payload = nowPlayingPayload();
-      sendJson(response, 200, {
-        ok: true,
-        track: payload.track,
-        position: payload.position,
-        playing: payload.playing,
-        updatedAt: payload.updatedAt,
-        lyrics: payload.lyrics,
-      });
+      sendCachedJson(request, response, nowPlayingJson('current'));
       return;
     }
     if (url.pathname.startsWith('/api/lyrics/') && request.method === 'GET') {
@@ -3557,9 +3798,21 @@ const serverHandler = async (request, response) => {
       const trackId = url.pathname.split('/').pop();
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(trackId)) { sendJson(response, 400, { ok: false, error: 'bad track id' }); return; }
       const setParam = url.searchParams.get('set') || '';
+      // Optional title/artist so the TTML fallback can match songs that are
+      // not the current now-playing snapshot (panel opened before playback).
+      const queryMeta = { title: url.searchParams.get('title') || '', artist: url.searchParams.get('artist') || '' };
       const source = url.searchParams.get('source') || 'auto';
-      const forceNetwork = source === 'qishui' || url.searchParams.get('fresh') === '1';
+      const fresh = url.searchParams.get('fresh') === '1';
+      const forceNetwork = source === 'qishui' || fresh;
       const localOnly = source === 'local';
+      // Explicit community-file pick (from the search UI): fetch + persist,
+      // bypassing the auto matcher and the negative cache.
+      const ttmlFile = url.searchParams.get('ttmlFile') || '';
+      if (ttmlFile) {
+        const applied = await applyTtmlFile(trackId, ttmlFile);
+        sendJson(response, 200, applied.ok ? { ...applied, cached: false } : applied);
+        return;
+      }
       const local = readLocalLyrics(trackId, setParam);
       if (local && !forceNetwork) {
         sendJson(response, 200, { ok: true, ...local, cached: false, source: 'local' });
@@ -3567,6 +3820,16 @@ const serverHandler = async (request, response) => {
       }
       const cached = readCachedLyrics(trackId);
       if (cached && !forceNetwork) {
+        // A cached plain-LRC payload gets one community-TTML upgrade attempt
+        // (negative results cached 30 min), then keeps serving from disk.
+        if (!hasWordTimings(cached)) {
+          const upgraded = await fetchTtmlLyrics(trackId, ttmlQueryMeta(trackId, queryMeta), { fresh });
+          if (upgraded) {
+            writeLyricsCache(trackId, upgraded);
+            sendJson(response, 200, { ok: true, ...upgraded, cached: false, source: 'ttml-db' });
+            return;
+          }
+        }
         sendJson(response, 200, { ok: true, ...cached, cached: true, source: 'qishui' });
         return;
       }
@@ -3576,9 +3839,23 @@ const serverHandler = async (request, response) => {
       }
       const resolved = await ttnetResolve(trackId);
       const built = buildLyrics(resolved);
+      if (built && !hasWordTimings(built)) {
+        const upgraded = await fetchTtmlLyrics(trackId, ttmlQueryMeta(trackId, queryMeta), { fresh });
+        if (upgraded) {
+          writeLyricsCache(trackId, upgraded);
+          sendJson(response, 200, { ok: true, ...upgraded, cached: false, source: 'ttml-db' });
+          return;
+        }
+      }
       if (built) {
         writeLyricsCache(trackId, built);
         sendJson(response, 200, { ok: true, ...built, cached: false, source: 'qishui' });
+        return;
+      }
+      const fallback = await fetchTtmlLyrics(trackId, ttmlQueryMeta(trackId, queryMeta), { fresh });
+      if (fallback) {
+        writeLyricsCache(trackId, fallback);
+        sendJson(response, 200, { ok: true, ...fallback, cached: false, source: 'ttml-db' });
         return;
       }
       if (cached?.lrc) {
@@ -3586,6 +3863,26 @@ const serverHandler = async (request, response) => {
         return;
       }
       sendJson(response, 200, { ok: false, error: resolved?.ok === false && resolved?.error === 'restricted' ? 'unavailable' : 'no-lyric' });
+      return;
+    }
+    if (url.pathname === '/v1/lyric') {
+      if (request.method === 'GET') { foliaLyricResponse(request, response); return; }
+      sendJson(response, 405, { error: 'Method not allowed.' });
+      return;
+    }
+    if (route === 'GET /api/ttml/search') {
+      // Manual-match candidates from the community TTML index. Read-only;
+      // applying a pick goes through /api/lyrics/:id?ttmlFile=…
+      const title = url.searchParams.get('title') || '';
+      if (!title.trim()) { sendJson(response, 400, { ok: false, error: 'title required' }); return; }
+      const index = await loadTtmlIndex();
+      if (!index) { sendJson(response, 200, { ok: false, error: 'index-unavailable', entries: [] }); return; }
+      const entries = searchTtmlEntries(index, {
+        title,
+        artist: url.searchParams.get('artist') || '',
+        limit: Number(url.searchParams.get('limit')) || 12,
+      });
+      sendJson(response, 200, { ok: true, entries });
       return;
     }
     if (route === 'GET /api/cover') {
@@ -3641,6 +3938,10 @@ const serverHandler = async (request, response) => {
     if (route === 'GET /api/latest-release') {
       const tag = await resolveLatestRelease();
       sendJson(response, 200, tag ? { ok: true, tag } : { ok: false, error: 'resolve failed' });
+      return;
+    }
+    if (route === 'GET /api/release/latest') {
+      sendJson(response, 200, await resolveReleaseInfo());
       return;
     }
     if (route === 'GET /api/stats') {
